@@ -1,34 +1,56 @@
 const express = require('express');
 const cors = require('cors');
-const { runMLTest } = require('./ml_runner.js');
-const { runDBTest } = require('./db_test.js');
-
+const multer = require('multer');
+const path = require('path');
+const { processDocument } = require('./documentProcessor.js');
+const { saveDocumentChunks } = require('./database.js');
+const { performRAG } = require('./searchService.js');
 const app = express();
 const PORT = 5000;
 
+// Setup multer for file uploads
+const upload = multer({ dest: 'uploads/' });
+
 app.use(cors());
+app.use(express.json());
 
-app.get('/api/test-pipeline', async (req, res) => {
-  console.log("Received request for pipeline test...");
+// New endpoint for uploading documents
+app.post('/api/documents/upload', upload.single('document'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded.' });
+  }
+
   try {
-    const dbResult = await runDBTest();
-    console.log("DB Test Complete:", dbResult);
+    console.log(`File received: ${req.file.originalname}, processing...`);
+    const chunksWithVectors = await processDocument(req.file.path);
 
-    // The first run of this will be slow as the model downloads
-    console.log("Starting ML Model test... This might take a moment.");
-    const mlResult = await runMLTest();
-    console.log("ML Test Complete:", mlResult);
+    console.log('Saving document and chunks to databases...');
+    const result = await saveDocumentChunks(req.file.originalname, chunksWithVectors);
 
-    res.json({
-      frontend: "OK",
-      backend: "OK",
-      ml_model: mlResult.model || mlResult.status,
-      sqlite: dbResult.sqlite,
-      chromadb: dbResult.chroma,
+    res.status(201).json({ 
+      message: 'File uploaded and processed successfully!',
+      ...result 
     });
   } catch (error) {
-    console.error("Error during pipeline test:", error);
-    res.status(500).json({ error: error.message });
+    console.error('Error during document processing:', error);
+    res.status(500).json({ error: 'Failed to process document.' });
+  }
+});
+
+// Add this new endpoint for searching
+app.post('/api/search', async (req, res) => {
+  const { query } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Query is required.' });
+  }
+
+  try {
+    const ragResult = await performRAG(query);
+    res.status(200).json(ragResult);
+  } catch (error) {
+    console.error('Error during search:', error);
+    res.status(500).json({ error: 'Failed to perform search.' });
   }
 });
 

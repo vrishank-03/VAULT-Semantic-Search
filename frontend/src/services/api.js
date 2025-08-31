@@ -2,12 +2,29 @@ import axios from 'axios';
 
 const API_URL = 'http://localhost:5000/api';
 
-export const testSystemPipeline = async () => {
+export const uploadDocument = async (file) => {
+  const formData = new FormData();
+  formData.append('document', file); // 'document' must match the key in multer
+
   try {
-    const response = await axios.get(`${API_URL}/test-pipeline`);
+    const response = await axios.post(`${API_URL}/documents/upload`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
     return response.data;
   } catch (error) {
-    console.error("Error testing pipeline:", error);
-    return error.response ? error.response.data : { error: "Network Error" };
+    console.error("Error uploading document:", error);
+    throw error.response ? error.response.data : new Error("Network Error");
+  }
+};
+
+export const search = async (query) => {
+  try {
+    const response = await axios.post(`${API_URL}/search`, { query });
+    return response.data;
+  } catch (error) {
+    console.error("Error performing search:", error);
+    throw error.response ? error.response.data : new Error("Network Error");
   }
 };
