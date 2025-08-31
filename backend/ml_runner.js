@@ -34,4 +34,9 @@ function getEmbeddings(chunks) {
   });
 };
 
-module.exports = { getEmbeddings };
+function getEmbeddingForQuery(query) {
+  // We can reuse the getEmbeddings function since it can handle a list of one
+  return getEmbeddings([query]).then(embeddings => embeddings[0]);
+}
+
+module.exports = { getEmbeddings, getEmbeddingForQuery };
