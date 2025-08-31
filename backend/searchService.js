@@ -1,4 +1,3 @@
-// NEW: Using Google's Generative AI library
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { ChromaClient } = require('chromadb');
 const { getEmbeddingForQuery } = require('./ml_runner');
@@ -10,7 +9,7 @@ const genAI = new GoogleGenerativeAI(API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest"});
 
 async function performRAG(queryText) {
-  // 1. RETRIEVE: Perform semantic search (this part is the same)
+  // 1. RETRIEVE
   const queryEmbedding = await getEmbeddingForQuery(queryText);
   const collection = await chromaClient.getCollection({ name: "documents" });
   const results = await collection.query({
@@ -18,21 +17,28 @@ async function performRAG(queryText) {
     nResults: 5
   });
 
-  const contextChunks = results.documents[0];
+  // THIS IS THE KEY CHANGE
+  // Instead of just sending the text, we'll send an object with the text and its metadata.
+  const sources = results.documents[0].map((doc, index) => ({
+    text: doc,
+    metadata: results.metadatas[0][index]
+  }));
 
-  // 2. AUGMENT: Create a prompt for the Gemini model
-  const prompt = `You are a helpful AI assistant. Use the following context to answer the user's question. If the answer is not in the context, say "I cannot find the answer in the provided document."
+  const contextText = sources.map(s => s.text).join('\n---\n');
+
+  // 2. AUGMENT
+  const prompt = `You are a Professional helpful AI assistant, who is there for academic research or corporate research purposes. Use the following context to answer the user's question. If the answer is not in the context, say "I cannot find the answer in the provided document."
 
   Context:
   ---
-  ${contextChunks.join('\n---\n')}
+  ${contextText}
   ---
 
   User's Question: ${queryText}
 
   Answer:`;
 
-  // 3. GENERATE: Send the prompt to the Gemini LLM
+  // 3. GENERATE
   console.log('Sending augmented prompt to Gemini...');
   const result = await model.generateContent(prompt);
   const response = await result.response;
@@ -40,7 +46,7 @@ async function performRAG(queryText) {
 
   return {
     answer: answer,
-    sources: contextChunks // Also return the sources for transparency
+    sources: sources // This is an array of objects
   };
 }
 

@@ -1,35 +1,39 @@
 const sqlite3 = require('sqlite3').verbose();
 const { ChromaClient } = require('chromadb');
 
-// Initialize clients
 const db = new sqlite3.Database('./vault.db', (err) => {
-  if (err) console.error(err.message);
-  console.log('Connected to the SQLite database.');
+  if (err) {
+    console.error("Error connecting to SQLite:", err.message);
+  } else {
+    console.log('Connected to the SQLite database.');
+    db.serialize(() => {
+      db.run(`CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL
+      )`);
+    });
+  }
 });
 
 const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
 
-// Create table if it doesn't exist
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    uploaded_at TEXT NOT NULL
-  )`);
-});
-
-// Function to save document chunks
-async function saveDocumentChunks(documentName, chunksWithVectors) {
+async function saveDocumentChunks(documentName, filePath, chunksWithVectors) {
   return new Promise(async (resolve, reject) => {
-    // First, save the main document record to SQLite
     const uploadedAt = new Date().toISOString();
-    db.run('INSERT INTO documents (name, uploaded_at) VALUES (?, ?)', [documentName, uploadedAt], async function(err) {
+    db.run('INSERT INTO documents (name, file_path, uploaded_at) VALUES (?, ?, ?)', [documentName, filePath, uploadedAt], async function(err) {
       if (err) return reject(err);
 
       const documentId = this.lastID;
       console.log(`Document saved to SQLite with ID: ${documentId}`);
 
-      // Now, prepare and save chunks to ChromaDB
+      // NEW: Check if there are any chunks to save before proceeding
+      if (chunksWithVectors.length === 0) {
+        console.log("No chunks with vectors to save. Skipping ChromaDB.");
+        return resolve({ documentId, chunks: 0 });
+      }
+
       try {
         const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
 
@@ -48,4 +52,4 @@ async function saveDocumentChunks(documentName, chunksWithVectors) {
   });
 }
 
-module.exports = { saveDocumentChunks };
+module.exports = { saveDocumentChunks, db };

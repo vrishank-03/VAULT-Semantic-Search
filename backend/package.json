@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon index.js"
   },
   "keywords": [],
   "author": "",
@@ -15,7 +16,10 @@
     "chromadb": "^3.0.14",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "langchain": "^0.3.31",
+    "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "nodemon": "^3.1.10",
     "pdf-parse": "^1.1.1",
     "sqlite3": "^5.1.7"
   }

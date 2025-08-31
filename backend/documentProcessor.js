@@ -1,6 +1,7 @@
 const fs = require('fs');
 const pdf = require('pdf-parse');
 const { getEmbeddings } = require('./ml_runner');
+const { RecursiveCharacterTextSplitter } = require('langchain/text_splitter');
 
 async function processDocument(filePath) {
   // 1. Read the PDF content
@@ -8,32 +9,21 @@ async function processDocument(filePath) {
   const pdfData = await pdf(dataBuffer);
   const text = pdfData.text;
 
-  // 2. Implement a fixed-size chunking strategy
-  const chunkSize = 400; // characters
-  const chunkOverlap = 50; // characters
-  const rawChunks = [];
+  // 2. NEW: Use the RecursiveCharacterTextSplitter
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 1000, // The max size of a chunk in characters
+    chunkOverlap: 100, // The number of characters to overlap between chunks
+  });
 
-  for (let i = 0; i < text.length; i += chunkSize - chunkOverlap) {
-    const chunk = text.substring(i, i + chunkSize);
-    rawChunks.push(chunk);
-  }
+  const chunks = await splitter.splitText(text);
 
-  // 3. NEW: Aggressively clean and then filter the chunks
-  const cleanedChunks = rawChunks
-    .map(chunk => {
-      // Replace multiple whitespace chars (newlines, tabs, etc.) with a single space
-      const cleaned = chunk.replace(/\s+/g, ' ').trim();
-      return cleaned;
-    })
-    .filter(chunk => chunk.length > 10); // Filter out any chunks that are too short after cleaning
-  
-  console.log(`Document split and cleaned into ${cleanedChunks.length} chunks.`);
-  
-  // 4. Get embeddings for each chunk
+  console.log(`Document split into ${chunks.length} chunks.`);
+
+  // 3. Get embeddings for each chunk
   console.log('Requesting embeddings for all chunks...');
-  const vectors = await getEmbeddings(cleanedChunks);
-  
-  const chunksWithVectors = cleanedChunks.map((chunkText, i) => ({
+  const vectors = await getEmbeddings(chunks);
+
+  const chunksWithVectors = chunks.map((chunkText, i) => ({
     text: chunkText,
     vector: vectors[i]
   }));
