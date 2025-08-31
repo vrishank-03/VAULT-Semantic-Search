@@ -18,3 +18,13 @@ export const uploadDocument = async (file) => {
     throw error.response ? error.response.data : new Error("Network Error");
   }
 };
+
+export const search = async (query) => {
+  try {
+    const response = await axios.post(`${API_URL}/search`, { query });
+    return response.data;
+  } catch (error) {
+    console.error("Error performing search:", error);
+    throw error.response ? error.response.data : new Error("Network Error");
+  }
+};
