@@ -3,37 +3,57 @@ import { uploadDocument, search } from './services/api';
 import './App.css';
 import PdfViewer from './PdfViewer';
 
+// Helper to get initial messages from localStorage
+const getInitialMessages = () => {
+  const savedMessages = localStorage.getItem('vault_chat_history');
+  if (savedMessages) {
+    return JSON.parse(savedMessages);
+  }
+  return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your existing documents.' }];
+};
+
+
 function App() {
-  const [messages, setMessages] = useState([
-    { sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your existing documents.' }
-  ]);
+  // Load messages from localStorage on initial render
+  const [messages, setMessages] = useState(getInitialMessages);
   const [input, setInput] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const messagesEndRef = useRef(null);
   const [viewingPdf, setViewingPdf] = useState(null);
+  const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Effect to scroll to bottom and save to localStorage whenever messages change
   useEffect(() => {
     scrollToBottom();
+    // Save the entire conversation to localStorage
+    localStorage.setItem('vault_chat_history', JSON.stringify(messages));
   }, [messages]);
 
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!input.trim() || isSearching) return;
+
     const userMessage = { sender: 'user', text: input };
-    setMessages(prev => [...prev, userMessage]);
+    const currentHistory = [...messages, userMessage];
+
+    setMessages([...currentHistory, { sender: 'ai', text: 'Thinking...', isLoading: true }]);
     setInput('');
     setIsSearching(true);
+
     try {
-      setMessages(prev => [...prev, { sender: 'ai', text: 'Thinking...', isLoading: true }]);
-      const results = await search(input);
-      const aiResponse = { sender: 'ai', results: results };
+      const results = await search(input, currentHistory);
+      const aiResponse = { 
+        sender: 'ai', 
+        text: results.answer,
+        results: results 
+      };
       setMessages(prev => [...prev.slice(0, -1), aiResponse]);
     } catch (error) {
-      const errorResponse = { sender: 'ai', text: 'Sorry, I encountered an error. Please try again.' };
+      const errorText = error.error || 'Sorry, I encountered an error. Please try again.';
+      const errorResponse = { sender: 'ai', text: errorText };
       setMessages(prev => [...prev.slice(0, -1), errorResponse]);
     } finally {
       setIsSearching(false);
@@ -54,14 +74,21 @@ function App() {
     }
   };
 
-  const handleSourceClick = (id) => {
-    // --- LOG 1 ---
-    console.log(`[App.js] Source link clicked. Setting PDF to view with ID: ${id}`);
-    setViewingPdf({ id: id });
+  const handleSourceClick = (source) => {
+    setViewingPdf({ id: source.metadata.documentId });
+  };
+
+  // Function to start a new chat
+  const handleNewChat = () => {
+    localStorage.removeItem('vault_chat_history');
+    setMessages([{ sender: 'ai', text: 'New chat started. Upload a document or ask a question.' }]);
   };
 
   return (
     <div className="App">
+      {/* New Chat Button */}
+      <button onClick={handleNewChat} className="new-chat-button">New Chat</button>
+
       <div className="chat-container">
         <div className="messages">
           {messages.map((msg, index) => (
@@ -70,14 +97,13 @@ function App() {
                 {msg.isLoading ? <div className="loader"></div> : <p>{msg.text}</p>}
                 {msg.results && (
                   <div className="results">
-                    <p>{msg.results.answer}</p>
                     <details>
                       <summary>Show Sources</summary>
                       {msg.results.sources.map((source, i) => (
                         <div key={i} className="result-item">
                           <p>
                             <strong 
-                              onClick={() => handleSourceClick(source.metadata.documentId)} 
+                              onClick={() => handleSourceClick(source)}
                               style={{cursor: 'pointer', color: '#00aaff', textDecoration: 'underline'}}
                             >
                               Source (Doc ID: {source.metadata.documentId})
@@ -95,7 +121,7 @@ function App() {
           <div ref={messagesEndRef} />
         </div>
       </div>
-      
+
       <div className="input-form">
         <label htmlFor="file-upload" className="upload-button">📎</label>
         <input id="file-upload" type="file" onChange={handleFileUpload} style={{ display: 'none' }} accept=".pdf" />
@@ -105,17 +131,12 @@ function App() {
         </form>
       </div>
 
-      {viewingPdf && (() => {
-        const fileUrl = `http://localhost:5000/api/documents/${viewingPdf.id}`;
-        // --- LOG 2 ---
-        console.log(`[App.js] Rendering PdfViewer component with URL: ${fileUrl}`);
-        return (
-          <PdfViewer 
-            fileUrl={fileUrl} 
-            onClose={() => setViewingPdf(null)} 
-          />
-        );
-      })()}
+      {viewingPdf && (
+        <PdfViewer 
+          fileUrl={`http://localhost:5000/api/documents/${viewingPdf.id}`} 
+          onClose={() => setViewingPdf(null)} 
+        />
+      )}
     </div>
   );
 }

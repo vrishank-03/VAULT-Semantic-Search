@@ -249,3 +249,21 @@ body {
   background-color: #ff4545; /* Red on hover for a clear action */
   transform: scale(1.1); /* Slight zoom effect */
 }
+
+.new-chat-button {
+  position: absolute;
+  top: 15px;
+  left: 15px;
+  padding: 10px 15px;
+  background-color: #333;
+  color: white;
+  border: 1px solid #555;
+  border-radius: 8px;
+  cursor: pointer;
+  z-index: 100;
+  transition: background-color 0.2s;
+}
+
+.new-chat-button:hover {
+  background-color: #444;
+}
