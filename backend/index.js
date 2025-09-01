@@ -41,10 +41,13 @@ app.post('/api/documents/upload', upload.single('document'), async (req, res) =>
 
 // POST /api/search
 app.post('/api/search', async (req, res) => {
-  const { query } = req.body;
+  // Now we expect 'query' and 'history' from the request body
+  const { query, history } = req.body;
+
   if (!query) return res.status(400).json({ error: 'Query is required.' });
+
   try {
-    const ragResult = await performRAG(query);
+    const ragResult = await performRAG(query, history); // Pass history to the function
     res.status(200).json(ragResult);
   } catch (error) {
     console.error('Error during RAG search:', error);
