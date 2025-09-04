@@ -1,8 +1,7 @@
+cat > README.md << 'EOF'
 # VAULT: An Enterprise-Grade Semantic Search & Q&A Engine
 
 VAULT is a full-stack application that transforms how you interact with your documents. Instead of relying on simple keyword matching, it uses a sophisticated **Retrieval-Augmented Generation (RAG)** pipeline to provide conversational, context-aware answers to natural language questions based on the content of your private PDF files.
-
-
 
 ## Table of Contents
 - [About The Project](#about-the-project)
@@ -15,48 +14,52 @@ VAULT is a full-stack application that transforms how you interact with your doc
 - [Usage](#usage)
 - [API Endpoints](#api-endpoints)
 - [Roadmap](#roadmap)
+- [Project Difficulty and Commonality](#project-difficulty-and-commonality)
 
 ---
 ## About The Project
 
-Traditional search methods often fail because they can't understand user intent or the context within a document. VAULT solves this by creating a "meaning map" of your documents using vector embeddings. When you ask a question, it retrieves the most semantically relevant information and then uses a Large Language Model (LLM) to generate a precise, conversational answer, complete with source citations that link back to the exact location in the original document.
+Traditional search methods often fail because they can't understand user intent or the context within a document. VAULT solves this by creating a "meaning map" of your documents using vector embeddings. When you ask a question, an **agentic, multi-step RAG pipeline** understands your intent, retrieves the most semantically relevant information, and then uses a Large Language Model (LLM) to generate a precise, conversational answer, complete with source citations that link back to the original document.
 
 ---
 ## Core Features
 
-* **Semantic Search:** Go beyond keywords. Search based on the conceptual meaning of your queries.
-* **Conversational Q&A:** Get direct, synthesized answers from your documents, powered by a Google Gemini RAG pipeline.
-* **Client-Side PDF Processing:** The browser intelligently parses PDFs, extracting text along with its positional data (page number, coordinates).
-* **Interactive Source Highlighting:** Click on a source in the AI's answer, and the original PDF will open in a side panel, automatically scrolling to and highlighting the exact text chunk used.
-* **Modern Chat UI:** A sleek, responsive, and professional user interface built with React.
-* **Private & Local:** The core embedding model runs locally, and your documents are stored on your backend, ensuring privacy.
+* **Conversational Q&A:** Get direct, synthesized answers from your documents, powered by a sophisticated, multi-step Google Gemini RAG pipeline.
+* **Smart Query Analysis:** An initial LLM call analyzes user intent and chat history to transform natural language questions into precise queries for the best possible retrieval.
+* **Interactive Source Viewer:** Click on a source citation in the AI's answer to open the original PDF in an animated side panel for easy verification.
+* **Persistent Memory:** Chat history is saved in the browser, allowing for continuous, multi-turn conversations that persist across sessions.
+* **Modern Chat UI:** A sleek, responsive, and professional user interface built with React, featuring a dark theme and Markdown rendering for formatted AI responses.
+* **Private & Local:** The core embedding model (`sentence-transformers`) runs locally on the backend, ensuring your document content remains private.
+* **Multi-Tenant Architecture:** JWT-based authentication ensures strict data isolation between different user teams.
 
 ---
 ## Architecture
 
-VAULT is built on a modern, decoupled full-stack architecture. The core logic is a Retrieval-Augmented Generation (RAG) pipeline.
+VAULT is built on a modern, decoupled full-stack architecture. The core logic is an advanced, multi-step Retrieval-Augmented Generation833 (RAG) pipeline that happens entirely on the backend.
 
 **Document Ingestion Flow:**
-`PDF File (Browser)` → `Client-Side Parsing (PDF.js)` → `JSON (Chunks + Positional Data)` → `Backend API` → `Embedding (Local Model)` → `Store (SQLite + ChromaDB)`
+`PDF File (Browser)` → `Backend API (File Upload)` → `Parsing & Chunking (LangChain)` → `Embedding (Local Model)` → `Store (SQLite + ChromaDB)`
 
 **Query Flow:**
-`User Query (Browser)` → `Backend API` → `[RAG Pipeline]` → `Final Answer (Browser)`
+`User Query + History (Browser)` → `Backend API` → `[RAG Pipeline]` → `Final Answer (Browser)`
 
 **RAG Pipeline Breakdown:**
-1.  **Retrieve:** The user's query is converted to a vector using the local embedding model. This vector is used to find the most similar text chunks from **ChromaDB**.
-2.  **Augment:** The retrieved chunks and the original query are combined into a detailed prompt.
-3.  **Generate:** The augmented prompt is sent to the **Google Gemini API**, which generates a final, conversational answer.
+
+1.  **Query Analysis (LLM Call #1):** The user's query, chat history, and a list of available documents are sent to the Gemini API. It analyzes the user's true intent and transforms the question into a keyword-rich query optimized for semantic retrieval.
+2.  **Retrieve:** The transformed query is converted to a vector using the local embedding model. This vector is used to find the most similar text chunks from **ChromaDB**.
+3.  **Re-rank (LLM Call #2):** The retrieved chunks are sent back to the Gemini API, which acts as a re-ranker, filtering for only the most relevant chunks.
+4.  **Generate (LLM Call #3):** The final, clean context is combined with system status and chat history into a detailed prompt. This is sent to the Gemini API to synthesize a final, conversational answer.
 
 ---
 ## Tech Stack
 
-| Category         | Technology                                                                                                  |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Frontend** | React.js, Axios, `react-pdf`                                                                                |
-| **Backend** | Node.js, Express.js                                                                                         |
-| **Databases** | **ChromaDB** (Vector Store), **SQLite** (Relational Metadata)                                                 |
-| **AI / ML** | **Google Gemini API** (Generation), `sentence-transformers` (Local Embeddings), `langchain` (Text Splitting) |
-| **Tooling** | Git, Docker Desktop, VS Code, `nodemon`                                                                     |
+| Category         | Technology                                                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Frontend**     | React.js, Axios, `react-pdf`, `react-markdown`, `react-icons`                                                                            |
+| **Backend**      | Node.js, Express.js, `multer`                                                                                                           |
+| **Databases**    | **ChromaDB** (Vector Store), **SQLite** (Relational Metadata)                                                                            |
+| **AI / ML**      | **Google Gemini API** (Generation & Analysis), `sentence-transformers` (Local Embeddings), `langchain` (Text Splitting)                    |
+| **Tooling**      | Git, Docker Desktop, VS Code, `nodemon`, `dotenv`, Postman, npm/yarn                                                                     |
 
 ---
 ## Getting Started
@@ -70,12 +73,14 @@ You must have the following software installed on your machine:
 * [Python](https://www.python.org/)
 * [Git](https://git-scm.com/)
 * [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+* [Postman](https://www.postman.com/) (for API testing)
+* Web Browser: Google Chrome, Firefox, or Microsoft Edge
 
 ### Installation
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/vrishank-03/VAULT-Semantic-Search.git](https://github.com/vrishank-03/VAULT-Semantic-Search.git)
+    git clone https://github.com/vrishank-03/VAULT-Semantic-Search.git
     cd VAULT-Semantic-Search
     ```
 2.  **Install Frontend Dependencies:**
@@ -117,7 +122,6 @@ You must have the following software installed on your machine:
         require('dotenv').config();
         const API_KEY = process.env.GEMINI_API_KEY;
         ```
-        And remove the line where you hardcoded the key.
 
 6.  **Run the Application Stack:**
     * **Terminal 1 (Database):** Start Docker Desktop, then run:
@@ -137,10 +141,11 @@ You must have the following software installed on your machine:
 ---
 ## Usage
 
-1.  Click the paperclip icon `📎` to select and upload a PDF. The application will process it in your browser and save it to the backend.
-2.  Ask a question in the chat box related to the content of your uploaded document(s).
-3.  The AI will provide an answer. Click "Show Sources" to see the text chunks used.
-4.  Click on a source link to open the original PDF in a side panel, which will automatically scroll to and highlight the relevant section.
+1. Click the paperclip icon to select and upload one or more PDF files. The backend will process them.
+2. Ask a question in the chat box. You can ask about the content of a specific document (e.g., "Summarize document ID 10") or ask general questions about the conversation (e.g., "How many documents have I uploaded?").
+3. The AI will provide a formatted, conversational answer.
+4. Click "Show Sources" to see the text chunks used to generate the answer.
+5. Click on a source link to open the original PDF in a side panel for verification.
 
 ---
 ## API Endpoints
@@ -154,7 +159,7 @@ You must have the following software installed on your machine:
 ---
 ## Roadmap
 
--   [ ] **Advanced Conversational Memory:** Implement a more sophisticated method for summarizing and using chat history.
+-   [ ] **Advanced Conversational Memory:** Implement a more sophisticated method for summarizing and using long chat histories to reduce token usage.
 -   [ ] **Support for More File Types:** Add processors for `.docx`, `.txt`, and `.md` files.
--   [ ] **Background Job Queue:** Move the embedding and database-saving process to a background job queue for handling extremely large documents without blocking the server.
--   [ ] **Improved Table Parsing:** Implement a specialized chunking strategy to better understand and query tabular data within PDFs.
+-   [ ] **Background Job Queue:** Move the embedding and database-saving process to a background job queue (e.g., using Redis) for handling extremely large documents without timing out.
+-   [ ] **Improved Table Parsing:** Implement a specialized chunking strategy to better understand and query tabular data within documents.
