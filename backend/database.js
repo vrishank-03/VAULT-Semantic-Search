@@ -28,7 +28,6 @@ async function saveDocumentChunks(documentName, filePath, chunksWithVectors) {
       const documentId = this.lastID;
       console.log(`Document saved to SQLite with ID: ${documentId}`);
 
-      // NEW: Check if there are any chunks to save before proceeding
       if (chunksWithVectors.length === 0) {
         console.log("No chunks with vectors to save. Skipping ChromaDB.");
         return resolve({ documentId, chunks: 0 });

@@ -10,16 +10,37 @@ const chromaClient = new ChromaClient({ path: "http://localhost:8000" });
 const genAI = new GoogleGenerativeAI(API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest"});
 
+// Helper function for resilient API calls
+async function generateWithRetry(prompt, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result; // Success
+    } catch (error) {
+      if (error.status === 503 && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.warn(`Gemini API overloaded. Retrying in ${delay / 1000} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw error; // A different error or max retries reached
+      }
+    }
+  }
+}
+
 async function performRAG(queryText, history = []) {
+  // THIS LINE IS NO LONGER NEEDED AS 'db' IS IMPORTED DIRECTLY
+  // const db = getDb(); 
+  
   const formattedHistory = history.map(msg => `${msg.sender === 'user' ? 'User' : 'AI'}: ${msg.text}`).join('\n');
   const docList = await new Promise((resolve, reject) => {
-    db.all('SELECT id, name FROM documents ORDER BY id DESC', [], (err, rows) => { // Get latest first
+    db.all('SELECT id, name FROM documents ORDER BY id DESC', [], (err, rows) => {
       if (err) return reject(err);
       resolve(rows || []);
     });
   });
 
-  // --- UPGRADE: LLM CALL #1 - THE QUERY ANALYZER ---
+  // --- LLM CALL #1 - THE QUERY ANALYZER ---
   const queryAnalyzerPrompt = `You are an expert query analyzer. Your task is to understand the user's intent based on their latest question and the conversation history. Transform their question into a concise and keyword-rich query suitable for a semantic vector search.
 
   RULES:
@@ -45,14 +66,11 @@ async function performRAG(queryText, history = []) {
   Transformed Search Query:`;
 
   console.log("\n--- SENDING TO QUERY ANALYZER ---");
-  console.log(queryAnalyzerPrompt);
-  console.log("---------------------------------\n");
-
-  const analyzerResult = await model.generateContent(queryAnalyzerPrompt);
+  const analyzerResult = await generateWithRetry(queryAnalyzerPrompt);
   const transformedQuery = await analyzerResult.response.text();
   console.log(`Transformed Query for Semantic Search: "${transformedQuery}"`);
 
-  // 1. RETRIEVE (using the new, smarter query)
+  // 1. RETRIEVE
   const queryEmbedding = await getEmbeddingForQuery(transformedQuery);
   const collection = await chromaClient.getCollection({ name: "documents" });
   const initialResults = await collection.query({
@@ -61,37 +79,35 @@ async function performRAG(queryText, history = []) {
   });
 
   // --- RE-RANKING LOGIC ---
-const rerankPrompt = `You are a helpful re-ranking assistant. From the following list of document chunks, identify ONLY the chunks that are the most relevant to the user's question. List the indices of the relevant chunks as a JSON array of numbers. For example: [0, 2, 4].
+  const rerankPrompt = `You are a helpful and professional re-ranking assistant. From the following list of document chunks, identify ONLY the chunks that are the most relevant to the user's question. List the indices of the relevant chunks as a JSON array of numbers. For example: [0, 2, 4].
 
-User's Question: "${queryText}"
+  User's Question: "${queryText}"
 
-Document Chunks:
----
-${initialResults.documents[0].map((doc, i) => `[Chunk ${i}]:\n${doc}`).join('\n---\n')}
----
+  Document Chunks:
+  ---
+  ${initialResults.documents[0].map((doc, i) => `[Chunk ${i}]:\n${doc}`).join('\n---\n')}
+  ---
 
-Relevant Chunk Indices (JSON array):`;
+  Relevant Chunk Indices (JSON array):`;
 
-const rerankResult = await model.generateContent(rerankPrompt);
-const rerankResponse = await rerankResult.response;
-let relevantIndices = [];
-try {
-  const jsonString = rerankResponse.text().match(/\[(.*?)\]/)[0];
-  relevantIndices = JSON.parse(jsonString);
-} catch (e) {
-  console.error("Could not parse re-ranker response, using top 3 results as fallback.", e);
-  relevantIndices = [0, 1, 2]; 
-}
+  const rerankResult = await generateWithRetry(rerankPrompt);
+  const rerankResponse = await rerankResult.response;
+  let relevantIndices = [];
+  try {
+    const jsonString = rerankResponse.text().match(/\[(.*?)\]/)[0];
+    relevantIndices = JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Could not parse re-ranker response, using top 3 results as fallback.", e);
+    relevantIndices = [0, 1, 2]; 
+  }
 
-const relevantSources = relevantIndices.map(index => ({
+  const relevantSources = relevantIndices.map(index => ({
     text: initialResults.documents[0][index],
     metadata: initialResults.metadatas[0][index]
-})).filter(Boolean);
-// --- END OF RE-RANKING LOGIC ---
+  })).filter(Boolean);
 
-  // 2. AUGMENT (The prompt for the final answer is now simpler)
+  // 2. AUGMENT
   const docCount = docList.length;
-  const systemStatus = `The user has currently uploaded a total of ${docCount} document(s).`;
   const labeledContext = relevantSources.length > 0
     ? relevantSources.map(source => `[Source from Document ID ${source.metadata.documentId}]:\n${source.text}`).join('\n---\n')
     : "No relevant document chunks were found for this query.";
@@ -111,10 +127,7 @@ const relevantSources = relevantIndices.map(index => ({
   Answer:`;
   
   console.log("\n--- FINAL PROMPT SENT TO GEMINI ---");
-  console.log(finalPrompt);
-  console.log("---------------------------------\n");
-
-  const finalResult = await model.generateContent(finalPrompt);
+  const finalResult = await generateWithRetry(finalPrompt);
   const finalResponse = await finalResult.response;
   const answer = finalResponse.text();
   
