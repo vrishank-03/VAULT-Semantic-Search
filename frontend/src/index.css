@@ -1,13 +1,84 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,100..900;1,100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Apply Inter font to the entire body */
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* background-color: #1a202c; Default dark background for the page */
+  /* color: #e2e8f0; Default text color for the page */
 }
 
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+}
+
+/* Blinking cursor animation for the typewriter effect */
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink {
+  animation: blink 1s step-start infinite;
+  font-weight: 200; /* Thin look for the cursor */
+}
+
+/*
+  The main container for the login page, now covering the whole screen.
+  We'll use a specific background image for the blurred effect as an overlay
+  or pseudo-element. The image path should be correct for your `assets_logo` variable.
+*/
+.login-page-background {
+    /* Main background color */
+    background-color: #1A202C; /* Dark blue/gray */
+    position: relative;
+    overflow: hidden; /* Ensures blur/mask effects are contained */
+}
+
+/* Glassmorphic card styling */
+.glassmorphic-card {
+  background-color: rgba(255, 255, 255, 0.08); /* Semi-transparent white */
+  /* This is the magic for the glass effect */
+  backdrop-filter: blur(12px); /* Adjust blur strength as needed */
+  -webkit-backdrop-filter: blur(12px); /* For Safari support */
+  border: 1px solid rgba(255, 255, 255, 0.18); /* Subtle white border */
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); /* Stronger shadow for depth */
+}
+
+/* Custom font utility classes for specific weights from Inter */
+.font-inter-thin {
+  font-weight: 100;
+}
+.font-inter-extralight {
+  font-weight: 200;
+}
+.font-inter-regular {
+  font-weight: 400;
+}
+/* Already have font-extrabold from Tailwind for 800 */
+
+/*
+  Override default input styles for the glassmorphic form.
+  This ensures inputs are transparent, text is white, and placeholders are visible.
+*/
+.glassmorphic-card input {
+  background-color: rgba(255, 255, 255, 0.05) !important; /* Slightly more transparent */
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: white !important;
+}
+
+.glassmorphic-card input::placeholder {
+  color: rgba(255, 255, 255, 0.6) !important; /* Lighter placeholder text */
+}
+
+.glassmorphic-card label {
+    color: white !important; /* Ensure labels are white */
 }

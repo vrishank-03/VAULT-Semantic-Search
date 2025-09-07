@@ -3,109 +3,92 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
+require('dotenv').config();
+
+const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js');
 const { processDocument } = require('./documentProcessor.js');
-const { saveDocumentChunks, db } = require('./database.js');
 const { performRAG } = require('./searchService.js');
+const authRoutes = require('./routes/authRoutes');
+const { protect } = require('./middleware/authMiddleware');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 // --- MIDDLEWARE ---
-app.use(cors());
+app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 app.use(morgan('dev'));
 
-// --- FILE STORAGE CONFIG ---
+// --- FILE STORAGE ---
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) { cb(null, 'storage/'); },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage: storage });
-
-// --- API ENDPOINTS ---
-
-// POST /api/documents/upload - WITH CORRECTED ERROR HANDLING
-app.post('/api/documents/upload', upload.array('documents', 10), async (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: 'No files uploaded.' });
-  }
-
-  console.log(`Received batch of ${req.files.length} files for processing.`);
-  
-  // We wrap the entire process in a single try...catch block.
-  try {
-    let successCount = 0;
-    let documentIds = [];
-
-    // Process files sequentially. If any file throws an error,
-    // the execution will jump immediately to the catch block below.
-    for (const file of req.files) {
-      const chunksWithVectors = await processDocument(file.path);
-      const result = await saveDocumentChunks(file.originalname, file.path, chunksWithVectors);
-      successCount++;
-      documentIds.push(result.documentId);
+    destination: (req, file, cb) => cb(null, 'storage/'),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, `user_${req.user.id}_${uniqueSuffix}${path.extname(file.originalname)}`);
     }
+});
+const upload = multer({ storage });
 
-    // This success response is now ONLY sent if the entire loop completes without error.
-    res.status(201).json({
-      message: `Batch processing complete. Success: ${successCount}`,
-      documentIds
-    });
+// --- API ROUTES ---
+app.use('/api/auth', authRoutes);
 
-  } catch (error) {
-    // If any file in the batch fails, we send a single 500 error response.
-    console.error(`A critical error occurred during batch processing:`, error);
-    res.status(500).json({
-      error: 'A file in the batch could not be processed.',
-      details: error.message
-    });
-  }
+// --- PROTECTED ROUTES ---
+app.post('/api/documents/upload', protect, upload.array('documents', 10), async (req, res) => {
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded.' });
+    }
+    try {
+        const userId = req.user.id; // Get user ID from middleware
+        let documentIds = [];
+        for (const file of req.files) {
+            const chunksWithVectors = await processDocument(file.path);
+            const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors);
+            documentIds.push(result.documentId);
+        }
+        res.status(201).json({ message: `Success`, documentIds });
+    } catch (error) {
+        console.error(`Error during batch processing:`, error);
+        res.status(500).json({ error: 'A file could not be processed.', details: error.message });
+    }
 });
 
-
-// POST /api/search
-app.post('/api/search', async (req, res) => {
-  const { query, history } = req.body;
-  if (!query) return res.status(400).json({ error: 'Query is required.' });
-  try {
-    const ragResult = await performRAG(query, history);
-    res.status(200).json(ragResult);
-  } catch (error) {
-    console.error('Error during RAG search:', error);
-    res.status(500).json({ error: 'Failed to perform search. Please try again later...🤕' });
-  }
+app.post('/api/search', protect, async (req, res) => {
+    const { query, history } = req.body;
+    if (!query) return res.status(400).json({ error: 'Query is required.' });
+    try {
+        const ragResult = await performRAG(req.user.id, query, history); // Pass user ID
+        res.status(200).json(ragResult);
+    } catch (error) {
+        console.error('Error during RAG search:', error);
+        res.status(500).json({ error: 'Failed to perform search.' });
+    }
 });
 
-// GET /api/documents/:id
-app.get('/api/documents/:id', (req, res) => {
-  const { id } = req.params;
-  console.log(`[Backend] Request received for document with ID: ${id}`);
-  db.get('SELECT file_path FROM documents WHERE id = ?', [id], (err, row) => {
-    if (err) {
-      console.error("[Backend] Database error:", err);
-      return res.status(500).json({ error: 'Database error.' });
-    }
-    if (!row) {
-      console.error(`[Backend] Document with ID ${id} not found in database.`);
-      return res.status(404).json({ error: 'Document not found.' });
-    }
-    const resolvedPath = path.resolve(__dirname, row.file_path);
-    console.log(`[Backend] Database query successful. Found file path: ${row.file_path}`);
-    console.log(`[Backend] Attempting to send file from resolved path: ${resolvedPath}`);
-    res.sendFile(resolvedPath, (err) => {
-      if (err) {
-        console.error(`[Backend] Error sending file:`, err);
-      } else {
-        console.log(`[Backend] File sent successfully!`);
-      }
+app.get('/api/documents/:id', protect, (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const db = getDb();
+    // Security Check: Ensure the document belongs to the logged-in user
+    db.get('SELECT file_path FROM documents WHERE id = ? AND user_id = ?', [id, userId], (err, row) => {
+        if (err || !row) {
+            return res.status(404).json({ error: 'Document not found or access denied.' });
+        }
+        const resolvedPath = path.resolve(__dirname, row.file_path);
+        res.sendFile(resolvedPath);
     });
-  });
 });
 
 // --- SERVER START ---
-app.listen(PORT, () => {
-  console.log(`Backend server is running on http://localhost:${PORT}`);
-});
+initializeDatabase()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Backend server is running on http://localhost:${PORT}`);
+        });
+    })
+    .catch(err => {
+        console.error("Failed to initialize database:", err);
+        process.exit(1);
+    });
