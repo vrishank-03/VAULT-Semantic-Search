@@ -10,8 +10,6 @@ body {
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* background-color: #1a202c; Default dark background for the page */
-  /* color: #e2e8f0; Default text color for the page */
 }
 
 code {
@@ -19,17 +17,9 @@ code {
     monospace;
 }
 
-/* Blinking cursor animation for the typewriter effect */
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
+/* --- DELETED OLD BLINK ANIMATION --- */
+/* The old blink animation has been removed as it conflicted with the new one. */
 
-.cursor-blink {
-  animation: blink 1s step-start infinite;
-  font-weight: 200; /* Thin look for the cursor */
-}
 
 /*
   The main container for the login page, now covering the whole screen.
@@ -81,4 +71,81 @@ code {
 
 .glassmorphic-card label {
     color: white !important; /* Ensure labels are white */
+}
+
+
+/* --- NEW STYLES FOR LOOPING TYPEWRITER --- */
+
+/* Class for the typewriter to apply the requested font style (Inter ExtraLight 200 Italic) */
+.typewriter-font {
+  font-family: 'Inter', sans-serif;
+  font-weight: 200;
+  font-style: italic;
+  /* Uses a CSS variable set by the JS component for dynamic color, with a fallback */
+  color: var(--typewriter-color, #4b5563); /* Default text-gray-600 */
+  transition: color 0.5s ease-in-out;
+}
+
+/* The blinking animation for the cursor */
+.cursor-blink {
+    animation: blink 1s step-end infinite;
+    /* The cursor will also get its color from the CSS variable for a perfect match */
+    color: var(--typewriter-color, #4b5563);
+    transition: color 0.5s ease-in-out;
+}
+
+@keyframes blink {
+    from, to {
+        color: transparent;
+    }
+    50% {
+        /* 'inherit' makes the cursor take on the color of its parent, which is set by the JS */
+        color: inherit;
+    }
+}
+
+/* Ensure the typing effect span itself inherits the parent's color correctly */
+.typing-effect {
+    color: inherit;
+}
+
+.scan-line {
+  top: 0;
+  animation: scan 2.5s ease-in-out infinite;
+}
+
+@keyframes scan {
+  0% { top: -10%; }
+  50% { top: 110%; }
+  100% { top: 110%; }
+}
+
+.chunk {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  background-color: #67e8f9; /* cyan-300 */
+  border-radius: 50%;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0);
+  animation: burst 2.5s ease-out infinite;
+  animation-delay: var(--delay, 0s);
+}
+
+@keyframes burst {
+  0%, 40% { /* Start bursting after scan line passes halfway */
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0);
+  }
+  60% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    /* Use CSS variables passed from the component for dynamic positions */
+    transform: translate(var(--x), var(--y)) scale(0);
+  }
 }
