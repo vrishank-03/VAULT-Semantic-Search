@@ -1,36 +1,26 @@
 import React from 'react';
-import Typewriter from './Typewriter';
-import logo from '../assets/logo.png';
+// This 'require' syntax is used to ensure the bundler can resolve the image path correctly.
+const logo = require('../assets/logo.png');
 
 const AuthLayout = ({ children }) => {
     return (
-        <div className="min-h-screen font-sans antialiased text-gray-900 bg-gray-50">
-            <div className="grid md:grid-cols-2 min-h-screen">
-                {/* Left Side: Branding & Animation */}
-                <div className="relative flex-col items-center justify-center hidden h-full bg-gray-900 md:flex">
-                    {/* Blurred Background Logo */}
-                    <img
-                        src={logo}
-                        alt="VAULT Logo Background"
-                        className="absolute object-contain w-full h-full transform -translate-x-1/2 -translate-y-1/2 opacity-10 top-1/2 left-1/2 filter blur-3xl"
-                    />
+        // Main container: full screen, centers content, and hides overflow from the giant logo.
+        <div className="relative min-h-screen w-full bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden p-4">
+            
+            {/* Background Logo Element */}
+            {/* This is the huge, blurred, semi-circle logo. */}
+            {/* It's `fixed` to stay in place. */}
+            {/* Positioned on the left edge and halfway off-screen to create the semi-circle. */}
+            {/* `pointer-events-none` is crucial so you can click the form on top of it. */}
+            <div
+                className="fixed top-1/2 left-0 transform -translate-y-1/2 -translate-x-1/2 w-[120vh] h-[120vh] bg-no-repeat bg-center bg-contain opacity-5 dark:opacity-[0.02] pointer-events-none filter blur-xl"
+                style={{ backgroundImage: `url(${logo})` }}
+            ></div>
 
-                    {/* Content */}
-                    <div className="z-10 p-12 text-left">
-                        <img src={logo} alt="VAULT Logo" className="w-16 h-16 mb-6" />
-                        <h1 className="text-4xl font-bold text-white">
-                            VAULT
-                        </h1>
-                        <div className="mt-2 text-xl font-medium text-gray-300 h-16">
-                           <Typewriter text="Enterprise-Grade RAG Q&A System" />
-                        </div>
-                    </div>
-                </div>
-
-                {/* Right Side: Form */}
-                <div className="flex items-center justify-center w-full bg-white">
-                    {children}
-                </div>
+            {/* Content Container */}
+            {/* `z-10` ensures this content (your login page) appears ON TOP of the background logo. */}
+            <div className="relative z-10 w-full max-w-md">
+                {children}
             </div>
         </div>
     );

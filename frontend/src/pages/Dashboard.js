@@ -7,6 +7,7 @@ import Toast from '../Toast';
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
 import { motion } from 'framer-motion';
+import ProcessingAnimation from '../components/ProcessingAnimation'; // Import the new component
 
 const getInitialMessages = () => {
     return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your knowledge base.' }];
@@ -16,6 +17,7 @@ function Dashboard() {
     const [messages, setMessages] = useState(getInitialMessages);
     const [input, setInput] = useState('');
     const [isSearching, setIsSearching] = useState(false);
+    const [isUploading, setIsUploading] = useState(false); // New state for upload animation
     
     const [pdfUrl, setPdfUrl] = useState(null);
     const [isPdfLoading, setIsPdfLoading] = useState(false);
@@ -39,14 +41,8 @@ function Dashboard() {
         setIsSearching(true);
 
         try {
-            console.log("[LOG] --- FRONTEND: Sending search request... ---");
             const result = await search(input, currentHistory);
-            // This is the key log to see what the client receives
-            console.log("[LOG] --- FRONTEND: Received full response object from server: ---", result);
-
-            // **CRITICAL FIX**: Axios nests the actual JSON data under the 'data' key.
             const responseData = result.data;
-            console.log("[LOG] --- FRONTEND: Extracted data from response: ---", responseData);
 
             if (!responseData || typeof responseData.answer === 'undefined') {
                 throw new Error("Invalid response structure from server.");
@@ -68,15 +64,22 @@ function Dashboard() {
     const handleFileUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
-        setToast({ message: `Uploading ${files.length} document(s)...`, type: 'info' });
+
+        setIsUploading(true); // --- Start the animation ---
+        setToast(null); // Clear any existing toasts
+        
         try {
             const result = await uploadDocument(files);
-            console.log("[LOG] --- FRONTEND: File upload successful. Response: ---", result);
-            // Corrected to access the nested 'data' property from the axios response
             setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
         } catch (error) {
             console.error("[LOG] --- FRONTEND: File upload failed: ---", error);
             setToast({ message: `Upload failed. Please try again.`, type: 'error' });
+        } finally {
+            setIsUploading(false); // --- Stop the animation ---
+            // Clear the file input value so the same file can be uploaded again
+            if(fileInputRef.current) {
+                fileInputRef.current.value = "";
+            }
         }
     };
     
@@ -103,10 +106,12 @@ function Dashboard() {
         setPdfUrl(null);
     };
 
-    const handleNewChat = () => setMessages(getInitialMessages());
+    const handleNewChat = () => setMessages(getInitialMessages);
 
     return (
         <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
+            {isUploading && <ProcessingAnimation />} {/* --- Render the animation overlay --- */}
+
             <Sidebar handleNewChat={handleNewChat} />
             
             <div className="flex flex-col flex-grow relative">
@@ -208,4 +213,3 @@ function Dashboard() {
 }
 
 export default Dashboard;
-
