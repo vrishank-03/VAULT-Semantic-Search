@@ -21,9 +21,8 @@ api.interceptors.request.use((config) => {
 });
 
 // ==================================================================
-// 3. NEW: RESPONSE INTERCEPTOR: HANDLE 401 ERRORS GLOBALLY
+// 3. RESPONSE INTERCEPTOR: HANDLE 401 ERRORS GLOBALLY
 // ==================================================================
-// This function runs AFTER a response is received.
 api.interceptors.response.use(
   (response) => response, // Directly return successful responses.
   (error) => {
@@ -32,9 +31,7 @@ api.interceptors.response.use(
       // 1. Remove the invalid token
       localStorage.removeItem('token');
       // 2. Redirect to the login page
-      // Use window.location to force a page reload, clearing all app state.
       window.location.href = '/login'; 
-      // You could also use a routing library's navigation function here.
     }
     // For all other errors, just reject the promise.
     return Promise.reject(error);
@@ -43,12 +40,16 @@ api.interceptors.response.use(
 
 
 // ==================================================================
-// 4. YOUR API FUNCTIONS (Unchanged)
+// 4. OUR API FUNCTIONS
 // ==================================================================
 
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
 
 export const signupUser = (userData) => api.post('/auth/signup', userData);
+
+// --- Added the missing googleLogin function ---
+// This function sends the Google credential to your backend's /auth/google endpoint.
+export const googleLogin = (credential) => api.post('/auth/google', { credential });
 
 export const uploadDocument = (files) => {
     const formData = new FormData();

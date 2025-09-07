@@ -1,162 +1,130 @@
 # VAULT — Semantic Search / RAG Prototype (Developer Reference)
 
-This README documents the VAULT codebase in technical depth — architecture, component contracts, data models, environment variables, run/debug commands, API details, embedding and vector store contracts, and recommended operational practices.
+Welcome — this README is a concise, developer-focused reference for VAULT: a Retrieval-Augmented Generation (RAG) prototype that indexes PDF documents, stores chunk vectors in a vector store (Chroma by default), and delivers retrieval-backed answers via an LLM-backed orchestration.
 
-Table of contents
------------------
-- Project summary and goals
-- Architecture and responsibilities (deep)
-- File-by-file technical map and contracts
-- Data models, schemas and on-disk layout
-- Environment variables and configuration
-- Local development: step-by-step (Windows / bash.exe)
-- Embedding runner contract: `embedder.py` and `ml_runner.js`
-- Vector store contract: Chroma usage and `query_chroma.js`
-- `searchService.js` — retrieval + generation orchestration (detailed flow)
-- API reference (endpoints, request/response, error cases)
-- Testing, debugging, and logs
-- Deployment and scaling notes
-- Security, privacy, and operational concerns
-- Next steps and improvements
+What you'll find here
+- Quick project summary and goals
+- Architecture and component responsibilities
+- Precise file map (what each file does)
+- Data models and on-disk layout
+- Environment variables and local setup (Windows / bash.exe)
+- Embedding and vector store contracts
+- API reference and important endpoints
+- Testing, debugging, and troubleshooting
+- Security, deployment, and next steps
 
-Project summary and goals
--------------------------
-VAULT is a prototype for retrieval-augmented generation over a corpus of PDF documents. It focuses on: 1) reliable PDF ingestion and chunking, 2) embedding generation via a pluggable runner, 3) vector storage in Chroma (or an equivalent), 4) query-time retrieval and LLM composition, and 5) a React frontend that surfaces answers with source links back to the PDF.
+Quick project summary
+---------------------
+VAULT is designed to demonstrate a small, maintainable RAG pipeline:
+- Ingest PDFs, extract text and chunk it while preserving page boundaries.
+- Generate embeddings using a pluggable Python embedder (`backend/embedder.py`).
+- Store embeddings and chunk metadata in a vector DB (Chroma) via `backend/query_chroma.js`.
+- Orchestrate retrieval and LLM composition in `backend/searchService.js`.
+- Provide a React frontend (`frontend/`) with auth, upload, search, and PDF navigation UI.
 
-Goals of this README:
-- Provide precise contracts between components so contributors can modify pieces without breaking the system.
-- Capture operational steps for local development and reproduction.
-- Document likely failure modes and how to debug them.
+High-level architecture
+-----------------------
+- Frontend: React SPA in `frontend/` — handles UI, auth, uploads, and displays RAG answers with source links back to PDFs.
+- Backend: Node/Express in `backend/` — handles file storage, processing pipelines, embedding orchestration, vector store access, and API endpoints.
+- ML/Embedding layer: `backend/embedder.py` + `backend/ml_runner.js` — Python model/runner that produces embeddings for text chunks.
+- Vector store: Chroma (local Docker or remote). `backend/query_chroma.js` wraps the low-level client.
 
-Architecture and responsibilities (deep)
----------------------------------------
-High-level components:
-- Frontend (`frontend/`): React SPA that handles login, upload, search UI, and rendering PDFs with page/position navigation.
-- Backend (`backend/`): Node/Express API. Handles uploads, PDF processing, persistence to SQLite, vector store operations, and query orchestration.
-- Embedding helper (`backend/embedder.py` + `ml_env/`): Python script and virtual environment that produce numeric vectors for chunked text.
-- Vector DB (optional): Chroma running locally (Docker) or remote.
+File map — what each important file/folder does
+-----------------------------------------------
+Top-level
+- `LICENSE`, `hierarchical-diagram.md` — repo metadata and an overview tree.
 
-Vertical responsibilities and invariants:
-- The backend owns the canonical mapping of document IDs to filepaths and metadata in SQLite.
-- The vector DB (Chroma) stores vectors and chunk metadata used for nearest-neighbor retrieval. Chunk metadata MUST include a stable document identifier and a chunk index.
-- The embedder is a stateless converter: given a list of strings returns a list of same-length vectors (float arrays). The vector dimension is consistent across calls.
-- The search orchestration is idempotent for retrieval: given the same query and vector DB state, it should produce the same set of candidate chunks.
+backend/
+- `package.json`, `package-lock.json` — backend dependencies and scripts.
+- `index.js` — Express app entrypoint: loads config, initializes DB, mounts routes and starts the server.
+- `database.js` — SQLite access and helper functions (document/user metadata operations).
+- `db_test.js` — quick DB sanity checks / examples.
+- `documentProcessor.js` — PDF parsing and chunking. Produces chunk objects that include page ranges and snippet text.
+- `ml_runner.js` — spawns / manages the embedding process (Node → Python bridging), batches inputs and validates outputs.
+- `embedder.py` — Python embedding script. Reads texts and returns vectors via stdin/stdout or file-based contract.
+- `pipeline_test.py` — Python-side pipeline tests for embedder or parsing behaviors.
+- `clear_chroma_collection.js` — maintenance utility to remove/reset collections in Chroma.
+- `query_chroma.js` — adapter for Chroma: upsert, query, delete helpers that handle metadata shapes.
+- `searchService.js` — orchestrates query embedding, retrieval, optional re-ranking, prompt construction, and LLM calls.
 
-File-by-file technical map and contracts
----------------------------------------
-This section lists each important file and the internal contract / expectations.
+Auth and routing
+- `controllers/authController.js` — handlers for signup/login flows.
+- `routes/authRoutes.js` — mounts auth-related routes.
+- `middleware/authMiddleware.js` — verifies JWT/session and attaches `req.user`.
 
-- `backend/index.js` — app entrypoint
-  - Responsibilities: load configuration, initialize `database.js`, connect to Chroma (if configured), attach middleware, mount routes from `routes/`, then `app.listen`.
-  - Contract: must not call `app.listen` before `database.init()` (or equivalent) completes. Initialization order matters.
+Storage and DB
+- `storage/` — committed sample PDFs and an `uploads/` folder of hashed blobs used by the app during uploads.
+- `vault.db` — example/local SQLite DB file (present in repo for convenience; treat carefully).
 
-- `backend/database.js` — persistence layer
-  - Responsibilities: expose functions to open/initialize SQLite, create tables if missing, and helper functions for document and chunk metadata. Optionally, initialize Chroma client using env variables.
-  - Exposed helpers (recommended API):
-    - `init(dbPath)` — ensures DB file and tables exist.
-    - `saveDocument(documentMeta)` — returns document id.
-    - `getDocument(id)`
-    - `saveChunk(chunkMeta)` — writes chunk metadata if desired (not required if storing everything in Chroma metadata).
-    - `ensureCollections()` — create Chroma collections if missing.
-  - Internal invariant: the path stored in `documents.filepath` must be accessible to backend process for streaming.
+ml_env/
+- A local Python virtual environment containing packages used by `embedder.py` (if present). Prefer to create your own local venv instead of using committed `ml_env`.
 
-- `backend/documentProcessor.js` — PDF extraction and chunking
-  - Responsibilities: open PDF, extract text per page, compute chunk boundaries using configured chunk size and overlap, return array of chunk objects.
-  - Chunk object contract (required fields):
-    - `documentId` (optional at chunk creation time) — stable id assigned after document metadata persisted.
-    - `chunkIndex` — integer index per document, starting at 0.
-    - `text` — UTF-8 cleaned string.
-    - `startPage` — integer page number (1-based) where this chunk begins.
-    - `endPage` — integer page number where this chunk ends.
-    - `charStart` (optional) — character offset within `startPage`.
-    - `charEnd` (optional)
-    - `meta` (optional) — free-form JSON for future needs.
-  - Important behaviors: must preserve page numbers so that UI can jump to the exact page and approximate char/position.
+frontend/
+- `package.json`, `package-lock.json` — frontend dependencies.
+- `public/` — static assets (icons, `index.html`, `pdf.worker.min.js`).
+- `src/` — app source code.
 
-- `backend/ml_runner.js` — Node → Python embedding runner
-  - Responsibilities: run `embedder.py`, stream input texts, receive vectors, and return them to the caller.
-  - Contract:
-    - Input: array of strings.
-    - Output: array of float arrays (same length, same order) or error.
-    - Expected error semantics: on partial failure, runner should either fail whole request or clearly mark which indices failed. Prefer atomic failures for simplicity.
-    - Performance: batch texts (e.g., 256 texts per call) to reduce process overhead.
+Key frontend source files
+- `src/index.js` — app bootstrap and route setup.
+- `src/App.js`, `src/App.css` — root app.
+- `src/PdfViewer.js` — PDF renderer with page navigation anchors.
+- `src/ProtectedRoute.js` — legacy/alternate route guard (if used).
+- `src/Toast.js`, `src/Toast.css` — UI toast notifications.
 
-- `backend/embedder.py` — Python embedding script
-  - Responsibilities: run inside `ml_env` and expose a CLI or stdin JSON contract for embedding texts.
-  - Minimal interface patterns (choose one and document which is used):
-    1. CLI: `python embedder.py --input texts.json --output vectors.json`
-    2. stdin/stdout JSON streaming: read JSON array from stdin and write JSON array of vectors to stdout.
-  - Vector format: JSON array of arrays (floats). Example: [[0.0123, -0.234, ...], ...]
-  - Important: embedder must guarantee deterministic dimension and consistent ordering.
+Services, pages and components
+- `src/services/api.js` — HTTP client wrapper for backend endpoints (auth token injection, baseURL, error handling).
+- `src/pages/` — `Dashboard.js`, `LoginPage.js`, `SignupPage.js`.
+- `src/components/` — modular UI components used across pages:
+  - `AuthLayout.js` — layout for auth pages.
+  - `Navbar.js` — top navigation bar.
+  - `PrivateRoute.js` — Outlet-based route guard for protected views.
+  - `Sidebar.js` — app navigation sidebar.
+  - `ThemeToggleButton.js` — switch light/dark themes.
+  - `Typewriter.js` — small typewriter text effect used in landing or headers.
+  - `GoogleLoginButton.js` — Google OAuth sign-in button (uses `@react-oauth/google`).
+  - `SuccessAnimation.js` — visual success animation used in UI flows.
+  - `ProcessingAnimation.js` — processing/loading animation for long-running tasks.
 
-- `backend/query_chroma.js` — helper for talking to Chroma
-  - Responsibilities: wrap low-level Chroma client, expose simplified functions such as:
-    - `upsertVectors(collectionName, vectorsWithMetadata)`
-    - `queryVectors(collectionName, queryVector, topK)`
-    - `deleteCollection(collectionName)`
-  - Data shapes: `vectorsWithMetadata`: array of { id, vector, metadata }, where metadata contains: { documentId, chunkIndex, startPage, endPage, textSnippet }
+Contracts and important invariants
+---------------------------------
+Embedding contract (`embedder.py` / `ml_runner.js`)
+- Input: JSON array of strings (texts) in the same order the chunks were produced.
+- Output: JSON array of float arrays (vectors) with the same length and order.
+- Dimension: vector length is stable across calls; the backend must assert and enforce consistent dimensioning.
 
-- `backend/searchService.js` — retrieval + generation orchestrator
-  - Responsibilities: Embeds the query, retrieves neighbors from Chroma, optionally re-ranks candidates, constructs LLM prompt, calls LLM (Gemini or other), and returns composed response.
-  - Detailed flow (see dedicated section below).
+Vector store contract (Chroma via `query_chroma.js`)
+- Each upsert entry: `{ id: string, vector: number[], metadata: { documentId, chunkIndex, startPage, endPage, textSnippet } }`.
+- `id` recommendation: `${documentId}_${chunkIndex}` for stable uniqueness.
 
-- `backend/clear_chroma_collection.js` — maintenance helper
-  - Responsibilities: safely remove/reset a named Chroma collection.
+Search service contract (`searchService.js`)
+- Input: `{ query: string, topK?: number, history?: [] }`.
+- Output: `{ answer: string, sources: [{ documentId, chunkIndex, score, page, textSnippet }], raw?: { chroma, llm } }`.
 
-- `backend/controllers/authController.js`, `backend/routes/authRoutes.js`, `backend/middleware/authMiddleware.js`
-  - Responsibilities: basic username/password auth storing minimal user records in SQLite. Token issuance (JWT) expected for protected endpoints. The middleware should attach `req.user` after verifying tokens.
+Data models & on-disk layout
+---------------------------
+Suggested SQLite schema (in `backend/database.js` expectations):
+- `documents`: `{ id, filename, filepath, uploaded_at, pages, metadata }`.
+- `chunks` (optional): `{ id, document_id, chunk_index, start_page, end_page, text_snippet, metadata }`.
+- `users`: `{ id, username, password_hash, created_at }`.
 
-- `frontend/` (selected files):
-  - `frontend/src/services/api.js` — API client wrapper. Provide a base URL and helpers for auth token injection, retries, and error handling.
-  - `frontend/src/PdfViewer.js` — display PDF and accept location anchors: `?page=3` and optional `#char=123` or similar. The backend must provide `page` or `position` metadata to enable direct navigation.
+Files on disk:
+- `backend/vault.db` — local SQLite database file (treat as an example/test DB).
+- `backend/storage/` — PDFs and `uploads/` blobs.
 
-Data models, schemas and on-disk layout
---------------------------------------
-This section describes the concrete data shapes and on-disk expectations.
-
-SQLite (suggested schema)
-- `documents` table:
-  - `id` INTEGER PRIMARY KEY AUTOINCREMENT
-  - `filename` TEXT NOT NULL
-  - `filepath` TEXT NOT NULL
-  - `uploaded_at` DATETIME DEFAULT CURRENT_TIMESTAMP
-  - `pages` INTEGER
-  - `metadata` TEXT -- JSON string
-
-- `users` table (if auth implemented):
-  - `id` INTEGER PRIMARY KEY AUTOINCREMENT
-  - `username` TEXT UNIQUE
-  - `password_hash` TEXT
-  - `created_at` DATETIME
-
-- `chunks` table (optional; if chunk metadata is also kept in SQLite):
-  - `id` INTEGER PRIMARY KEY AUTOINCREMENT
-  - `document_id` INTEGER REFERENCES documents(id)
-  - `chunk_index` INTEGER
-  - `start_page` INTEGER
-  - `end_page` INTEGER
-  - `text_snippet` TEXT
-  - `metadata` TEXT
-
-On-disk layout
-- `backend/vault.db` (default, not committed) — SQLite DB file if used.
-- `backend/storage/` — stored PDFs (committed example PDFs included for testing). These are referenced by `documents.filepath`.
-- `backend/storage/uploads/` — hashed blobs representing uploaded files. Backed by app logic that maps upload id → filename.
-
-Environment variables and configuration
----------------------------------------
-The app expects certain env vars. Put them into `backend/.env` (NOT committed). Example:
+Environment variables
+---------------------
+Create `backend/.env` (DO NOT COMMIT). Minimal example:
 
 ```env
-# Chroma connection
+# Chroma
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
 CHROMA_SSL=false
 CHROMA_API_KEY=
 
 # LLM / generation
-GEMINI_API_KEY=
-LLM_PROVIDER=gemini   # or openai, etc.
+LLM_PROVIDER=gemini
+LLM_API_KEY=
 LLM_MODEL=gemini-1.0
 
 # Backend
@@ -164,54 +132,45 @@ PORT=5000
 NODE_ENV=development
 SQLITE_PATH=./vault.db
 
-# Auth / security
+# Auth
 JWT_SECRET=replace_with_a_strong_random_secret
 JWT_EXPIRY=7d
 ```
 
-Local development: step-by-step (Windows / bash.exe)
----------------------------------------------------
-This section gives ready-to-paste commands for a developer using `bash.exe`.
-
-1) Backend - install and configure
+Local development — quick start (Windows, bash.exe)
+-------------------------------------------------
+1) Backend
 
 ```bash
 cd backend
 npm install
-# create .env from template above (use an editor)
+# copy sample .env into backend/.env and update values
 ```
 
-2) Python environment for embeddings (if `ml_env` is missing or incomplete)
+2) Python embedding environment
 
 ```bash
 # from repo root
-python -m venv ml_env
-# use bash.exe activation for Windows (Git Bash)
-source ml_env/Scripts/activate
+python -m venv backend/ml_env
+# activate (Git Bash / bash.exe)
+source backend/ml_env/Scripts/activate
 pip install --upgrade pip
-pip install sentence-transformers numpy torch transformers # adjust per embedder.py requirements
-# optionally pin versions
-pip freeze > backend/requirements.txt
+pip install -r backend/requirements.txt || pip install sentence-transformers numpy torch transformers
 ```
 
-3) Start Chroma (optional but recommended for local dev)
+3) Start local Chroma (optional, for dev)
 
 ```bash
-# requires Docker installed
+# requires Docker
 docker run -d --name chroma-local -p 8000:8000 chromadb/chroma
-# confirm
-docker ps
-curl http://localhost:8000/ || true
 ```
 
 4) Start backend
 
 ```bash
 cd backend
-# dev script may use nodemon if defined
-npm run dev
-# or
-node index.js
+# use npm script or node directly
+npm run dev || node index.js
 ```
 
 5) Start frontend
@@ -222,182 +181,66 @@ npm install
 npm start
 ```
 
-Embedding runner contract: `embedder.py` and `ml_runner.js`
------------------------------------------------------------
-The embedder is a critical contract boundary. The system expects a simple, robust interface.
-
-Requirements (contract):
-- Input: JSON array of strings (texts) via stdin or a file.
-- Output: JSON array of numeric arrays with the same length and order as the input.
-- Vector dimension must be consistent. The backend should detect and assert the dimension for the first run.
-
-Suggested CLI behavior for `embedder.py`:
-- Exit code 0 on success; write vectors to stdout as JSON.
-- On error, write a JSON object to stderr with `error` and `trace` fields and exit with non-zero code.
-
-Example (stdin/stdout):
-
-Input (stdin):
-["first text chunk", "second chunk"]
-
-Output (stdout):
-[[0.123, -0.234, ...], [0.456, -0.789, ...]]
-
-`ml_runner.js` responsibilities:
-- Batch inputs, call embedder, parse stdout safely (timeout + size limits), verify output shapes and lengths.
-- On mismatch or dimension change, raise an explicit error and do not write to Chroma.
-- Implement a retry/backoff for transient Python process failures.
-
-Vector store contract: Chroma usage and `query_chroma.js`
---------------------------------------------------------
-Chroma data model (as used by this project):
-- Collection name (suggestion: `vault_documents` or per-tenant collection)
-- Each vector entry has:
-  - `id`: stable string (e.g., `${documentId}_${chunkIndex}`)
-  - `vector`: float array
-  - `metadata`: object with at least `{ documentId, chunkIndex, startPage, endPage, textSnippet }`
-
-Recommended upsert flow:
-1. Persist document metadata in SQLite and get `documentId`.
-2. Use `documentId` to build vector ids for each chunk.
-3. Call `query_chroma.upsertVectors(collection, vectorsWithMetadata)`.
-4. Confirm Chroma returned success before marking document ingestion complete.
-
-`query_chroma.js` should surface clear promise-based APIs and map Chroma SDK errors into well-typed backend errors.
-
-`searchService.js` — retrieval + generation orchestration (detailed flow)
--------------------------------------------------------------------------
-This is the heart of RAG. The service should be structured in clear phases.
-
-Inputs: { query: string, history?: [{role, content}], topK?: number }
-Outputs: { answer: string, sources: Array<source>, raw?: { chroma, llm } }
-
-Phases:
-1. Validate input and auth (via middleware). Sanitize text (strip control chars).
-2. Embed query using `ml_runner`.
-   - Assert returned vector dimension matches indexed vectors.
-3. Retrieve nearest neighbors from Chroma (`topK`, default 10-25).
-   - Each neighbor should contain: id, distance/score, metadata.
-4. (Optional) Re-rank with a small cross-encoder or LLM if higher precision is required.
-5. Construct prompt for generation:
-   - Include system instruction describing the role (concise), the top retrieved chunks (text + provenance lines), and the user query.
-   - Explicitly include source attributions like `[[source:documentId|chunkIndex|pageRange]]` so LLM can cite.
-   - Limit context tokens: trim chunk text to allowable token budget based on `LLM_MODEL`.
-6. Call LLM provider with the prompt and streaming or non-streaming mode.
-7. Post-process response:
-   - Extract `answer` text.
-   - Map source attributions back to `documentId` and `page` and produce `sources` array: `{ documentId, chunkIndex, score, page, textSnippet }`.
-8. Return final payload to client.
-
-Failure modes and handling:
-- If embeddings fail: return 503 with structured error and `retryable: true`.
-- If Chroma times out: 503 with `retryable: true`.
-- If LLM returns empty or nonsensical answer: return 200 but include `raw.llm` and `raw.chroma` for client debugging and mark `answerConfidence: low`.
-
-API reference (endpoints, request/response, and examples)
---------------------------------------------------------
-High-level base path: `/api` (adjust in `index.js` as needed)
-
-Auth
-- POST `/api/auth/register`
-  - body: { username, password }
-  - success: 201 { success: true, userId }
-  - errors: 400 (validation), 409 (username exists)
-
-- POST `/api/auth/login`
-  - body: { username, password }
-  - success: 200 { token: "JWT...", user: { id, username } }
-  - errors: 401 (invalid credentials)
-
-Documents
-- POST `/api/documents/upload` (multipart/form-data)
-  - fields: `document` file, optional `title` and `tags`.
-  - behavior: store file to `backend/storage/uploads/`, persist metadata to `documents` table, run `documentProcessor` to chunk, call embedder and upsert vectors.
-  - response: 200 { ok: true, documentId, ingestion: { status: 'queued'|'completed', details } }
-  - important: ingestion may be asynchronous; consider returning 202 if background processing is used.
-
-- GET `/api/documents/:id`
-  - streams the PDF with appropriate `Content-Type: application/pdf` and `Content-Disposition: inline; filename="..."`.
-
-Search
-- POST `/api/search`
-  - body: { query: string, topK?: number, history?: [{ role, content }] }
-  - success: 200 {
-      answer: string,
-      sources: [ { documentId, chunkIndex, score, page, textSnippet } ],
-      raw: { chromaResponse, llmResponse }
-    }
-  - errors: 400 (missing query), 401 (unauthenticated), 503 (external service failure)
-
-Error payloads (recommended)
-- `{ error: { message: string, code?: string, retryable?: boolean, details?: any } }`
-
-Testing, debugging, and logs
+Embedding / ml runner notes
 ---------------------------
-Recommended quick tests:
-- Unit:
-  - `documentProcessor` with a small PDF fixture — assert chunk count and page ranges.
-  - `ml_runner` with synthetic texts — expect correct vector shapes.
-- Integration:
-  - Full pipeline test that uploads a PDF from `backend/storage/` and asserts ingestion finishes and vectors present in Chroma (use ephemeral test collection).
+- `ml_runner.js` batches text chunks and invokes `embedder.py`. It must validate that the number and dimensionality of returned vectors match the request.
+- `embedder.py` should provide a simple stdin/stdout JSON contract or file-based CLI for batch embedding to simplify integration and retries.
 
-Run-time logging:
-- Backend should log at levels: DEBUG / INFO / WARN / ERROR.
-- Log critical events: upload received, ingestion started/completed, embedding errors, Chroma upsert responses, LLM requests/responses (truncate prompts in logs for PII safety), auth failures.
+Vector store and ingestion flow
+------------------------------
+1. Persist document metadata to SQLite and obtain `documentId`.
+2. Use `documentProcessor.js` to chunk PDF text and produce chunk objects with page boundaries.
+3. Pass chunk texts to `ml_runner.js` to obtain vectors.
+4. Build vector entries and call `query_chroma.upsertVectors(collection, vectorsWithMetadata)`.
+5. On success, mark ingestion complete; on failure, provide clear retryable errors and rollback registration if necessary.
 
-Debugging tips:
-- If ingestion fails during embeddings: activate `ml_env` manually and run `embedder.py` with sample inputs. Inspect Python exceptions.
-- If Chroma queries return unexpected distances: verify the vector normalization scheme (if you use cosine vs euclidean) — Chroma's client config must match how embeddings are compared.
+API reference (selected endpoints)
+---------------------------------
+Base path: `/api`
 
-Deployment and scaling notes
-----------------------------
-- Chroma in prod: evaluate using a managed vector DB or cluster; local Chromadb Docker is fine for dev.
-- Batch embeddings and background ingestion workers: use a job queue (Redis + Bull/Queue) for larger uploads.
-- LLM calls: use streaming for better UX; add rate limiting and caching for frequent queries.
-- Horizontal scaling: keep backend stateless (except SQLite which should be replaced by a networked DB for scaling).
+- POST `/api/auth/register` — register user (body: `{ username, password }`).
+- POST `/api/auth/login` — login (body: `{ username, password }`). Returns JWT.
+- POST `/api/documents/upload` — upload PDF (multipart form): stores file, queues ingestion, returns `documentId` and ingestion status.
+- GET `/api/documents/:id` — stream the original PDF for viewing in the frontend.
+- POST `/api/search` — search query: `{ query, topK?, history? }` → returns `{ answer, sources, raw }`.
 
-Security, privacy, and operational concerns
-------------------------------------------
-- DO NOT commit secrets. `backend/.env` must be in `.gitignore`.
-- Sanitize uploaded files: validate MIME types, limit file size, and scan for PDFs that exploit vulnerabilities.
-- Data retention: consider purging or encrypting older PDFs.
-- Auth: use strong password hashing (bcrypt with cost >= 12) and rotate `JWT_SECRET` when needed.
-- Logging: redact PII and prompt text when logging LLM prompts; store full raw data only if required and secured.
+Testing and verification
+------------------------
+- Unit tests: add tests for `documentProcessor`, `ml_runner`, and `query_chroma`.
+- Integration smoke test: upload one PDF from `backend/storage/` and assert that ingestion completes and `query_chroma` returns vectors.
 
-Next steps and improvements
---------------------------
-Short-term:
-- Add `backend/requirements.txt` for the embedder and a `backend/README.md` describing how to update embeddings.
-- Implement background ingestion with a job queue and progress tracking.
-- Add unit tests for `documentProcessor`, `ml_runner`, and `query_chroma`.
+Troubleshooting & common issues
+-------------------------------
+- Embedding failures: run `embedder.py` manually inside `backend/ml_env` with a small JSON input; inspect stack traces.
+- Chroma connectivity errors: ensure Docker port mapping and `CHROMA_HOST/PORT` are correct.
+- Token / auth issues: verify `JWT_SECRET` consistency between backend and any token-issuing clients.
 
-Mid-term:
-- Replace SQLite with Postgres for production persistence.
-- Add opt-in user-level document ownership and per-tenant Chroma collections.
-- Add monitoring and distributed tracing for LLM calls and heavy ingestion tasks.
+Security and operational considerations
+-------------------------------------
+- Never commit `backend/.env` or any secrets; add them to `.gitignore`.
+- Validate and sanitize uploaded PDFs. Enforce size limits.
+- Use bcrypt for password hashing with a safe cost factor.
+- Log safely: redact prompt content or store it only in secure, access-controlled locations.
 
-Long-term:
-- Add re-ranking model (cross-encoder) for higher-quality retrieval.
-- Add differential privacy options for storing user queries.
+Next steps / recommended improvements
+-----------------------------------
+- Add CI tests that run a small ingestion flow and validate vector upsert.
+- Replace SQLite with Postgres or another networked DB for multi-instance deployments.
+- Add background processing (Redis + Bull) for ingestion scalability.
+- Improve frontend UX: show ingestion progress, document previews, and source linkouts with page anchors.
 
-Appendix — quick commands
--------------------------
-Backend dev (from repo root):
+Contributing
+------------
+- Please open issues or PRs against the `development` branch.
+- Follow the existing code style; add unit tests for any new logic affecting ingestion or search.
 
-```bash
-cd backend
-npm install
-# ensure .env exists
-npm run dev
-```
+Contact / attribution
+---------------------
+If you need a guided walkthrough of the code, point me to a file or an area you want to inspect and I will create focused documentation, tests, or example runs.
 
-Frontend dev:
+---
 
-```bash
-cd frontend
-npm install
-npm start
-```
+End of file
 
 Start Chroma (Docker):
 

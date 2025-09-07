@@ -3,11 +3,11 @@ import { uploadDocument, search, getDocument } from '../services/api';
 import PdfViewer from '../PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import { FiPaperclip, FiSend } from 'react-icons/fi';
-import Toast from '../Toast';
+import Toast from '../Toast'; // Corrected import path
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
 import { motion } from 'framer-motion';
-import ProcessingAnimation from '../components/ProcessingAnimation'; // Import the new component
+import ProcessingAnimation from '../components/ProcessingAnimation';
 
 const getInitialMessages = () => {
     return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your knowledge base.' }];
@@ -17,10 +17,11 @@ function Dashboard() {
     const [messages, setMessages] = useState(getInitialMessages);
     const [input, setInput] = useState('');
     const [isSearching, setIsSearching] = useState(false);
-    const [isUploading, setIsUploading] = useState(false); // New state for upload animation
+    const [isUploading, setIsUploading] = useState(false);
     
     const [pdfUrl, setPdfUrl] = useState(null);
     const [isPdfLoading, setIsPdfLoading] = useState(false);
+    const [currentHighlight, setCurrentHighlight] = useState(null);
 
     const [toast, setToast] = useState(null);
     const messagesEndRef = useRef(null);
@@ -52,9 +53,9 @@ function Dashboard() {
             setMessages(prev => [...prev.slice(0, -1), aiResponse]);
 
         } catch (error) {
-            console.error("[LOG] --- FRONTEND: Search request failed: ---", error);
-            const errorText = error.response?.data?.message || 'Sorry, I encountered an error processing your request.';
-            const errorResponse = { sender: 'ai', text: errorText };
+            const errorText = error.response?.data?.message || 'Sorry, I encountered an error.';
+            setToast({ message: errorText, type: 'error' });
+            const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again." };
             setMessages(prev => [...prev.slice(0, -1), errorResponse]);
         } finally {
             setIsSearching(false);
@@ -65,18 +66,16 @@ function Dashboard() {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
 
-        setIsUploading(true); // --- Start the animation ---
-        setToast(null); // Clear any existing toasts
+        setIsUploading(true);
+        setToast(null);
         
         try {
             const result = await uploadDocument(files);
             setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
         } catch (error) {
-            console.error("[LOG] --- FRONTEND: File upload failed: ---", error);
             setToast({ message: `Upload failed. Please try again.`, type: 'error' });
         } finally {
-            setIsUploading(false); // --- Stop the animation ---
-            // Clear the file input value so the same file can be uploaded again
+            setIsUploading(false);
             if(fileInputRef.current) {
                 fileInputRef.current.value = "";
             }
@@ -91,8 +90,14 @@ function Dashboard() {
             const pdfBlob = await getDocument(documentId);
             const url = URL.createObjectURL(pdfBlob);
             setPdfUrl(url);
+            
+            if (source.metadata && source.metadata.pageNumber) {
+                setCurrentHighlight({ pageNumber: source.metadata.pageNumber });
+            } else {
+                setCurrentHighlight(null);
+            }
+
         } catch (error) {
-            console.error("Failed to load PDF:", error);
             setToast({ message: 'Could not load the protected PDF.', type: 'error' });
         } finally {
             setIsPdfLoading(false);
@@ -104,23 +109,20 @@ function Dashboard() {
             URL.revokeObjectURL(pdfUrl);
         }
         setPdfUrl(null);
+        setCurrentHighlight(null);
     };
 
-    const handleNewChat = () => setMessages(getInitialMessages);
+    const handleNewChat = () => setMessages(getInitialMessages());
 
     return (
         <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
-            {isUploading && <ProcessingAnimation />} {/* --- Render the animation overlay --- */}
-
+            {isUploading && <ProcessingAnimation />}
             <Sidebar handleNewChat={handleNewChat} />
-            
             <div className="flex flex-col flex-grow relative">
                 {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-
                 <header className="absolute top-0 right-0 p-4 z-10">
                     <ThemeToggleButton />
                 </header>
-
                 <div className="flex-grow overflow-y-auto pt-20 pb-40 px-4 sm:px-6 lg:px-8">
                     <div className="max-w-4xl mx-auto space-y-8">
                         {messages.map((msg, index) => (
@@ -157,7 +159,7 @@ function Dashboard() {
                                                     {msg.results.sources.map((source, i) => (
                                                         <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
                                                             <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
-                                                                Source from Doc ID: {source.metadata.documentId}
+                                                                Source from: {source.metadata.original_filename || `Doc ID ${source.metadata.documentId}`} (Page {source.metadata.pageNumber})
                                                             </p>
                                                             <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2">
                                                                 <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
@@ -175,7 +177,6 @@ function Dashboard() {
                         <div ref={messagesEndRef} />
                     </div>
                 </div>
-
                 <div className="absolute bottom-0 left-0 right-0 p-4 sm:p-6 lg:px-8 from-white dark:from-gray-900 to-transparent bg-gradient-to-t">
                     <div className="max-w-4xl mx-auto">
                         <form onSubmit={handleSearch} className="flex items-center p-2 bg-white dark:bg-gray-800/70 dark:backdrop-blur-lg rounded-full shadow-2xl border border-gray-200 dark:border-gray-700">
@@ -198,13 +199,16 @@ function Dashboard() {
                     </div>
                 </div>
             </div>
-            
             {(isPdfLoading || pdfUrl) && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
                     {isPdfLoading ? (
                         <div className="text-white text-lg">Loading secure document...</div>
                     ) : (
-                        <PdfViewer fileUrl={pdfUrl} onClose={closePdfViewer} />
+                        <PdfViewer 
+                            fileUrl={pdfUrl} 
+                            onClose={closePdfViewer} 
+                            highlight={currentHighlight} 
+                        />
                     )}
                 </div>
             )}
