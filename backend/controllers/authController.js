@@ -1,31 +1,64 @@
 const bcrypt = require('bcryptjs');
-const jwt =require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
 const { getDb } = require('../database');
 const { validationResult } = require('express-validator');
 
-// ❌ REMOVED: The cookie-based generateToken function is no longer needed.
-// Your frontend uses localStorage, not cookies, for auth.
-
 exports.registerUser = (req, res) => {
+    // --- ADDED LOG ---
+    console.log('[API] POST /signup route hit.');
+    
     const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+    if (!errors.isEmpty()) {
+        // --- ADDED LOG ---
+        console.error('[API] Validation failed:', errors.array());
+        return res.status(400).json({ errors: errors.array() });
+    }
 
     const { email, password } = req.body;
+    // --- ADDED LOG ---
+    console.log(`[API] Attempting to register user with email: ${email}`);
+    
     const db = getDb();
+    
+    // --- ADDED LOG ---
+    console.log('[API] Checking database for existing user...');
     db.get('SELECT email FROM users WHERE email = ?', [email], (err, row) => {
-        if (row) return res.status(400).json({ message: 'User already exists.' });
+        if (err) {
+            // --- ADDED LOG ---
+            console.error('[API] Database error during user check:', err.message);
+            return res.status(500).json({ message: 'Database error.' });
+        }
         
+        if (row) {
+            // --- ADDED LOG ---
+            console.log(`[API] User with email ${email} already exists.`);
+            return res.status(400).json({ message: 'User already exists.' });
+        }
+        
+        // --- ADDED LOG ---
+        console.log('[API] User does not exist. Proceeding with registration...');
+        console.log('[API] Hashing password...');
         const salt = bcrypt.genSaltSync(10);
         const password_hash = bcrypt.hashSync(password, salt);
+        
+        // --- ADDED LOG ---
+        console.log('[API] Inserting new user into database...');
         const stmt = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)');
         
         stmt.run(email, password_hash, function (err) {
-            if (err) return res.status(500).json({ message: 'Could not register user.' });
+            if (err) {
+                // --- ADDED LOG ---
+                console.error('[API] Could not insert user into database:', err.message);
+                return res.status(500).json({ message: 'Could not register user.' });
+            }
             
-            // ✅ ADDED: Generate the token directly here.
+            // --- ADDED LOG ---
+            console.log(`[API] User created successfully with ID: ${this.lastID}`);
+            
             const token = jwt.sign({ id: this.lastID }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-            // ✅ MODIFIED: Send the token back in the JSON response.
+            // --- ADDED LOG ---
+            console.log('[API] Sending 201 response with user data and token.');
             res.status(201).json({ 
                 id: this.lastID, 
                 email: email,
@@ -36,19 +69,13 @@ exports.registerUser = (req, res) => {
     });
 };
 
+// (The rest of your loginUser, logoutUser, etc. functions remain unchanged)
 exports.loginUser = (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
     const { email, password } = req.body;
     const db = getDb();
     db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
         if (user && bcrypt.compareSync(password, user.password_hash)) {
-            // ✅ ADDED: Generate the token directly when login is successful.
             const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-
-            // ✅ MODIFIED: Send the token back in the JSON response body.
-            // This is what your frontend is looking for.
             res.json({ 
                 id: user.id, 
                 email: user.email,
@@ -60,8 +87,6 @@ exports.loginUser = (req, res) => {
     });
 };
 
-// This function is for cookie-based logout. It won't affect the token in localStorage.
-// Client-side logout (removing the token from localStorage) is what's needed for your app.
 exports.logoutUser = (req, res) => {
     res.cookie('token', '', {
         httpOnly: true,
@@ -71,7 +96,5 @@ exports.logoutUser = (req, res) => {
 };
 
 exports.getCurrentUser = (req, res) => {
-    // This function should work correctly with your existing 'protect' middleware
-    // as long as the middleware reads the 'Authorization: Bearer <token>' header.
     res.json(req.user);
 };

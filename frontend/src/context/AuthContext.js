@@ -1,23 +1,22 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-import api, { loginUser } from '../services/api'; // Ensure your api services are correctly imported
+// 1. --- Import signupUser alongside loginUser ---
+import { loginUser, signupUser } from '../services/api';
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
-    const [isLoading, setIsLoading] = useState(true); // Start with loading state true
+    const [isLoading, setIsLoading] = useState(true);
 
-    // This function checks for a token on initial app load
     const verifyAuth = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (token) {
             try {
-                // You can optionally add an API call here to verify the token 
-                // and get fresh user data, e.g., api.get('/auth/me')
+                // In a real app, you'd verify the token with an API call here.
+                // For now, we'll assume a token means the user is authenticated.
                 setIsAuthenticated(true);
             } catch (error) {
-                // If token is invalid, remove it
                 localStorage.removeItem('token');
                 setIsAuthenticated(false);
             }
@@ -32,15 +31,21 @@ export const AuthProvider = ({ children }) => {
     }, [verifyAuth]);
 
     const login = async (credentials) => {
-        // This function will be called from LoginPage
-        const response = await loginUser(credentials); // Call the original API function
+        const response = await loginUser(credentials);
         if (response.data && response.data.token) {
             localStorage.setItem('token', response.data.token);
             setIsAuthenticated(true);
-            // You can also set user data here if the response includes it
-            // setUser(response.data.user); 
         }
-        return response; // Return the response for any further handling
+        return response;
+    };
+
+    // 2. --- ADD THE MISSING REGISTER FUNCTION ---
+    // This function takes the email and password, calls the API service,
+    // and returns the response. The SignupPage will handle what to do next.
+    const register = async (email, password) => {
+        // We pass the credentials as an object, which signupUser expects.
+        const response = await signupUser({ email, password });
+        return response;
     };
 
     const logout = () => {
@@ -55,6 +60,9 @@ export const AuthProvider = ({ children }) => {
         isLoading,
         login,
         logout,
+        // 3. --- PROVIDE THE NEW FUNCTION TO THE APP ---
+        // Now, when any component calls useAuth(), it will receive the register function.
+        register,
     };
 
     return (
