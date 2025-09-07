@@ -5,19 +5,33 @@ const {
     registerUser,
     loginUser,
     logoutUser,
-    getCurrentUser
+    getCurrentUser,
+    googleLogin // Import the new googleLogin controller
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
-const validateUser = [
-    body('email', 'Please include a valid email').isEmail(),
-    body('password', 'Password must be at least 8 characters').isLength({ min: 8 })
+// Stricter validation rules
+const signupValidation = [
+    body('email')
+        .isEmail().withMessage('Please provide a valid email address.')
+        .normalizeEmail(),
+    body('password')
+        .isLength({ min: 8 }).withMessage('Password must be at least 8 characters long.')
+        .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*])/)
+        .withMessage('Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (!@#$%^&*)')
 ];
 
-// This line MUST be '/signup' to match the frontend call
-router.post('/signup', validateUser, registerUser);
+const loginValidation = [
+    body('email').isEmail().withMessage('Please provide a valid email.').normalizeEmail(),
+    body('password').not().isEmpty().withMessage('Password is required.')
+];
 
-router.post('/login', loginUser);
+router.post('/signup', signupValidation, registerUser);
+router.post('/login', loginValidation, loginUser);
+
+// Route for Google Sign-In
+router.post('/google', googleLogin);
+
 router.post('/logout', logoutUser);
 router.get('/me', protect, getCurrentUser);
 

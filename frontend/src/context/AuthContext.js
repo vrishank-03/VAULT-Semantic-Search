@@ -1,6 +1,6 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-// 1. --- Import signupUser alongside loginUser ---
-import { loginUser, signupUser } from '../services/api';
+// 1. --- Import the new googleLogin function from your API service ---
+import { loginUser, signupUser, googleLogin } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -12,14 +12,7 @@ export const AuthProvider = ({ children }) => {
     const verifyAuth = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (token) {
-            try {
-                // In a real app, you'd verify the token with an API call here.
-                // For now, we'll assume a token means the user is authenticated.
-                setIsAuthenticated(true);
-            } catch (error) {
-                localStorage.removeItem('token');
-                setIsAuthenticated(false);
-            }
+            setIsAuthenticated(true);
         } else {
             setIsAuthenticated(false);
         }
@@ -39,12 +32,21 @@ export const AuthProvider = ({ children }) => {
         return response;
     };
 
-    // 2. --- ADD THE MISSING REGISTER FUNCTION ---
-    // This function takes the email and password, calls the API service,
-    // and returns the response. The SignupPage will handle what to do next.
     const register = async (email, password) => {
-        // We pass the credentials as an object, which signupUser expects.
         const response = await signupUser({ email, password });
+        return response;
+    };
+
+    // 2. --- ADD THE MISSING loginWithGoogle FUNCTION ---
+    // This function receives the credential response from the Google button,
+    // sends it to your backend, and handles setting the auth state.
+    const loginWithGoogle = async (credentialResponse) => {
+        // The 'credential' is the ID token from Google
+        const response = await googleLogin(credentialResponse.credential);
+        if (response.data && response.data.token) {
+            localStorage.setItem('token', response.data.token);
+            setIsAuthenticated(true);
+        }
         return response;
     };
 
@@ -60,9 +62,10 @@ export const AuthProvider = ({ children }) => {
         isLoading,
         login,
         logout,
-        // 3. --- PROVIDE THE NEW FUNCTION TO THE APP ---
-        // Now, when any component calls useAuth(), it will receive the register function.
         register,
+        // 3. --- PROVIDE THE NEW FUNCTION TO THE APP ---
+        // Now, when the GoogleLoginButton calls useAuth(), it will receive this function.
+        loginWithGoogle, 
     };
 
     return (

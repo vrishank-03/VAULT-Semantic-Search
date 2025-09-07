@@ -2,63 +2,36 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../database');
 const { validationResult } = require('express-validator');
+const { OAuth2Client } = require('google-auth-library'); // Import Google Auth Library
+
+// Initialize the client with the ID from your .env file
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 exports.registerUser = (req, res) => {
-    // --- ADDED LOG ---
     console.log('[API] POST /signup route hit.');
-    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        // --- ADDED LOG ---
         console.error('[API] Validation failed:', errors.array());
         return res.status(400).json({ errors: errors.array() });
     }
 
     const { email, password } = req.body;
-    // --- ADDED LOG ---
-    console.log(`[API] Attempting to register user with email: ${email}`);
-    
     const db = getDb();
     
-    // --- ADDED LOG ---
-    console.log('[API] Checking database for existing user...');
     db.get('SELECT email FROM users WHERE email = ?', [email], (err, row) => {
-        if (err) {
-            // --- ADDED LOG ---
-            console.error('[API] Database error during user check:', err.message);
-            return res.status(500).json({ message: 'Database error.' });
-        }
-        
         if (row) {
-            // --- ADDED LOG ---
-            console.log(`[API] User with email ${email} already exists.`);
             return res.status(400).json({ message: 'User already exists.' });
         }
         
-        // --- ADDED LOG ---
-        console.log('[API] User does not exist. Proceeding with registration...');
-        console.log('[API] Hashing password...');
         const salt = bcrypt.genSaltSync(10);
         const password_hash = bcrypt.hashSync(password, salt);
-        
-        // --- ADDED LOG ---
-        console.log('[API] Inserting new user into database...');
         const stmt = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)');
         
         stmt.run(email, password_hash, function (err) {
             if (err) {
-                // --- ADDED LOG ---
-                console.error('[API] Could not insert user into database:', err.message);
                 return res.status(500).json({ message: 'Could not register user.' });
             }
-            
-            // --- ADDED LOG ---
-            console.log(`[API] User created successfully with ID: ${this.lastID}`);
-            
             const token = jwt.sign({ id: this.lastID }, process.env.JWT_SECRET, { expiresIn: '30d' });
-
-            // --- ADDED LOG ---
-            console.log('[API] Sending 201 response with user data and token.');
             res.status(201).json({ 
                 id: this.lastID, 
                 email: email,
@@ -69,8 +42,11 @@ exports.registerUser = (req, res) => {
     });
 };
 
-// (The rest of your loginUser, logoutUser, etc. functions remain unchanged)
 exports.loginUser = (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
     const { email, password } = req.body;
     const db = getDb();
     db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
@@ -85,6 +61,48 @@ exports.loginUser = (req, res) => {
             res.status(401).json({ message: 'Invalid email or password.' });
         }
     });
+};
+
+// --- NEW: Google Login Controller ---
+exports.googleLogin = async (req, res) => {
+    console.log('[API] POST /google route hit.');
+    const { credential } = req.body;
+    try {
+        const ticket = await client.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        const { email } = payload;
+        
+        const db = getDb();
+        db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
+            if (err) {
+                return res.status(500).json({ message: "Server error during auth." });
+            }
+
+            if (user) {
+                // User exists, log them in
+                const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+                res.json({ id: user.id, email: user.email, token });
+            } else {
+                // User does not exist, create a new one
+                const password_hash = 'google_user'; 
+                const stmt = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)');
+                stmt.run(email, password_hash, function (err) {
+                    if (err) {
+                        return res.status(500).json({ message: 'Could not register user.' });
+                    }
+                    const token = jwt.sign({ id: this.lastID }, process.env.JWT_SECRET, { expiresIn: '30d' });
+                    res.status(201).json({ id: this.lastID, email, token });
+                });
+                stmt.finalize();
+            }
+        });
+    } catch (error) {
+        console.error("Google token verification failed:", error);
+        res.status(401).json({ message: 'Invalid Google token.' });
+    }
 };
 
 exports.logoutUser = (req, res) => {
