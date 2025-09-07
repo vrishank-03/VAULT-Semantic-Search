@@ -1,41 +1,72 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:5000/api';
+// ==================================================================
+// 1. CREATE A PRE-CONFIGURED AXIOS INSTANCE
+// ==================================================================
+const api = axios.create({
+    baseURL: 'http://localhost:5000/api',
+});
 
-// --- Document related API calls ---
+// ==================================================================
+// 2. REQUEST INTERCEPTOR: ADD THE AUTH TOKEN TO EVERY REQUEST
+// ==================================================================
+api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+}, (error) => {
+    return Promise.reject(error);
+});
 
-export const uploadDocument = async (files) => { // Expects an array of File objects
-  const formData = new FormData();
-  files.forEach(file => {
-    formData.append('documents', file); // Append each file with the key 'documents'
-  });
+// ==================================================================
+// 3. NEW: RESPONSE INTERCEPTOR: HANDLE 401 ERRORS GLOBALLY
+// ==================================================================
+// This function runs AFTER a response is received.
+api.interceptors.response.use(
+  (response) => response, // Directly return successful responses.
+  (error) => {
+    // Check if the error is a 401 Unauthorized
+    if (error.response && error.response.status === 401) {
+      // 1. Remove the invalid token
+      localStorage.removeItem('token');
+      // 2. Redirect to the login page
+      // Use window.location to force a page reload, clearing all app state.
+      window.location.href = '/login'; 
+      // You could also use a routing library's navigation function here.
+    }
+    // For all other errors, just reject the promise.
+    return Promise.reject(error);
+  }
+);
 
-  try {
-    const response = await axios.post(`${API_URL}/documents/upload`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+
+// ==================================================================
+// 4. YOUR API FUNCTIONS (Unchanged)
+// ==================================================================
+
+export const loginUser = (credentials) => api.post('/auth/login', credentials);
+
+export const signupUser = (userData) => api.post('/auth/signup', userData);
+
+export const uploadDocument = (files) => {
+    const formData = new FormData();
+    files.forEach(file => {
+        formData.append('documents', file);
     });
-    return response.data; // This should contain success message and document IDs
-  } catch (error) {
-    console.error('API Error during document upload:', error.response?.data || error.message);
-    throw error.response?.data || new Error('Unknown upload error');
-  }
+    return api.post('/documents/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
 };
 
-// --- Search related API calls ---
+export const search = (query, history) => api.post('/search', { query, history });
 
-export const search = async (query, history) => {
-  try {
-            // --- LOG 1: SERVICE LAYER ENTRY ---
-      console.log("[api.js:search] STEP 1: Preparing to send search request.");
-      console.log("[api.js:search]   - Query:", query);
-      console.log("[api.js:search]   - History Payload:", history);
-      const response = await axios.post(`${API_URL}/search`, { query, history });
-      console.log("[api.js:search] STEP 4: Received response from backend:", response.data);
-      return response.data;
-  } catch (error) {
-    console.error('API Error during search:', error.response?.data || error.message);
-    throw error.response?.data || new Error('Unknown search error');
-  }
+export const getDocument = async (documentId) => {
+    const response = await api.get(`/documents/${documentId}`, {
+        responseType: 'blob',
+    });
+    return response.data;
 };
+
+export default api;
