@@ -14,9 +14,11 @@ const validateUser = [
     body('password', 'Password must be at least 8 characters').isLength({ min: 8 })
 ];
 
-router.post('/register', validateUser, registerUser);
-router.post('/login', validateUser, loginUser);
+// This line MUST be '/signup' to match the frontend call
+router.post('/signup', validateUser, registerUser);
+
+router.post('/login', loginUser);
 router.post('/logout', logoutUser);
-router.get('/me', protect, getCurrentUser); // Protect this route
+router.get('/me', protect, getCurrentUser);
 
 module.exports = router;
