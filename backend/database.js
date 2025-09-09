@@ -19,12 +19,17 @@ const initializeDatabase = () => {
             console.log('Connected to the SQLite database.');
 
             db.serialize(() => {
+                // Updated users table schema
                 db.run(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         email TEXT NOT NULL UNIQUE,
                         password_hash TEXT NOT NULL,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        is_email_verified INTEGER DEFAULT 0,
+                        email_verification_token TEXT,
+                        password_reset_token TEXT,
+                        password_reset_expires INTEGER
                     )
                 `, (err) => {
                     if (err) return reject(err);
