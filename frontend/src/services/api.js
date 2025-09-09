@@ -1,15 +1,9 @@
 import axios from 'axios';
 
-// ==================================================================
-// 1. CREATE A PRE-CONFIGURED AXIOS INSTANCE
-// ==================================================================
 const api = axios.create({
     baseURL: 'http://localhost:5000/api',
 });
 
-// ==================================================================
-// 2. REQUEST INTERCEPTOR: ADD THE AUTH TOKEN TO EVERY REQUEST
-// ==================================================================
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -20,36 +14,27 @@ api.interceptors.request.use((config) => {
     return Promise.reject(error);
 });
 
-// ==================================================================
-// 3. RESPONSE INTERCEPTOR: HANDLE 401 ERRORS GLOBALLY
-// ==================================================================
 api.interceptors.response.use(
-  (response) => response, // Directly return successful responses.
+  (response) => response,
   (error) => {
-    // Check if the error is a 401 Unauthorized
     if (error.response && error.response.status === 401) {
-      // 1. Remove the invalid token
       localStorage.removeItem('token');
-      // 2. Redirect to the login page
-      window.location.href = '/login'; 
+      // Use a custom event to notify the app to log out, which is safer than a hard redirect
+      window.dispatchEvent(new Event('auth-error'));
     }
-    // For all other errors, just reject the promise.
     return Promise.reject(error);
   }
 );
 
-
-// ==================================================================
-// 4. OUR API FUNCTIONS
-// ==================================================================
-
+export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
-
 export const signupUser = (userData) => api.post('/auth/signup', userData);
-
-// --- Added the missing googleLogin function ---
-// This function sends the Google credential to your backend's /auth/google endpoint.
 export const googleLogin = (credential) => api.post('/auth/google', { credential });
+
+// --- NEW API FUNCTIONS ---
+export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
+export const sendPasswordResetEmail = (email) => api.post('/auth/forgot-password', { email });
+// --- END NEW API FUNCTIONS ---
 
 export const uploadDocument = (files) => {
     const formData = new FormData();

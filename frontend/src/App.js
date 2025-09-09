@@ -7,12 +7,13 @@ import { ThemeProvider } from './context/ThemeContext'; // Make sure ThemeProvid
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import Dashboard from './pages/Dashboard';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 
 // Components
 import PrivateRoute from './components/PrivateRoute';
 import Navbar from './components/Navbar';
 
-// This layout component can be used for OTHER authenticated pages
+// This layout component may be used for OTHER authenticated pages
 // that might need a standard top navigation bar in the future.
 const AppLayout = () => (
   <>
@@ -54,6 +55,7 @@ const AppContent = () => {
       {/* Public Routes */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       {/* Private Routes */}
       <Route element={<PrivateRoute />}>
