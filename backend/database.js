@@ -17,9 +17,8 @@ const initializeDatabase = () => {
                 return reject(err);
             }
             console.log('Connected to the SQLite database.');
-
             db.serialize(() => {
-                // Updated users table schema
+                // ... (No changes to table creation)
                 db.run(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +34,6 @@ const initializeDatabase = () => {
                     if (err) return reject(err);
                     console.log("Table 'users' is ready.");
                 });
-
                 db.run(`
                     CREATE TABLE IF NOT EXISTS documents (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,12 +72,17 @@ const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVect
             try {
                 const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
                 const ids = chunksWithVectors.map((_, i) => `user_${userId}_doc_${documentId}_chunk_${i}`);
-                const metadatas = chunksWithVectors.map((_, i) => ({
+                
+                // --- THIS IS THE KEY CHANGE ---
+                // We now include the 'pageNumber' from each chunk in the metadata.
+                const metadatas = chunksWithVectors.map((chunk, i) => ({
                     userId: Number(userId),
                     documentId: Number(documentId),
                     chunkIndex: i,
                     documentName,
+                    pageNumber: chunk.pageNumber // Add the page number here
                 }));
+                // --- END OF CHANGE ---
 
                 await collection.add({
                     ids,
@@ -87,7 +90,7 @@ const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVect
                     documents: chunksWithVectors.map(c => c.text),
                     metadatas
                 });
-                console.log(`Saved ${chunksWithVectors.length} chunks to ChromaDB.`);
+                console.log(`Saved ${chunksWithVectors.length} chunks to ChromaDB with page numbers.`);
                 resolve({ documentId, chunks: chunksWithVectors.length });
             } catch (chromaErr) {
                 reject(chromaErr);
@@ -100,5 +103,5 @@ module.exports = {
     initializeDatabase,
     getDb,
     saveDocumentChunks,
-    chromaClient // Export chromaClient for searchService
+    chromaClient
 };

@@ -120,7 +120,7 @@ async function performRAG(userId, queryText, history = []) {
     console.log(`[LOG] --- 9. Final Relevant Sources Count: ${relevantSources.length} ---`);
 
     const labeledContext = relevantSources.length > 0
-        ? relevantSources.map(source => `[Source from Document ID ${source.metadata.documentId}]:\n${source.text}`).join('\n---\n')
+        ? relevantSources.map(source => `[Source from Document ID ${source.metadata.documentId}, Page ${source.metadata.pageNumber}]:\n${source.text}`).join('\n---\n')
         : "No relevant document chunks were found for this query.";
 
     const finalPrompt = `You are a helpful AI assistant named VAULT. Use the provided context to answer the user's question.
