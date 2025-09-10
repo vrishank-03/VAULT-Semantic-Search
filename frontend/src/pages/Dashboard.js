@@ -3,7 +3,7 @@ import { uploadDocument, search, getDocument } from '../services/api';
 import PdfViewer from '../PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import { FiPaperclip, FiSend } from 'react-icons/fi';
-import Toast from '../Toast'; // Corrected import path
+import Toast from '../Toast';
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
 import { motion } from 'framer-motion';
@@ -83,6 +83,8 @@ function Dashboard() {
     };
     
     const handleSourceClick = async (source) => {
+        // ADD LOG #1
+        console.log('[Dashboard Log 1] Source link clicked. Source data:', source);
         setIsPdfLoading(true);
         setPdfUrl(null);
         try {
@@ -92,7 +94,13 @@ function Dashboard() {
             setPdfUrl(url);
             
             if (source.metadata && source.metadata.pageNumber) {
-                setCurrentHighlight({ pageNumber: source.metadata.pageNumber });
+                const highlightData = { 
+                    pageNumber: source.metadata.pageNumber,
+                    textToHighlight: source.text
+                };
+                 // ADD LOG #2
+                console.log('[Dashboard Log 2] Setting highlight state with:', highlightData);
+                setCurrentHighlight(highlightData);
             } else {
                 setCurrentHighlight(null);
             }
@@ -113,6 +121,9 @@ function Dashboard() {
     };
 
     const handleNewChat = () => setMessages(getInitialMessages());
+
+    // ADD LOG #3
+    console.log('[Dashboard Log 3] Dashboard rendering. Current highlight state is:', currentHighlight);
 
     return (
         <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
@@ -159,9 +170,9 @@ function Dashboard() {
                                                     {msg.results.sources.map((source, i) => (
                                                         <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
                                                             <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
-                                                                Source from: {source.metadata.original_filename || `Doc ID ${source.metadata.documentId}`} (Page {source.metadata.pageNumber})
+                                                                Source from: {source.metadata.documentName || `Doc ID ${source.metadata.documentId}`} {source.metadata.pageNumber && `(Page ${source.metadata.pageNumber})`}
                                                             </p>
-                                                            <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2">
+                                                            <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2 overflow-wrap-break-word">
                                                                 <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
                                                             </div>
                                                         </div>
