@@ -14,7 +14,6 @@ console.log('[Email] Setting up Nodemailer transporter...');
 console.log(`[Email Config] Host: ${process.env.EMAIL_HOST}`);
 console.log(`[Email Config] Port: ${process.env.EMAIL_PORT}`);
 console.log(`[Email Config] User: ${process.env.EMAIL_USER}`);
-// console.log(`[Email Config] Pass: ${process.env.EMAIL_PASS ? '********' : 'NOT SET'}`); // Don't log full password!
 console.log(`[Email Config] Secure: ${process.env.EMAIL_PORT == 465 ? 'true (recommended for SSL)' : 'false (for TLS/STARTTLS)'}`);
 
 
@@ -107,7 +106,6 @@ exports.resetPassword = (req, res) => {
     });
 };
 
-// --- UPDATED: Signup with Email Verification ---
 exports.signup = (req, res) => {
     console.log('[Auth] POST /signup route hit.');
     const errors = validationResult(req);
@@ -155,7 +153,6 @@ exports.signup = (req, res) => {
     });
 };
 
-// --- UPDATED: Login to check for verification ---
 exports.login = (req, res) => {
     console.log('[Auth] POST /login route hit.');
     const errors = validationResult(req);
@@ -193,9 +190,6 @@ exports.login = (req, res) => {
     });
 };
 
-
-// --- NEW CONTROLLERS ---
-
 exports.forgotPassword = (req, res) => {
     console.log('[Auth] POST /forgot-password route hit.');
     const errors = validationResult(req);
@@ -216,7 +210,6 @@ exports.forgotPassword = (req, res) => {
 
         if (!user) {
             console.log(`[Auth] User ${email} not found for password reset (sending generic success to prevent enumeration).`);
-            // To prevent email enumeration, we send a success response even if the user doesn't exist.
             return res.status(200).json({ message: 'If an account with that email exists, a reset link has been sent.' });
         }
 
@@ -294,8 +287,6 @@ exports.checkVerificationStatus = (req, res) => {
     });
 };
 
-// --- EXISTING CONTROLLERS (Unchanged unless noted) ---
-
 exports.googleLogin = async (req, res) => {
     console.log('[Auth] POST /google route hit.');
     const { credential } = req.body;
@@ -305,7 +296,8 @@ exports.googleLogin = async (req, res) => {
             audience: process.env.GOOGLE_CLIENT_ID,
         });
         const payload = ticket.getPayload();
-        const { email } = payload;
+        // 1. Extract the picture URL from the payload
+        const { email, picture } = payload;
         console.log(`[Auth] Google login: Token verified for email: ${email}`);
         
         const db = getDb();
@@ -316,14 +308,23 @@ exports.googleLogin = async (req, res) => {
             }
 
             if (user) {
-                console.log(`[Auth] Google login: User ${email} found, logging in.`);
-                const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-                res.json({ id: user.id, email: user.email, token });
+                // 2. If user exists, update their picture URL in case it has changed
+                console.log(`[Auth] Google login: User ${email} found. Updating picture URL and logging in.`);
+                const updateSql = `UPDATE users SET picture_url = ? WHERE id = ?`;
+                db.run(updateSql, [picture, user.id], (updateErr) => {
+                    if (updateErr) {
+                        console.error(`[Auth] Failed to update picture URL for user ${user.id}:`, updateErr.message);
+                        // Non-fatal error, we can still log them in
+                    }
+                    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+                    res.json({ id: user.id, email: user.email, token });
+                });
             } else {
-                console.log(`[Auth] Google login: User ${email} not found, creating new account.`);
+                // 3. If user is new, save their picture URL during creation
+                console.log(`[Auth] Google login: User ${email} not found, creating new account with picture URL.`);
                 const password_hash = 'google_user_' + crypto.randomBytes(16).toString('hex'); 
-                const stmt = db.prepare('INSERT INTO users (email, password_hash, is_email_verified) VALUES (?, ?, 1)');
-                stmt.run(email, password_hash, function (err) {
+                const stmt = db.prepare('INSERT INTO users (email, password_hash, is_email_verified, picture_url) VALUES (?, ?, 1, ?)');
+                stmt.run(email, password_hash, picture, function (err) {
                     if (err) {
                         console.error(`[Auth] Database error during Google user creation for ${email}:`, err.message);
                         return res.status(500).json({ message: 'Could not register user.' });

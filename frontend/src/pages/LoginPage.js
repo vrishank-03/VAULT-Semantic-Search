@@ -8,7 +8,7 @@ import GoogleLoginButton from '../components/GoogleLoginButton';
 import Toast from '../Toast';
 import logo from '../assets/logo.png';
 import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
-import ProcessingAnimation from '../components/ProcessingAnimation'; // 1. Import the processing animation
+import ProcessingAnimation from '../components/ProcessingAnimation';
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -32,18 +32,22 @@ function LoginPage() {
     
     const hasHandledRedirect = useRef(false);
 
+    // THIS IS THE KEY CHANGE. This effect now reliably handles redirection.
     useEffect(() => {
+        // Handle redirecting if user becomes authenticated
+        if (isAuthenticated) {
+            navigate('/dashboard', { replace: true });
+        }
+
+        // Handle toast messages on component load (e.g., after email verification)
         const searchParams = new URLSearchParams(location.search);
         const justVerified = searchParams.get('verified') === 'true';
 
         if ((location.state?.message || justVerified) && !hasHandledRedirect.current) {
             setToast({ message: location.state?.message || 'Email verified successfully! Please log in.', type: 'success' });
             hasHandledRedirect.current = true;
+            // Clean up the URL so the message doesn't reappear on refresh
             window.history.replaceState({}, document.title, location.pathname);
-        }
-
-        if (isAuthenticated) {
-            navigate('/dashboard', { replace: true });
         }
     }, [isAuthenticated, navigate, location.state, location.search, location.pathname]);
 
@@ -60,7 +64,8 @@ function LoginPage() {
         setIsLoading(true);
         try {
             await login({ email, password });
-            navigate('/dashboard', { replace: true });
+            // REMOVED: The navigate() call is removed from here.
+            // The useEffect hook will now handle the redirection when isAuthenticated becomes true.
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Login failed. Please check your credentials.';
             setToast({ message: errorMessage, type: 'error' });
@@ -78,7 +83,7 @@ function LoginPage() {
             return;
         }
 
-        setIsLoading(true); // Start loading animation
+        setIsLoading(true);
         try {
             await sendPasswordResetEmail(resetEmail);
             setSuccessMessage("Email Sent!");
@@ -87,7 +92,7 @@ function LoginPage() {
             const errorMessage = err.response?.data?.message || 'An error occurred.';
             setToast({ message: errorMessage, type: 'error' });
         } finally {
-            setIsLoading(false); // Stop loading animation
+            setIsLoading(false);
         }
     };
 
@@ -103,7 +108,6 @@ function LoginPage() {
         }
 
         if (isForgotPassword) {
-            // 2. Add a check for the isLoading state here
             if (isLoading) {
                 return (
                     <div className="text-center">
@@ -125,7 +129,6 @@ function LoginPage() {
                             <input id="reset-email-address" name="email" type="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Enter your email address" />
                         </div>
                         <div>
-                            {/* The button text change is now handled by the separate loading screen */}
                             <button type="submit" className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 disabled:opacity-50">
                                 Send Reset Link
                             </button>

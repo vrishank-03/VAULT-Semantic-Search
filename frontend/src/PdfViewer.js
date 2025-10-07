@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { FiX, FiLoader } from 'react-icons/fi';
-// REMOVED: No longer need the Highlighter library
-// import Highlighter from "react-highlight-words";
+import { useState, useEffect, useRef, useMemo } from 'react';
 
 // Import the required CSS
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -20,6 +19,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
   const contentRef = useRef(null);
   const pdfFile = useMemo(() => ({ url: fileUrl }), [fileUrl]);
   
+  // This effect sets the width of the PDF pages to fit the container.
   useEffect(() => {
     const element = contentRef.current;
     if (!element) return;
@@ -41,6 +41,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
     setNumPages(numPages);
   }
 
+  // This effect handles scrolling to the correct page
   useEffect(() => {
     if (numPages && highlight && highlight.pageNumber && contentRef.current) {
         setTimeout(() => {
@@ -52,35 +53,10 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
     }
   }, [numPages, highlight]);
 
-
-  // --- THIS IS THE FINAL, CORRECTED LOGIC ---
-  const textRenderer = useCallback((textItem) => {
-    const textToHighlight = highlight?.textToHighlight;
-    
-    // If there's nothing to highlight, or the text piece is just whitespace, return it as is.
-    if (!textToHighlight || !textItem.str.trim()) {
-      return textItem.str;
-    }
-
-    // If the full chunk of text includes this smaller piece, wrap it in a <mark> tag.
-    // This is the key change that fixes both issues.
-    if (textToHighlight.includes(textItem.str)) {
-      return (
-        <mark className="bg-yellow-400/60 p-0 m-0">
-          {textItem.str}
-        </mark>
-      );
-    }
-    
-    // Otherwise, return the normal text.
-    return textItem.str;
-
-  }, [highlight]);
-
-
   return (
     <div className="w-full max-w-4xl h-[90vh] bg-white dark:bg-gray-800 rounded-xl shadow-2xl flex flex-col overflow-hidden">
       
+      {/* Sticky Header */}
       <div className="flex-shrink-0 p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Document Viewer</h2>
         <button 
@@ -92,6 +68,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
         </button>
       </div>
 
+      {/* Scrollable Content Area */}
       <div className="flex-grow overflow-y-auto p-4 bg-gray-100 dark:bg-gray-900" ref={contentRef}>
         <Document
           file={pdfFile}
@@ -111,7 +88,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
                   key={`page_${index + 1}`}
                   pageNumber={index + 1}
                   width={containerWidth ? containerWidth : undefined}
-                  customTextRenderer={highlight && highlight.pageNumber === (index + 1) ? textRenderer : undefined}
+                  // REMOVED: The customTextRenderer prop is gone to ensure copy/paste works correctly.
                   className="shadow-md"
                 />
               </div>

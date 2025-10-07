@@ -1,7 +1,12 @@
 import axios from 'axios';
 
+const API_URL = 'http://localhost:5000/api';
+
 const api = axios.create({
-    baseURL: 'http://localhost:5000/api',
+    baseURL: API_URL,
+    headers: {
+        'Content-Type': 'application/json',
+    },
 });
 
 api.interceptors.request.use((config) => {
@@ -18,23 +23,31 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
+      console.error("Authentication error (401). Logging out.");
       localStorage.removeItem('token');
-      // Use a custom event to notify the app to log out, which is safer than a hard redirect
-      window.dispatchEvent(new Event('auth-error'));
+      window.location.pathname = '/login'; 
     }
     return Promise.reject(error);
   }
 );
 
-export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
 export const signupUser = (userData) => api.post('/auth/signup', userData);
 export const googleLogin = (credential) => api.post('/auth/google', { credential });
-
-// --- NEW API FUNCTIONS ---
-export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
 export const sendPasswordResetEmail = (email) => api.post('/auth/forgot-password', { email });
-// --- END NEW API FUNCTIONS ---
+export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
+
+export const getUserInfo = async () => {
+    try {
+        const response = await api.get('/user');
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching user info:', error);
+        throw error;
+    }
+};
+
+export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
 
 export const uploadDocument = (files) => {
     const formData = new FormData();
@@ -54,5 +67,7 @@ export const getDocument = async (documentId) => {
     });
     return response.data;
 };
+
+export const getDocuments = () => api.get('/documents');
 
 export default api;
