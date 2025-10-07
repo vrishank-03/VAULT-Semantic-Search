@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { uploadDocument, search, getDocument } from '../services/api';
+import { uploadDocument, search, getDocument, getUserInfo, getDocuments } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import PdfViewer from '../PdfViewer';
 import ReactMarkdown from 'react-markdown';
-import { FiPaperclip, FiSend } from 'react-icons/fi';
+import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp } from 'react-icons/fi';
 import Toast from '../Toast';
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
 import { motion } from 'framer-motion';
 import ProcessingAnimation from '../components/ProcessingAnimation';
+import ThinkingAnimation from '../components/ThinkingAnimation';
+import logo from '../assets/logo.png';
 
 const getInitialMessages = () => {
     return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your knowledge base.' }];
@@ -26,10 +29,33 @@ function Dashboard() {
     const [toast, setToast] = useState(null);
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
+    
+    const { user } = useAuth();
+
+    // NEW STATE for document list
+    const [documents, setDocuments] = useState([]);
+    const [showDocuments, setShowDocuments] = useState(false);
+
+    // Function to fetch documents
+    const fetchDocuments = async () => {
+        try {
+            const response = await getDocuments();
+            setDocuments(response.data);
+        } catch (error) {
+            console.error("Failed to fetch documents:", error);
+            setToast({ message: 'Could not load your document list.', type: 'error' });
+        }
+    };
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    // Fetch documents on component mount
+    useEffect(() => {
+        fetchDocuments();
+    }, []);
+
 
     const handleSearch = async (e) => {
         e.preventDefault();
@@ -55,7 +81,7 @@ function Dashboard() {
         } catch (error) {
             const errorText = error.response?.data?.message || 'Sorry, I encountered an error.';
             setToast({ message: errorText, type: 'error' });
-            const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again." };
+            const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again in sometime." };
             setMessages(prev => [...prev.slice(0, -1), errorResponse]);
         } finally {
             setIsSearching(false);
@@ -72,8 +98,14 @@ function Dashboard() {
         try {
             const result = await uploadDocument(files);
             setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
+            fetchDocuments(); // Re-fetch documents to update the list
         } catch (error) {
-            setToast({ message: `Upload failed. Please try again.`, type: 'error' });
+            // UPDATED: Handle the new 409 Conflict error for duplicates
+            if (error.response && error.response.status === 409) {
+                setToast({ message: error.response.data.error, type: 'error' });
+            } else {
+                setToast({ message: `Upload failed. Please try again.`, type: 'error' });
+            }
         } finally {
             setIsUploading(false);
             if(fileInputRef.current) {
@@ -83,8 +115,6 @@ function Dashboard() {
     };
     
     const handleSourceClick = async (source) => {
-        // ADD LOG #1
-        console.log('[Dashboard Log 1] Source link clicked. Source data:', source);
         setIsPdfLoading(true);
         setPdfUrl(null);
         try {
@@ -98,8 +128,6 @@ function Dashboard() {
                     pageNumber: source.metadata.pageNumber,
                     textToHighlight: source.text
                 };
-                 // ADD LOG #2
-                console.log('[Dashboard Log 2] Setting highlight state with:', highlightData);
                 setCurrentHighlight(highlightData);
             } else {
                 setCurrentHighlight(null);
@@ -122,16 +150,49 @@ function Dashboard() {
 
     const handleNewChat = () => setMessages(getInitialMessages());
 
-    // ADD LOG #3
-    console.log('[Dashboard Log 3] Dashboard rendering. Current highlight state is:', currentHighlight);
-
     return (
         <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
             {isUploading && <ProcessingAnimation />}
             <Sidebar handleNewChat={handleNewChat} />
             <div className="flex flex-col flex-grow relative">
                 {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-                <header className="absolute top-0 right-0 p-4 z-10">
+                <header className="absolute top-0 right-0 p-4 z-10 flex items-center gap-4">
+                    {/* NEW: "Show Documents" button and table */}
+                    {documents.length > 0 && (
+                        <div className="relative">
+                            <button 
+                                onClick={() => setShowDocuments(!showDocuments)}
+                                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gray-100 dark:bg-gray-800 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                            >
+                                Show Documents ({documents.length})
+                                {showDocuments ? <FiChevronUp /> : <FiChevronDown />}
+                            </button>
+                            {showDocuments && (
+                                <motion.div 
+                                    initial={{ opacity: 0, y: -10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="absolute top-full right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-lg shadow-2xl border dark:border-gray-700 z-20"
+                                >
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                                            <tr>
+                                                <th scope="col" className="px-4 py-3 w-12">No.</th>
+                                                <th scope="col" className="px-4 py-3">Document Name</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {documents.map((doc, index) => (
+                                                <tr key={doc.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                                    <td className="px-4 py-3">{index + 1}</td>
+                                                    <td className="px-4 py-3 font-medium truncate">{doc.name}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </motion.div>
+                            )}
+                        </div>
+                    )}
                     <ThemeToggleButton />
                 </header>
                 <div className="flex-grow overflow-y-auto pt-20 pb-40 px-4 sm:px-6 lg:px-8">
@@ -144,45 +205,56 @@ function Dashboard() {
                                 transition={{ duration: 0.3 }}
                                 className={`flex items-start gap-4 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                             >
-                                {msg.sender === 'ai' && <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex-shrink-0 shadow-lg"></div>}
-                                <div className={`max-w-2xl px-6 py-4 rounded-3xl ${msg.sender === 'user'
-                                        ? 'bg-blue-600 text-white rounded-br-lg shadow-lg'
-                                        : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-lg shadow-lg'
-                                    }`}>
-                                    {msg.isLoading ? (
-                                        <div className="flex items-center justify-center space-x-1">
-                                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-pulse [animation-delay:-0.3s]"></span>
-                                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-pulse [animation-delay:-0.15s]"></span>
-                                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-pulse"></span>
-                                        </div>
-                                    ) : (
+                                {msg.sender === 'ai' && (
+                                    <img src={logo} alt="VAULT Logo" className="w-10 h-10" />
+                                )}
+                                
+                                {msg.isLoading ? (
+                                    <ThinkingAnimation />
+                                ) : (
+                                    <div className={`max-w-2xl px-6 py-4 rounded-3xl ${msg.sender === 'user'
+                                            ? 'bg-blue-600 text-white rounded-br-lg shadow-lg'
+                                            : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-lg shadow-lg'
+                                        }`}>
                                         <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-2">
                                             <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
                                         </div>
-                                    )}
-                                    {msg.results && Array.isArray(msg.results.sources) && msg.results.sources.length > 0 && (
-                                        <div className="mt-4 pt-3 border-t border-gray-200/20 dark:border-gray-700/50">
-                                            <details>
-                                                <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-gray-400 hover:underline">
-                                                    Show Sources ({msg.results.sources.length})
-                                                </summary>
-                                                <div className="mt-2 space-y-3">
-                                                    {msg.results.sources.map((source, i) => (
-                                                        <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
-                                                            <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
-                                                                Source from: {source.metadata.documentName || `Doc ID ${source.metadata.documentId}`} {source.metadata.pageNumber && `(Page ${source.metadata.pageNumber})`}
-                                                            </p>
-                                                            <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2 overflow-wrap-break-word">
-                                                                <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
+                                        {msg.results && Array.isArray(msg.results.sources) && msg.results.sources.length > 0 && (
+                                            <div className="mt-4 pt-3 border-t border-gray-200/20 dark:border-gray-700/50">
+                                                <details>
+                                                    <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-gray-400 hover:underline">
+                                                        Show Sources ({msg.results.sources.length})
+                                                    </summary>
+                                                    <div className="mt-2 space-y-3">
+                                                        {msg.results.sources.map((source, i) => (
+                                                            <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
+                                                                <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
+                                                                    Source from: {source.metadata.documentName || `Doc ID ${source.metadata.documentId}`} {source.metadata.pageNumber && `(Page ${source.metadata.pageNumber})`}
+                                                                </p>
+                                                                <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2 overflow-wrap-break-word">
+                                                                    <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </details>
+                                                        ))}
+                                                    </div>
+                                                </details>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                {msg.sender === 'user' && (
+                                    user && user.pictureUrl ? (
+                                        <img
+                                            src={user.pictureUrl}
+                                            alt="User Avatar"
+                                            className="w-10 h-10 rounded-full flex-shrink-0 shadow-lg"
+                                        />
+                                    ) : (
+                                        <div className="w-10 h-10 rounded-full bg-gray-600 flex-shrink-0 shadow-lg flex items-center justify-center text-white font-semibold">
+                                            {user && user.email ? user.email.charAt(0).toUpperCase() : '?'}
                                         </div>
-                                    )}
-                                </div>
-                                {msg.sender === 'user' && <div className="w-10 h-10 rounded-full bg-gray-600 flex-shrink-0 shadow-lg"></div>}
+                                    )
+                                )}
                             </motion.div>
                         ))}
                         <div ref={messagesEndRef} />

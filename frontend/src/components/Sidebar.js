@@ -1,53 +1,70 @@
 import React from 'react';
 import { FiPlus, FiLogOut } from 'react-icons/fi';
-import { useAuth } from '../context/AuthContext';
-// CHANGE 1: Import the correct logo from the assets folder
-import logo from '../assets/logo.png';
+import { useNavigate } from 'react-router-dom';
+// 1. Import useAuth to get user data from the context
+import { useAuth } from '../context/AuthContext'; 
+import logo from '../assets/logo.png'; 
 
-const Sidebar = ({ handleNewChat }) => {
+function Sidebar({ handleNewChat }) {
+    const navigate = useNavigate();
+    // 2. Get the user object and logout function directly from the context
     const { user, logout } = useAuth();
 
+    const handleLogout = () => {
+        // 3. Call the logout function from the context
+        logout();
+        navigate('/login'); 
+    };
+
     return (
-        // CHANGE 2: Updated background colors and added a border for a cleaner look in both modes.
-        <div className="flex flex-col h-full w-64 bg-gray-50 dark:bg-black/20 p-4 border-r border-gray-200 dark:border-white/10">
-            {/* Header */}
-            <div className="flex items-center mb-8">
-                {/* The new logo is used here */}
-                <img src={logo} alt="VAULT Logo" className="w-8 h-8 mr-2" />
-                {/* CHANGE 3: Made title text theme-aware */}
-                <h1 className="text-xl font-bold text-gray-800 dark:text-white">VAULT</h1>
-            </div>
-
-            {/* New Chat Button */}
-            <button
-                onClick={handleNewChat}
-                className="flex items-center justify-center w-full px-4 py-3 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all duration-200"
-            >
-                <FiPlus className="mr-2" />
-                New Chat
-            </button>
-
-            <div className="flex-grow">
-                {/* Chat history can be mapped here in the future */}
-            </div>
-
-            {/* User Info & Logout */}
-            <div className="border-t border-gray-200 dark:border-white/10 pt-4">
-                <div className="flex items-center">
-                    <div className="w-8 h-8 rounded-full bg-gray-600 flex-shrink-0 mr-3"></div>
-                    {/* CHANGE 4: Made user email text theme-aware */}
-                    <span className="text-sm text-gray-600 dark:text-gray-300 truncate">{user?.email}</span>
+        <div className="flex flex-col justify-between w-64 bg-gray-100 dark:bg-gray-800 p-6 shadow-xl transition-colors duration-300">
+            <div>
+                <div className="flex items-center space-x-3 mb-8">
+                    {/* Vault Logo - Now using your actual logo */}
+                    <img src={logo} alt="VAULT Logo" className="w-8 h-8" />
+                    <span className="text-xl font-bold text-gray-900 dark:text-white">VAULT</span>
                 </div>
+
                 <button
-                    onClick={logout}
-                    className="flex items-center w-full mt-4 px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 rounded-lg transition-colors duration-200"
+                    onClick={handleNewChat}
+                    className="flex items-center justify-center w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200 ease-in-out transform hover:-translate-y-0.5"
                 >
-                    <FiLogOut className="mr-3" />
-                    Logout
+                    <FiPlus className="mr-2" size={20} /> New Chat
+                </button>
+            </div>
+
+            <div className="space-y-4">
+                {/* User Profile Section - Now reads from the context's user object */}
+                {user && user.email && (
+                    <div className="flex items-center space-x-3 p-2 border-t border-gray-200 dark:border-gray-700 pt-4">
+                        {user.pictureUrl ? (
+                            // If a picture URL exists, display it
+                            <img
+                                src={user.pictureUrl}
+                                alt="User Avatar"
+                                className="w-10 h-10 rounded-full"
+                            />
+                        ) : (
+                            // Fallback for users without a Google picture
+                            <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-white font-semibold text-lg">
+                                {user.email.charAt(0).toUpperCase()}
+                            </div>
+                        )}
+                        <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                            {user.email}
+                        </span>
+                    </div>
+                )}
+                {/* Logout Button */}
+                <button
+                    onClick={handleLogout}
+                    className="flex items-center w-full px-4 py-3 text-red-600 dark:text-red-400 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg font-semibold transition-colors duration-200"
+                >
+                    <FiLogOut className="mr-3" size={20} /> Logout
                 </button>
             </div>
         </div>
     );
-};
+}
 
 export default Sidebar;

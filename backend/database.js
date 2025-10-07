@@ -18,7 +18,6 @@ const initializeDatabase = () => {
             }
             console.log('Connected to the SQLite database.');
             db.serialize(() => {
-                // ... (No changes to table creation)
                 db.run(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,7 +27,8 @@ const initializeDatabase = () => {
                         is_email_verified INTEGER DEFAULT 0,
                         email_verification_token TEXT,
                         password_reset_token TEXT,
-                        password_reset_expires INTEGER
+                        password_reset_expires INTEGER,
+                        picture_url TEXT 
                     )
                 `, (err) => {
                     if (err) return reject(err);
@@ -73,16 +73,13 @@ const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVect
                 const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
                 const ids = chunksWithVectors.map((_, i) => `user_${userId}_doc_${documentId}_chunk_${i}`);
                 
-                // --- THIS IS THE KEY CHANGE ---
-                // We now include the 'pageNumber' from each chunk in the metadata.
                 const metadatas = chunksWithVectors.map((chunk, i) => ({
                     userId: Number(userId),
                     documentId: Number(documentId),
                     chunkIndex: i,
                     documentName,
-                    pageNumber: chunk.pageNumber // Add the page number here
+                    pageNumber: chunk.pageNumber
                 }));
-                // --- END OF CHANGE ---
 
                 await collection.add({
                     ids,
