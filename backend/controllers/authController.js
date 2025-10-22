@@ -7,6 +7,12 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
+// --- NEW IMPORTS ---
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+// --- END NEW IMPORTS ---
+
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // --- Nodemailer Setup ---
@@ -26,17 +32,14 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASS,
     },
     tls: {
-        // This is important for some providers, especially if secure is false
-        // Allows connection to be made without SSL/TLS, then upgrades
         rejectUnauthorized: false
     }
 });
 
-// Verify connection configuration (important for debugging)
+// Verify connection configuration
 transporter.verify(function(error, success) {
     if (error) {
         console.error('[Email] Nodemailer transporter verification failed:', error);
-        console.error('[Email] Possible issues: Incorrect host/port, firewall, incorrect user/pass, 2FA/App Password not set for Gmail.');
     } else {
         console.log('[Email] Nodemailer transporter is ready to send messages.');
     }
@@ -55,15 +58,60 @@ const sendEmail = async (to, subject, html) => {
         });
         console.log(`[Email] Email sent successfully to ${to}. Message ID: ${info.messageId}`);
         console.log(`[Email] Preview URL (if available): ${nodemailer.getTestMessageUrl(info)}`);
-        return true; // Indicate success
+        return true; 
     } catch (error) {
         console.error(`[Email] Error sending email to ${to}:`, error);
-        console.error(`[Email] Details: SMTP command: ${error.command}, Response: ${error.response}, Code: ${error.code}`);
-        return false; // Indicate failure
+        return false; 
     }
 };
 
+// --- NEW HELPER FUNCTION TO DOWNLOAD IMAGE ---
+const saveProfilePicture = async (googlePicUrl, userId) => {
+    console.log(`[LOG] saveProfilePicture: Starting download for user ${userId} from ${googlePicUrl}`);
+    try {
+        // 1. Define where the image will be saved on your server
+        const directoryPath = path.resolve(__dirname, '..', 'storage', 'profile_images');
+        const filename = `user_${userId}.jpg`; // We'll assume jpeg
+        const localFilePath = path.join(directoryPath, filename);
+
+        // 2. Define the path that will be saved in the database (this is a URL path)
+        const dbPath = `/storage/profile_images/${filename}`;
+
+        // 3. Ensure the 'profile_images' directory exists
+        await fs.promises.mkdir(directoryPath, { recursive: true });
+        console.log(`[LOG] saveProfilePicture: Directory ensured at ${directoryPath}`);
+
+        // 4. Download the image using axios
+        const response = await axios({
+            method: 'GET',
+            url: googlePicUrl,
+            responseType: 'stream'
+        });
+
+        // 5. Save the image to the file system
+        const writer = fs.createWriteStream(localFilePath);
+        response.data.pipe(writer);
+
+        return new Promise((resolve, reject) => {
+            writer.on('finish', () => {
+                console.log(`[LOG] saveProfilePicture: Successfully saved image for user ${userId} to ${localFilePath}`);
+                resolve(dbPath); // Return the path to be saved in the DB
+            });
+            writer.on('error', (err) => {
+                console.error('[LOG] saveProfilePicture: Error writing file stream:', err);
+                reject(err);
+            });
+        });
+    } catch (error) {
+        console.error(`[LOG] saveProfilePicture: Failed to download or save image for user ${userId}:`, error.message);
+        return null; // Return null if download fails
+    }
+};
+// --- END NEW HELPER FUNCTION ---
+
+
 exports.resetPassword = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] POST /reset-password route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -76,7 +124,6 @@ exports.resetPassword = (req, res) => {
 
     console.log(`[Auth] Attempting to reset password with token: ${token}`);
     
-    // Find user by token AND check if token is not expired
     const sql = `SELECT * FROM users WHERE password_reset_token = ? AND password_reset_expires > ?`;
     db.get(sql, [token, Date.now()], (err, user) => {
         if (err || !user) {
@@ -88,7 +135,6 @@ exports.resetPassword = (req, res) => {
         const salt = bcrypt.genSaltSync(10);
         const password_hash = bcrypt.hashSync(password, salt);
 
-        // Update password and clear the reset token fields
         const updateSql = `UPDATE users SET 
             password_hash = ?, 
             password_reset_token = NULL, 
@@ -107,6 +153,7 @@ exports.resetPassword = (req, res) => {
 };
 
 exports.signup = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] POST /signup route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -154,6 +201,7 @@ exports.signup = (req, res) => {
 };
 
 exports.login = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] POST /login route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -191,6 +239,7 @@ exports.login = (req, res) => {
 };
 
 exports.forgotPassword = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] POST /forgot-password route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -241,6 +290,7 @@ exports.forgotPassword = (req, res) => {
 };
 
 exports.handleEmailVerification = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] GET /verify-email route hit.');
     const { token } = req.query;
     if (!token) {
@@ -268,6 +318,7 @@ exports.handleEmailVerification = (req, res) => {
 };
 
 exports.checkVerificationStatus = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] GET /verification-status route hit.');
     const { email } = req.query;
     if (!email) {
@@ -287,51 +338,90 @@ exports.checkVerificationStatus = (req, res) => {
     });
 };
 
+// --- MODIFIED googleLogin FUNCTION ---
 exports.googleLogin = async (req, res) => {
     console.log('[Auth] POST /google route hit.');
-    const { credential } = req.body;
+    
+    // We no longer need the pictureUrl from the body, but we'll log it
+    const { credential, pictureUrl } = req.body;
+    console.log("[LOG] authController: Picture URL from req.body (for comparison):", pictureUrl);
+
     try {
         const ticket = await client.verifyIdToken({
             idToken: credential,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
         const payload = ticket.getPayload();
-        // 1. Extract the picture URL from the payload
+        
+        // This is the URL we will download
         const { email, picture } = payload;
+        
+        console.log("[LOG] authController: Picture URL from Google token payload (to be downloaded):", picture);
         console.log(`[Auth] Google login: Token verified for email: ${email}`);
         
         const db = getDb();
-        db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
+        
+        // Make this callback async to allow 'await' for image download
+        db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => { 
             if (err) {
                 console.error(`[Auth] Database error during Google login lookup for ${email}:`, err.message);
                 return res.status(500).json({ message: "Server error during auth." });
             }
 
             if (user) {
-                // 2. If user exists, update their picture URL in case it has changed
-                console.log(`[Auth] Google login: User ${email} found. Updating picture URL and logging in.`);
+                // --- EXISTING USER FLOW ---
+                console.log(`[Auth] Google login: User ${email} found. Attempting to update picture.`);
+                
+                // 1. Download the picture and get the new local path
+                const localDbPath = await saveProfilePicture(picture, user.id);
+                
+                // 2. Update the user's picture_url to the new local path
                 const updateSql = `UPDATE users SET picture_url = ? WHERE id = ?`;
-                db.run(updateSql, [picture, user.id], (updateErr) => {
+                db.run(updateSql, [localDbPath, user.id], (updateErr) => {
                     if (updateErr) {
                         console.error(`[Auth] Failed to update picture URL for user ${user.id}:`, updateErr.message);
-                        // Non-fatal error, we can still log them in
+                        // Non-fatal, still log them in
+                    } else {
+                        console.log(`[Auth] Successfully updated picture_url for user ${user.id} to ${localDbPath}`);
                     }
+                    // 3. Log them in
                     const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
                     res.json({ id: user.id, email: user.email, token });
                 });
             } else {
-                // 3. If user is new, save their picture URL during creation
-                console.log(`[Auth] Google login: User ${email} not found, creating new account with picture URL.`);
+                // --- NEW USER FLOW ---
+                console.log(`[Auth] Google login: User ${email} not found, creating new account.`);
+                
                 const password_hash = 'google_user_' + crypto.randomBytes(16).toString('hex'); 
-                const stmt = db.prepare('INSERT INTO users (email, password_hash, is_email_verified, picture_url) VALUES (?, ?, 1, ?)');
-                stmt.run(email, password_hash, picture, function (err) {
+                
+                // 1. Insert user *without* the picture URL first, so we can get their ID
+                const stmt = db.prepare('INSERT INTO users (email, password_hash, is_email_verified) VALUES (?, ?, 1)');
+                
+                // Make this callback async
+                stmt.run(email, password_hash, async function (err) { 
                     if (err) {
                         console.error(`[Auth] Database error during Google user creation for ${email}:`, err.message);
                         return res.status(500).json({ message: 'Could not register user.' });
                     }
-                    console.log(`[Auth] Google user ${email} registered with ID: ${this.lastID} and automatically verified.`);
-                    const token = jwt.sign({ id: this.lastID }, process.env.JWT_SECRET, { expiresIn: '30d' });
-                    res.status(201).json({ id: this.lastID, email, token });
+                    
+                    const newUserId = this.lastID;
+                    console.log(`[Auth] Google user ${email} registered with ID: ${newUserId}. Now saving profile pic.`);
+                    
+                    // 2. Now that we have the ID, download the picture
+                    const localDbPath = await saveProfilePicture(picture, newUserId);
+
+                    // 3. Update the new user with their local picture URL
+                    db.run('UPDATE users SET picture_url = ? WHERE id = ?', [localDbPath, newUserId], (updateErr) => {
+                        if (updateErr) {
+                            console.error(`[Auth] Failed to set initial picture_url for new user ${newUserId}:`, updateErr.message);
+                        } else {
+                            console.log(`[Auth] Successfully set initial picture_url for new user ${newUserId} to ${localDbPath}`);
+                        }
+                        
+                        // 4. Log them in
+                        const token = jwt.sign({ id: newUserId }, process.env.JWT_SECRET, { expiresIn: '30d' });
+                        res.status(201).json({ id: newUserId, email, token });
+                    });
                 });
                 stmt.finalize();
             }
@@ -343,11 +433,13 @@ exports.googleLogin = async (req, res) => {
 };
 
 exports.logoutUser = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log('[Auth] POST /logout route hit. Clearing client token.');
     res.status(200).json({ message: 'Client should clear local token.' });
 };
 
 exports.getCurrentUser = (req, res) => {
+    // ... (rest of the function is unchanged)
     console.log(`[Auth] GET /me route hit for user ID: ${req.user.id}`);
     res.json(req.user);
 };
