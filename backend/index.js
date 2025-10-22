@@ -22,6 +22,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan('dev'));
 
+// --- NEW: SERVE STATIC FILES ---
+// This makes the 'storage' folder (where profile pics are) publicly accessible
+// A request to http://localhost:5000/storage/profile_images/user_1.jpg will now work
+app.use('/storage', express.static(path.join(__dirname, 'storage')));
+console.log(`[LOG] Serving static files from public path '/storage' mapped to: ${path.join(__dirname, 'storage')}`);
+// --- END NEW STATIC ---
+
+
 // --- FILE STORAGE ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'storage/'),
@@ -35,6 +43,7 @@ const upload = multer({ storage });
 // --- API ROUTES ---
 app.use('/api/auth', authRoutes);
 
+// --- MODIFIED /api/user ENDPOINT ---
 app.get('/api/user', protect, (req, res) => {
     const userId = req.user.id;
     const db = getDb();
@@ -49,13 +58,24 @@ app.get('/api/user', protect, (req, res) => {
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
+
+        // --- MODIFICATION: Construct Full Picture URL ---
+        // We must send the absolute URL to the frontend
+        // Your API_URL is 'http://localhost:5000/api', so we remove '/api' to get the base
+        const baseUrl = process.env.API_URL ? process.env.API_URL.replace('/api', '') : `http://localhost:${PORT}`;
+        const fullPictureUrl = user.picture_url ? `${baseUrl}${user.picture_url}` : null;
+        console.log(`[LOG] GET /api/user: Sending full picture URL: ${fullPictureUrl}`);
+        // --- END MODIFICATION ---
+
         res.json({ 
             id: user.id, 
             email: user.email, 
-            pictureUrl: user.picture_url 
+            pictureUrl: fullPictureUrl // <-- Send the full, absolute URL
         });
     });
 });
+// --- END OF MODIFIED /api/user ENDPOINT ---
+
 
 // --- PROTECTED ROUTES ---
 

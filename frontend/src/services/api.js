@@ -33,7 +33,16 @@ api.interceptors.response.use(
 
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
 export const signupUser = (userData) => api.post('/auth/signup', userData);
-export const googleLogin = (credential) => api.post('/auth/google', { credential });
+
+// --- MODIFICATION BELOW ---
+
+export const googleLogin = (credential, pictureUrl) => { // <-- 1. MODIFIED SIGNATURE
+    console.log("[LOG] api.js: Sending Google login request with pictureUrl:", pictureUrl); // <-- 2. ADDED LOG
+    return api.post('/auth/google', { credential, pictureUrl }); // <-- 3. MODIFIED BODY
+};
+
+// --- END OF MODIFICATION ---
+
 export const sendPasswordResetEmail = (email) => api.post('/auth/forgot-password', { email });
 export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
 
