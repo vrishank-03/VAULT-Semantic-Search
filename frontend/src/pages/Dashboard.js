@@ -3,7 +3,8 @@ import { uploadDocument, search, getDocument, getUserInfo, getDocuments } from '
 import { useAuth } from '../context/AuthContext';
 import PdfViewer from '../PdfViewer';
 import ReactMarkdown from 'react-markdown';
-import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp } from 'react-icons/fi';
+// 1. --- FiCopy IMPORT ADDED ---
+import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp, FiCopy } from 'react-icons/fi';
 import Toast from '../Toast';
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
@@ -148,6 +149,48 @@ function Dashboard() {
         setCurrentHighlight(null);
     };
 
+    // 2. --- NEW HANDLER FOR OPENING DOC FROM LIST ---
+    const handleOpenDocument = async (documentId, documentName) => {
+        console.log(`[LOG] Dashboard: handleOpenDocument triggered for docId: ${documentId}, name: ${documentName}`);
+        setIsPdfLoading(true);
+        setPdfUrl(null);
+        setCurrentHighlight(null); // No specific highlight when opening from the list
+        
+        try {
+            console.log(`[LOG] Dashboard: Calling getDocument(${documentId})`);
+            const pdfBlob = await getDocument(documentId);
+            const url = URL.createObjectURL(pdfBlob);
+            console.log(`[LOG] Dashboard: PDF Blob URL created. Setting PDF URL.`);
+            setPdfUrl(url);
+        } catch (error) {
+            console.error("Failed to load document:", error);
+            setToast({ message: 'Could not load the document.', type: 'error' });
+        } finally {
+            console.log(`[LOG] Dashboard: Setting isPdfLoading to false.`);
+            setIsPdfLoading(false);
+        }
+    };
+
+    // 3. --- NEW HANDLER FOR COPYING TO CLIPBOARD ---
+    const handleCopyToClipboard = (text) => {
+        console.log(`[LOG] Dashboard: Attempting to copy text: "${text}"`);
+        if (!navigator.clipboard) {
+            console.error('[LOG] Dashboard: Clipboard API not available.');
+            setToast({ message: 'Clipboard API is not available in your browser.', type: 'error' });
+            return;
+        }
+        
+        navigator.clipboard.writeText(text).then(() => {
+            console.log(`[LOG] Dashboard: Successfully copied to clipboard.`);
+            // Truncate name in toast if it's too long
+            const toastMessage = `Copied "${text.length > 20 ? text.substring(0, 20) + '...' : text}" to clipboard!`;
+            setToast({ message: toastMessage, type: 'success' });
+        }, (err) => {
+            console.error('[LOG] Dashboard: Failed to copy text: ', err);
+            setToast({ message: 'Failed to copy text.', type: 'error' });
+        });
+    };
+
     const handleNewChat = () => setMessages(getInitialMessages());
 
     return (
@@ -180,14 +223,36 @@ function Dashboard() {
                                                 <th scope="col" className="px-4 py-3">Document Name</th>
                                             </tr>
                                         </thead>
+                                        {/* 4. --- MODIFIED TABLE BODY --- */}
                                         <tbody>
                                             {documents.map((doc, index) => (
-                                                <tr key={doc.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                                <tr key={doc.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 group">
                                                     <td className="px-4 py-3">{index + 1}</td>
-                                                    <td className="px-4 py-3 font-medium truncate">{doc.name}</td>
+                                                    <td className="px-4 py-3 font-medium">
+                                                        <div className="flex items-center justify-between">
+                                                            {/* Feature 1: Clickable Document Name */}
+                                                            <span 
+                                                                className="truncate cursor-pointer text-blue-600 dark:text-blue-400 hover:underline"
+                                                                onClick={() => handleOpenDocument(doc.id, doc.name)}
+                                                                title={`Click to open ${doc.name}`}
+                                                            >
+                                                                {doc.name}
+                                                            </span>
+                                                            
+                                                            {/* Feature 2: Copy to Clipboard Button (appears on hover) */}
+                                                            <button
+                                                                onClick={() => handleCopyToClipboard(doc.name)}
+                                                                className="ml-2 p-1 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                                title={`Copy name "${doc.name}" to clipboard`}
+                                                            >
+                                                                <FiCopy size={14} />
+                                                            </button>
+                                                        </div>
+                                                    </td>
                                                 </tr>
                                             ))}
                                         </tbody>
+                                        {/* --- END OF MODIFICATION --- */}
                                     </table>
                                 </motion.div>
                             )}
