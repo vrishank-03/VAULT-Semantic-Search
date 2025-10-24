@@ -1,8 +1,7 @@
 import React, { useEffect } from 'react';
 
-// This component now includes all necessary styles and logic to be a self-contained,
-// professional, and truly blocking processing screen.
-const ProcessingAnimation = () => {
+// 1. --- MODIFIED: Component now accepts 'onStopUpload' prop ---
+const ProcessingAnimation = ({ onStopUpload }) => {
 
   // This effect adds an event listener to block keyboard interactions (like pressing Enter)
   // while the animation is on screen. It cleans up after itself when unmounted.
@@ -18,6 +17,15 @@ const ProcessingAnimation = () => {
       document.removeEventListener('keydown', preventInteraction, true);
     };
   }, []);
+
+  // --- NEW: Log to confirm prop is received ---
+  useEffect(() => {
+    if (typeof onStopUpload !== 'function') {
+      console.warn("[LOG] ProcessingAnimation: 'onStopUpload' prop is not a function or is missing.");
+    } else {
+      console.log("[LOG] ProcessingAnimation: 'onStopUpload' prop is ready.");
+    }
+  }, [onStopUpload]);
 
   return (
     <>
@@ -72,6 +80,19 @@ const ProcessingAnimation = () => {
           <p className="text-lg font-medium tracking-wider text-gray-300 animate-pulse">
             Processing Document...
           </p>
+
+          {/* 2. --- NEW: Stop Uploading Button --- */}
+          {/* We check if the prop exists before rendering the button */}
+          {onStopUpload && (
+            <button
+              onClick={onStopUpload}
+              className="mt-4 px-4 py-2 bg-gray-700/50 text-gray-300 rounded-md hover:bg-gray-600/70 transition-colors cursor-pointer text-sm"
+              title="Cancel the document upload"
+            >
+              Stop Uploading
+            </button>
+          )}
+          {/* --- END OF NEW BUTTON --- */}
         </div>
       </div>
     </>
