@@ -58,17 +58,26 @@ export const getUserInfo = async () => {
 
 export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
 
-export const uploadDocument = (files) => {
+// --- MODIFICATION FOR STOP UPLOAD ---
+export const uploadDocument = (files, signal) => { // <-- 1. ADDED 'signal'
+    console.log("[LOG] api.js: Sending upload request with cancellation signal..."); // <-- 2. ADDED LOG
     const formData = new FormData();
     files.forEach(file => {
         formData.append('documents', file);
     });
     return api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        signal: signal, // <-- 3. PASSED 'signal' to axios
     });
 };
+// --- END OF MODIFICATION ---
 
-export const search = (query, history) => api.post('/search', { query, history });
+// --- MODIFICATION FOR STOP GENERATION ---
+export const search = (query, history, signal) => { 
+    console.log("[LOG] api.js: Sending search request with cancellation signal..."); 
+    return api.post('/search', { query, history }, { signal }); 
+};
+// --- END OF MODIFICATION ---
 
 export const getDocument = async (documentId) => {
     const response = await api.get(`/documents/${documentId}`, {
