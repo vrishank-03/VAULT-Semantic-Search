@@ -50,6 +50,19 @@ Use this as a quick orientation when you open a file.
 - `src/pages/`: Contains the main page components (`Dashboard.js`, `LoginPage.js`, `SignupPage.js`, `ResetPasswordPage.js`).
 - `src/components/`: Contains reusable UI pieces like `Sidebar.js`, `PdfViewer.js`, `GoogleLoginButton.js`, and our custom animations (`ProcessingAnimation.js`, `ThinkingAnimation.js`).
 
+## Key Features
+
+* **RAG Pipeline:** Ingests PDFs, performs page-aware text chunking (`langchain`), generates embeddings (Python), stores in ChromaDB, and uses an LLM (Groq) for context retrieval and answer synthesis.
+* **Document Management:** Secure PDF upload with duplicate detection and user cancellation support. Displays a list of uploaded documents with options to view.
+* **Interactive Chat Interface:**
+    * Conversational Q&A with source attribution linking to specific PDF pages/text.
+    * **Stop Generation:** Allows users to cancel the LLM response generation mid-stream.
+    * **Message Editing:** Users can edit their previous questions and resubmit.
+    * **Copy Functionality:** Easily copy both user prompts and AI responses.
+    * **Multi-Chat Management:** Supports multiple distinct conversations, saving previous chats in component state when starting a new one.
+* **Authentication:** Secure user accounts via standard email/password (with verification, password reset) and Google OAuth 2.0 (handling profile picture download and storage).
+* **Integrated PDF Viewer:** Displays source documents with text highlighting capabilities (`react-pdf`).
+  
 ---
 ## Environment Variables
 Create a `backend/.env` file with the following keys. **Do not commit this file.**
