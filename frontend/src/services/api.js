@@ -25,7 +25,7 @@ api.interceptors.response.use(
     if (error.response && error.response.status === 401) {
       console.error("Authentication error (401). Logging out.");
       localStorage.removeItem('token');
-      window.location.pathname = '/login'; 
+      window.location.pathname = '/login';
     }
     return Promise.reject(error);
   }
@@ -73,9 +73,12 @@ export const uploadDocument = (files, signal) => { // <-- 1. ADDED 'signal'
 // --- END OF MODIFICATION ---
 
 // --- MODIFICATION FOR STOP GENERATION ---
-export const search = (query, history, signal) => { 
-    console.log("[LOG] api.js: Sending search request with cancellation signal..."); 
-    return api.post('/search', { query, history }, { signal }); 
+// 1. ADDED conversationId
+export const search = (query, history, conversationId, signal) => {
+    // 2. UPDATED LOG
+    console.log(`[LOG] api.js: Sending search request for Convo ID: ${conversationId} with cancellation signal...`);
+    // 3. ADDED conversationId to body
+    return api.post('/search', { query, history, conversationId }, { signal });
 };
 // --- END OF MODIFICATION ---
 
@@ -87,5 +90,22 @@ export const getDocument = async (documentId) => {
 };
 
 export const getDocuments = () => api.get('/documents');
+
+export const createNewConversation = () => {
+    console.log("[LOG] api.js: Sending request to create new conversation...");
+    return api.post('/chat/new');
+};
+
+export const getConversations = () => {
+    console.log("[LOG] api.js: Sending request to get conversations...");
+    return api.get('/chat/conversations');
+};
+
+// --- NEW FUNCTION START ---
+export const getConversationHistory = (conversationId) => {
+    console.log(`[LOG] api.js: Sending request to get history for conversation ID: ${conversationId}...`);
+    return api.get(`/chat/history/${conversationId}`);
+};
+// --- NEW FUNCTION END ---
 
 export default api;

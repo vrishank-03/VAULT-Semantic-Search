@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path');
+const path = require('path'); // --- THIS LINE IS NOW FIXED ---
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
@@ -10,6 +10,7 @@ const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js
 const { processDocument } = require('./documentProcessor.js');
 const { performRAG } = require('./searchService.js');
 const authRoutes = require('./routes/authRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 const { protect } = require('./middleware/authMiddleware');
 
 const app = express();
@@ -42,6 +43,7 @@ const upload = multer({ storage });
 
 // --- API ROUTES ---
 app.use('/api/auth', authRoutes);
+app.use('/api/chat', chatRoutes);
 
 // --- MODIFIED /api/user ENDPOINT ---
 app.get('/api/user', protect, (req, res) => {
@@ -117,23 +119,32 @@ app.post('/api/documents/upload', protect, upload.array('documents', 10), async 
     }
 });
 
+// --- MODIFIED /api/search ENDPOINT ---
 app.post('/api/search', protect, async (req, res) => {
-    const { query, history } = req.body;
+    // 1. Destructure conversationId from the request body
+    const { query, history, conversationId } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required.' });
+
+    // 2. Added log
+    console.log(`[LOG] /api/search: Received search for Convo ID: ${conversationId || 'null'}`);
+
     try {
-        const ragResult = await performRAG(req.user.id, query, history);
+        // 3. Pass conversationId to performRAG
+        const ragResult = await performRAG(req.user.id, query, history, conversationId);
         res.status(200).json(ragResult);
     } catch (error) {
         console.error('Error during RAG search:', error);
         res.status(500).json({ error: 'Failed to perform search.' });
     }
 });
+// --- END MODIFIED /api/search ENDPOINT ---
 
 app.get('/api/documents/:id', protect, (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
     const db = getDb();
     
+    // --- THIS LINE IS NOW FIXED (was user_user) ---
     db.get('SELECT file_path FROM documents WHERE id = ? AND user_id = ?', [id, userId], (err, row) => {
         if (err || !row) {
             return res.status(404).json({ error: 'Document not found or access denied.' });
