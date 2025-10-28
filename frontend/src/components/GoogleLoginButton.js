@@ -1,28 +1,37 @@
 import React from 'react';
 import { GoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+// 1. REMOVED useNavigate import
+import { jwtDecode } from "jwt-decode"; 
 
 const GoogleLoginButton = ({ setError }) => {
     const { loginWithGoogle } = useAuth();
-    const navigate = useNavigate();
+    // 2. REMOVED const navigate = useNavigate();
 
-    // This function is called on a successful Google Sign-In.
-    // The 'credentialResponse' object contains the ID token from Google.
     const handleGoogleSuccess = async (credentialResponse) => {
+        console.log("[LOG] GoogleLoginButton: handleGoogleSuccess triggered.");
+        
         try {
-            // We call the 'loginWithGoogle' function from our AuthContext,
-            // which will send the token to our backend.
-            await loginWithGoogle(credentialResponse);
-            // On success, navigate the user to their dashboard.
-            navigate('/dashboard');
+            // Let's decode the JWT here to log the picture URL
+            const decodedToken = jwtDecode(credentialResponse.credential);
+            console.log("[LOG] GoogleLoginButton: Decoded JWT:", decodedToken);
+            console.log("[LOG] GoogleLoginButton: User's picture URL:", decodedToken.picture);
+
+            console.log("[LOG] GoogleLoginButton: Passing picture URL to AuthContext:", decodedToken.picture); // <-- 3. ADDED LOG
+            await loginWithGoogle(credentialResponse, decodedToken.picture); // <-- 4. MODIFIED THIS LINE
+            console.log("[LOG] GoogleLoginButton: loginWithGoogle call finished.");
+
+            // 1. --- The navigate('/dashboard') call has been REMOVED ---
+            // The application will now rely on a component that reacts to the
+            // 'isAuthenticated' state change, which is the correct pattern.
+            // A component like your LoginPage or a protected route handler will
+            // now manage the redirection.
         } catch (error) {
             console.error("Google Sign-In Error:", error);
             setError("Google Sign-In failed. Please try again.");
         }
     };
 
-    // This function is called if Google's login process fails.
     const handleGoogleError = () => {
         setError("Google Sign-In process failed. Please try again.");
     };
@@ -33,7 +42,6 @@ const GoogleLoginButton = ({ setError }) => {
                 onSuccess={handleGoogleSuccess}
                 onError={handleGoogleError}
                 theme="outline"
-                // You can adjust the width or other props here if needed
             />
         </div>
     );

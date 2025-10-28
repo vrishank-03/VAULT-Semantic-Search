@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { FiX, FiLoader } from 'react-icons/fi';
+import { useState, useEffect, useRef, useMemo } from 'react';
 
 // Import the required CSS
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -16,12 +17,8 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
   const [numPages, setNumPages] = useState(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const contentRef = useRef(null);
-
-  // --- FIX APPLIED HERE ---
-  // We memoize the file object. This prevents the <Document> component from
-  // re-fetching the PDF on every re-render of this component, which was causing the infinite loop.
   const pdfFile = useMemo(() => ({ url: fileUrl }), [fileUrl]);
-
+  
   // This effect sets the width of the PDF pages to fit the container.
   useEffect(() => {
     const element = contentRef.current;
@@ -44,35 +41,17 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
     setNumPages(numPages);
   }
 
-  // Effect to scroll to a highlight.
+  // This effect handles scrolling to the correct page
   useEffect(() => {
     if (numPages && highlight && highlight.pageNumber && contentRef.current) {
-      const pageElement = contentRef.current.querySelector(`.react-pdf__Page[data-page-number="${highlight.pageNumber}"]`);
-      if (pageElement) {
-        pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+        setTimeout(() => {
+            const pageElement = contentRef.current.querySelector(`.react-pdf__Page[data-page-number="${highlight.pageNumber}"]`);
+            if (pageElement) {
+                pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 100);
     }
   }, [numPages, highlight]);
-
-  // Highlight rendering logic.
-  const renderHighlight = (page) => {
-    if (!highlight || !highlight.position || highlight.pageNumber !== page.pageNumber) {
-      return null;
-    }
-    const viewport = page.getViewport({ scale: 1 });
-    const y = viewport.height - highlight.position.y - highlight.position.height;
-    return (
-      <div
-        className="absolute bg-yellow-400/40 pointer-events-none"
-        style={{
-          left: `${(highlight.position.x / viewport.width) * 100}%`,
-          top: `${(y / viewport.height) * 100}%`,
-          width: `${(highlight.position.width / viewport.width) * 100}%`,
-          height: `${(highlight.position.height / viewport.height) * 100}%`,
-        }}
-      />
-    );
-  };
 
   return (
     <div className="w-full max-w-4xl h-[90vh] bg-white dark:bg-gray-800 rounded-xl shadow-2xl flex flex-col overflow-hidden">
@@ -92,7 +71,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
       {/* Scrollable Content Area */}
       <div className="flex-grow overflow-y-auto p-4 bg-gray-100 dark:bg-gray-900" ref={contentRef}>
         <Document
-          file={pdfFile} // --- USING THE MEMOIZED FILE OBJECT HERE ---
+          file={pdfFile}
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={console.error}
           loading={
@@ -109,7 +88,7 @@ function PdfViewer({ fileUrl, highlight, onClose }) {
                   key={`page_${index + 1}`}
                   pageNumber={index + 1}
                   width={containerWidth ? containerWidth : undefined}
-                  customTextRenderer={({ page }) => renderHighlight(page)}
+                  // REMOVED: The customTextRenderer prop is gone to ensure copy/paste works correctly.
                   className="shadow-md"
                 />
               </div>

@@ -1,49 +1,101 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
-const ProcessingAnimation = () => {
+// 1. --- MODIFIED: Component now accepts 'onStopUpload' prop ---
+const ProcessingAnimation = ({ onStopUpload }) => {
+
+  // This effect adds an event listener to block keyboard interactions (like pressing Enter)
+  // while the animation is on screen. It cleans up after itself when unmounted.
+  useEffect(() => {
+    const preventInteraction = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    document.addEventListener('keydown', preventInteraction, true);
+
+    return () => {
+      document.removeEventListener('keydown', preventInteraction, true);
+    };
+  }, []);
+
+  // --- NEW: Log to confirm prop is received ---
+  useEffect(() => {
+    if (typeof onStopUpload !== 'function') {
+      console.warn("[LOG] ProcessingAnimation: 'onStopUpload' prop is not a function or is missing.");
+    } else {
+      console.log("[LOG] ProcessingAnimation: 'onStopUpload' prop is ready.");
+    }
+  }, [onStopUpload]);
+
   return (
-    <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-sm flex items-center justify-center z-50 text-white font-sans">
-      <div className="flex flex-col items-center">
-        {/* The Document Icon and Animation Container */}
-        <div className="relative w-28 h-36">
-          {/* Document Outline */}
-          <div className="w-full h-full bg-gray-700 rounded-lg border-2 border-gray-500 shadow-2xl">
-            {/* Page corner fold */}
-            <div className="absolute top-0 right-0 w-8 h-8 bg-gray-800" style={{ clipPath: 'polygon(100% 0, 0 0, 100% 100%)' }}></div>
-            <div className="absolute top-2 right-0 w-8 h-8 border-l-2 border-t-2 border-gray-500"></div>
+    <>
+      {/* This <style> tag injects the necessary CSS animations directly. */}
+      <style>{`
+        .arc-spinner {
+          width: 5rem; /* 80px */
+          height: 5rem; /* 80px */
+          animation: arc-rotate 2.2s linear infinite;
+        }
+        .arc-spinner-path {
+          stroke: #3b82f6; /* A modern blue, you can change this */
+          stroke-linecap: round;
+          animation: arc-dash 1.65s ease-in-out infinite;
+        }
+        @keyframes arc-rotate {
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes arc-dash {
+          0% {
+            stroke-dasharray: 1, 200;
+            stroke-dashoffset: 0;
+          }
+          50% {
+            stroke-dasharray: 120, 200;
+            stroke-dashoffset: -45px;
+          }
+          100% {
+            stroke-dasharray: 120, 200;
+            stroke-dashoffset: -165px;
+          }
+        }
+      `}</style>
 
-            {/* Document Lines */}
-            <div className="absolute top-8 left-4 right-4 h-1 bg-gray-500 rounded-full opacity-50"></div>
-            <div className="absolute top-12 left-4 right-8 h-1 bg-gray-500 rounded-full opacity-50"></div>
-            <div className="absolute top-16 left-4 right-4 h-1 bg-gray-500 rounded-full opacity-50"></div>
-            <div className="absolute top-20 left-4 right-12 h-1 bg-gray-500 rounded-full opacity-50"></div>
-            <div className="absolute top-24 left-4 right-4 h-1 bg-gray-500 rounded-full opacity-50"></div>
-          </div>
+      {/* The main overlay container. It's designed to capture all mouse clicks. */}
+      <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-md flex items-center justify-center z-50 text-white font-sans cursor-wait">
+        <div className="flex flex-col items-center gap-6">
+          
+          {/* The new, professional SVG spinner animation */}
+          <svg className="arc-spinner" viewBox="0 0 80 80">
+            <circle
+              className="arc-spinner-path"
+              cx="40"
+              cy="40"
+              r="30"
+              fill="none"
+              strokeWidth="6"
+            ></circle>
+          </svg>
 
-          {/* The Scanning Line Animation */}
-          <div className="scan-line absolute left-0 right-0 h-1 bg-cyan-300 shadow-[0_0_15px_rgba(0,255,255,0.8)]"></div>
+          {/* Updated text with a subtle pulse animation */}
+          <p className="text-lg font-medium tracking-wider text-gray-300 animate-pulse">
+            Processing Document...
+          </p>
 
-          {/* The Bursting Chunks Animation */}
-          {/* We create 6 chunks and apply different animation delays and positions */}
-          {[...Array(6)].map((_, i) => (
-            <div
-              key={i}
-              className="chunk"
-              style={{
-                '--delay': `${i * 0.25}s`,
-                '--x': `${Math.cos((i / 6) * 2 * Math.PI) * 100}px`,
-                '--y': `${Math.sin((i / 6) * 2 * Math.PI) * 100}px`,
-              }}
-            ></div>
-          ))}
+          {/* 2. --- NEW: Stop Uploading Button --- */}
+          {/* We check if the prop exists before rendering the button */}
+          {onStopUpload && (
+            <button
+              onClick={onStopUpload}
+              className="mt-4 px-4 py-2 bg-gray-700/50 text-gray-300 rounded-md hover:bg-gray-600/70 transition-colors cursor-pointer text-sm"
+              title="Cancel the document upload"
+            >
+              Stop Uploading
+            </button>
+          )}
+          {/* --- END OF NEW BUTTON --- */}
         </div>
-
-        {/* Text Label */}
-        <p className="mt-8 text-lg font-medium tracking-widest uppercase animate-pulse">
-          Analyzing Document
-        </p>
       </div>
-    </div>
+    </>
   );
 };
 

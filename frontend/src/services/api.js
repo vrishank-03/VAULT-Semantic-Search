@@ -1,15 +1,14 @@
 import axios from 'axios';
 
-// ==================================================================
-// 1. CREATE A PRE-CONFIGURED AXIOS INSTANCE
-// ==================================================================
+const API_URL = 'http://localhost:5000/api';
+
 const api = axios.create({
-    baseURL: 'http://localhost:5000/api',
+    baseURL: API_URL,
+    headers: {
+        'Content-Type': 'application/json',
+    },
 });
 
-// ==================================================================
-// 2. REQUEST INTERCEPTOR: ADD THE AUTH TOKEN TO EVERY REQUEST
-// ==================================================================
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -20,48 +19,68 @@ api.interceptors.request.use((config) => {
     return Promise.reject(error);
 });
 
-// ==================================================================
-// 3. RESPONSE INTERCEPTOR: HANDLE 401 ERRORS GLOBALLY
-// ==================================================================
 api.interceptors.response.use(
-  (response) => response, // Directly return successful responses.
+  (response) => response,
   (error) => {
-    // Check if the error is a 401 Unauthorized
     if (error.response && error.response.status === 401) {
-      // 1. Remove the invalid token
+      console.error("Authentication error (401). Logging out.");
       localStorage.removeItem('token');
-      // 2. Redirect to the login page
-      window.location.href = '/login'; 
+      window.location.pathname = '/login';
     }
-    // For all other errors, just reject the promise.
     return Promise.reject(error);
   }
 );
 
-
-// ==================================================================
-// 4. OUR API FUNCTIONS
-// ==================================================================
-
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
-
 export const signupUser = (userData) => api.post('/auth/signup', userData);
 
-// --- Added the missing googleLogin function ---
-// This function sends the Google credential to your backend's /auth/google endpoint.
-export const googleLogin = (credential) => api.post('/auth/google', { credential });
+// --- MODIFICATION BELOW ---
 
-export const uploadDocument = (files) => {
+export const googleLogin = (credential, pictureUrl) => { // <-- 1. MODIFIED SIGNATURE
+    console.log("[LOG] api.js: Sending Google login request with pictureUrl:", pictureUrl); // <-- 2. ADDED LOG
+    return api.post('/auth/google', { credential, pictureUrl }); // <-- 3. MODIFIED BODY
+};
+
+// --- END OF MODIFICATION ---
+
+export const sendPasswordResetEmail = (email) => api.post('/auth/forgot-password', { email });
+export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
+
+export const getUserInfo = async () => {
+    try {
+        const response = await api.get('/user');
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching user info:', error);
+        throw error;
+    }
+};
+
+export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
+
+// --- MODIFICATION FOR STOP UPLOAD ---
+export const uploadDocument = (files, signal) => { // <-- 1. ADDED 'signal'
+    console.log("[LOG] api.js: Sending upload request with cancellation signal..."); // <-- 2. ADDED LOG
     const formData = new FormData();
     files.forEach(file => {
         formData.append('documents', file);
     });
     return api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        signal: signal, // <-- 3. PASSED 'signal' to axios
     });
 };
+// --- END OF MODIFICATION ---
 
-export const search = (query, history) => api.post('/search', { query, history });
+// --- MODIFICATION FOR STOP GENERATION ---
+// 1. ADDED conversationId
+export const search = (query, history, conversationId, signal) => {
+    // 2. UPDATED LOG
+    console.log(`[LOG] api.js: Sending search request for Convo ID: ${conversationId} with cancellation signal...`);
+    // 3. ADDED conversationId to body
+    return api.post('/search', { query, history, conversationId }, { signal });
+};
+// --- END OF MODIFICATION ---
 
 export const getDocument = async (documentId) => {
     const response = await api.get(`/documents/${documentId}`, {
@@ -69,5 +88,24 @@ export const getDocument = async (documentId) => {
     });
     return response.data;
 };
+
+export const getDocuments = () => api.get('/documents');
+
+export const createNewConversation = () => {
+    console.log("[LOG] api.js: Sending request to create new conversation...");
+    return api.post('/chat/new');
+};
+
+export const getConversations = () => {
+    console.log("[LOG] api.js: Sending request to get conversations...");
+    return api.get('/chat/conversations');
+};
+
+// --- NEW FUNCTION START ---
+export const getConversationHistory = (conversationId) => {
+    console.log(`[LOG] api.js: Sending request to get history for conversation ID: ${conversationId}...`);
+    return api.get(`/chat/history/${conversationId}`);
+};
+// --- NEW FUNCTION END ---
 
 export default api;
