@@ -38,21 +38,55 @@ async function generateWithGroq(promptOrMessages) {
     }
 }
 
-async function performRAG(userId, queryText, history = [], conversationId) {
+// --- [MODIFIED] Function signature now accepts roomId ---
+async function performRAG(userId, queryText, history = [], conversationId, roomId) {
     // --- (performRAG function remains largely the same until the end) ---
-    console.log(`\n[LOG] --- 1. ENTERING performRAG for User ${userId} | Convo ID: ${conversationId} ---`);
+    console.log(`\n[LOG] --- 1. ENTERING performRAG for User ${userId} | Convo ID: ${conversationId} | Room ID: ${roomId} ---`);
+    if (!roomId) {
+        console.error(`[RAG_ERROR] --- performRAG was called without a roomId. Aborting. ---`);
+        throw new Error("Room ID is required to perform a search.");
+    }
     const db = getDb();
 
     const formattedHistory = history.map(msg => `${msg.sender === 'user' ? 'User' : 'AI'}: ${msg.text}`).join('\n');
 
+    // --- [MODIFIED] This query is now room-aware and *NOT* user-specific ---
+    console.log(`[LOG] --- 1a. Fetching ALL room-specific documents for room ${roomId}`);
     const docList = await new Promise((resolve, reject) => {
-        db.all('SELECT id, name FROM documents WHERE user_id = ? ORDER BY id DESC', [userId], (err, rows) => {
+        // --- [FIX] Removed "user_id = ?" from the query ---
+        const sql = 'SELECT id, name FROM documents WHERE room_id = ? ORDER BY id DESC';
+        db.all(sql, [roomId], (err, rows) => {
             if (err) return reject(err);
             resolve(rows || []);
         });
     });
+    console.log(`[LOG] --- 1b. Found ${docList.length} documents in this room for the prompt context.`);
+    // --- [END MODIFIED] ---
 
-    const queryAnalyzerPrompt = `You are an expert query analyzer...`; // Unchanged
+
+    const docListString = docList.length > 0
+        ? "Available documents:\n" + docList.map(doc => `- ${doc.name} (ID: ${doc.id})`).join('\n')
+        : "No documents have been uploaded to this room yet.";
+
+    const queryAnalyzerPrompt = `You are an expert query analyzer. The user is asking a question in a chat room.
+You have access to the chat history and a list of documents in this specific room.
+Your task is to analyze the user's *latest query* in the context of the history and available documents, then output a single, transformed search query.
+
+1.  **If the query is self-contained** (e.g., "What is the capital of France?"), use the query as is.
+2.  **If the query references history** (e.g., "What did it say about that?"), use the history to reformulate a standalone query (e.g., "What does the document say about [previous topic]?").
+3.  **If the query is a general knowledge question NOT related to the documents**, transform it into a query about the documents (e.g., "Tell me what you know about [query topic]" or "Find information about [query topic] in the documents").
+4.  **If no documents are available**, state that you cannot search for an answer.
+
+**Chat History:**
+${formattedHistory}
+
+**Documents in this Room:**
+${docListString}
+
+**User's Latest Query:**
+"${queryText}"
+
+**Transformed Search Query:**`;
 
     console.log("[LOG] --- 2. CALLING QUERY ANALYZER ---");
     const analyzerResult = await generateWithGroq(queryAnalyzerPrompt);
@@ -60,16 +94,31 @@ async function performRAG(userId, queryText, history = [], conversationId) {
     const transformedQuery = analyzerResponse.text();
     console.log(`[LOG] --- 3. Query Analyzer Output: "${transformedQuery}" ---`);
 
+    if (transformedQuery.toLowerCase().includes("cannot search") || transformedQuery.toLowerCase().includes("no documents")) {
+        console.log("[LOG] --- Analyzer determined no search is possible (e.g., no docs). Returning. ---");
+        const noDocPayload = { answer: "I cannot answer that as no documents have been uploaded to this room yet.", sources: [] };
+        await saveMessages(db, conversationId, queryText, noDocPayload.answer, noDocPayload, userId);
+        return noDocPayload;
+    }
+
     console.log("[LOG] --- 4. Retrieving embedding and querying ChromaDB ---");
     const queryEmbedding = await getEmbeddingForQuery(transformedQuery);
 
     const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
 
+    // --- [MODIFIED] ChromaDB query is now *only* room-aware ---
+    const whereFilter = {
+        "roomId": Number(roomId) // Ensure roomId is a number
+    };
+    console.log("[LOG] --- 4a. Using Chroma WHERE filter:", JSON.stringify(whereFilter));
+
     const initialResults = await collection.query({
         queryEmbeddings: [queryEmbedding],
         nResults: 10,
-        where: { "userId": userId }
+        where: whereFilter
     });
+    // --- [END MODIFIED] ---
+
     console.log(`[LOG] --- 5. ChromaDB Retrieved ${initialResults?.documents?.[0]?.length || 0} chunks ---`);
 
     // --- Handling case where no results are found ---
@@ -85,6 +134,7 @@ async function performRAG(userId, queryText, history = [], conversationId) {
     const rerankPrompt = `You are a helpful and professional re-ranking assistant...`; // Unchanged
 
     console.log("[LOG] --- 6. CALLING RE-RANKER ---");
+    // ... (rest of re-ranking logic is unchanged) ...
     const rerankResult = await generateWithGroq(rerankPrompt);
     const rerankResponse = rerankResult.response;
     const rerankText = rerankResponse.text();

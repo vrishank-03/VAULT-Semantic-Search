@@ -7,11 +7,9 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-// --- NEW IMPORTS ---
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-// --- END NEW IMPORTS ---
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -152,79 +150,176 @@ exports.resetPassword = (req, res) => {
     });
 };
 
+// --- [MODIFIED] Complete Rebuild of Signup Function ---
 exports.signup = (req, res) => {
-    // ... (rest of the function is unchanged)
-    console.log('[Auth] POST /signup route hit.');
+    console.log('[AUTH_SIGNUP] POST /signup route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        console.error('[Auth] Validation failed:', errors.array());
+        console.error('[AUTH_SIGNUP] Validation failed:', errors.array());
         return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email, password } = req.body;
+    // 1. Get all new fields from body
+    const { email, password, role, productName } = req.body;
+    console.log(`[AUTH_SIGNUP] Received signup attempt for email: ${email}, role: ${role}, product: ${productName}`);
+
+    // 2. Validate new fields
+    if (!role || !productName) {
+        console.warn('[AUTH_SIGNUP_WARN] Signup failed: Role or ProductName is missing.');
+        return res.status(400).json({ message: 'Role and Product Name are required.' });
+    }
+
     const db = getDb();
     
-    console.log(`[Auth] Checking if user ${email} already exists.`);
+    // 3. Check for existing user
+    console.log(`[AUTH_SIGNUP] Checking if user ${email} already exists.`);
     db.get('SELECT email FROM users WHERE email = ?', [email], (err, row) => {
+        if (err) {
+            console.error(`[AUTH_SIGNUP_ERROR] DB error checking user ${email}:`, err.message);
+            return res.status(500).json({ message: 'Database error.' });
+        }
         if (row) {
-            console.warn(`[Auth] Signup failed: User ${email} already exists.`);
+            console.warn(`[AUTH_SIGNUP_WARN] Signup failed: User ${email} already exists.`);
             return res.status(400).json({ message: 'User already exists.' });
         }
         
-        console.log(`[Auth] User ${email} does not exist. Hashing password.`);
-        const salt = bcrypt.genSaltSync(10);
-        const password_hash = bcrypt.hashSync(password, salt);
-        const verificationToken = crypto.randomBytes(32).toString('hex');
+        // 4. User does not exist. Now find the product they want to join.
+        console.log(`[AUTH_SIGNUP] User ${email} does not exist. Checking product: ${productName}`);
+        const productSql = `SELECT id, product_owner_email, status FROM products WHERE product_name = ?`;
         
-        console.log(`[Auth] Inserting new user ${email} into database with verification token.`);
-        const stmt = db.prepare('INSERT INTO users (email, password_hash, email_verification_token, is_email_verified) VALUES (?, ?, ?, 0)');
-        stmt.run(email, password_hash, verificationToken, function (err) {
-            if (err) {
-                console.error(`[Auth] Database error during user insert for ${email}:`, err.message);
-                return res.status(500).json({ message: 'Could not register user.' });
+        db.get(productSql, [productName], (productErr, product) => {
+            if (productErr) {
+                console.error(`[AUTH_SIGNUP_ERROR] DB error finding product ${productName}:`, productErr.message);
+                return res.status(500).json({ message: 'Database error finding product.' });
             }
-            console.log(`[Auth] User ${email} registered with ID: ${this.lastID}.`);
+            if (!product) {
+                console.warn(`[AUTH_SIGNUP_WARN] Signup failed: Product "${productName}" not found.`);
+                return res.status(404).json({ message: `Product "${productName}" not found.` });
+            }
+            if (product.status !== 'confirmed') {
+                console.warn(`[AUTH_SIGNUP_WARN] Signup failed: Product "${productName}" is not confirmed and cannot be joined.`);
+                return res.status(400).json({ message: `Product "${productName}" is not confirmed and cannot be joined.` });
+            }
+
+            // 5. Product is valid. Hash password and set status.
+            console.log(`[AUTH_SIGNUP] Product ${productName} is valid (ID: ${product.id}). Hashing password...`);
+            const salt = bcrypt.genSaltSync(10);
+            const password_hash = bcrypt.hashSync(password, salt);
+            const verificationToken = crypto.randomBytes(32).toString('hex');
             
-            const verificationLink = `${process.env.API_URL}/api/auth/verify-email?token=${verificationToken}`;
-            console.log(`[Auth] Generated verification link: ${verificationLink}`);
+            // 6. Determine the new user's status based on their role
+            const newRole = role === 'Administrator' ? 'Administrator' : 'User'; // Sanitize role
+            const newStatus = newRole === 'Administrator' ? 'suspended_admin' : 'suspended_user';
+            const newProductId = product.id;
 
-            sendEmail(
-                email,
-                'Verify Your VAULT Account',
-                `<h3>Welcome to VAULT!</h3><p>Please click the button below to verify your email address and activate your account.</p><a href="${verificationLink}" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;">Verify Email</a><p>This link is valid for a single use.</p>`
-            );
+            console.log(`[AUTH_SIGNUP] New user will be created with Role: ${newRole}, Status: ${newStatus}, ProductID: ${newProductId}`);
 
-            res.status(201).json({ message: 'Signup successful. Please check your email to verify your account.' });
+            // 7. Insert the new user into the database
+            const insertSql = `
+                INSERT INTO users (email, password_hash, email_verification_token, role, status, product_id) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            `;
+            const params = [email, password_hash, verificationToken, newRole, newStatus, newProductId];
+
+            db.run(insertSql, params, function (insertErr) {
+                if (insertErr) {
+                    console.error(`[AUTH_SIGNUP_ERROR] Database error during user insert for ${email}:`, insertErr.message);
+                    return res.status(500).json({ message: 'Could not register user.' });
+                }
+                
+                const newUserId = this.lastID;
+                console.log(`[AUTH_SIGNUP] User ${email} registered with ID: ${newUserId}.`);
+                
+                // 8. Send Email 1: Verification Email (This is a REAL email)
+                const verificationLink = `${process.env.API_URL}/api/auth/verify-email?token=${verificationToken}`;
+                console.log(`[AUTH_SIGNUP] Generated verification link: ${verificationLink}`);
+                sendEmail(
+                    email,
+                    'Verify Your VAULT Account',
+                    `<h3>Welcome to VAULT!</h3><p>Please click the button below to verify your email address. <strong>Your account will also require approval from your administrator before you can log in.</strong></p><a href="${verificationLink}" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;">Verify Email</a><p>This link is valid for a single use.</p>`
+                );
+
+                // 9. Send Email 2 & 3: Approval Request (This is SIMULATED as requested)
+                if (newRole === 'Administrator') {
+                    // --- SIMULATE EMAIL TO PRODUCT OWNER ---
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] *** SIMULATING APPROVAL EMAIL ***`);
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] TO: ${product.product_owner_email} (Product Owner)`);
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] SUBJ: New Administrator Request for ${productName}`);
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] BODY: ${email} (ID: ${newUserId}) has requested Administrator access.`);
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] *** END SIMULATION ***`);
+                } else {
+                    // --- SIMULATE EMAIL TO ALL ADMINS OF THAT PRODUCT ---
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] *** SIMULATING APPROVAL EMAIL ***`);
+                    console.log(`[AUTH_SIGNUP_EMAIL_SIM] Finding Admins for Product ID ${newProductId} to notify...`);
+                    const adminSql = `SELECT email FROM users WHERE role = 'Administrator' AND status = 'active' AND product_id = ?`;
+                    db.all(adminSql, [newProductId], (adminErr, admins) => {
+                        if (adminErr) {
+                            console.error('[AUTH_SIGNUP_EMAIL_SIM_ERROR] Could not query for admins:', adminErr.message);
+                        } else if (admins && admins.length > 0) {
+                            console.log(`[AUTH_SIGNUP_EMAIL_SIM] Found ${admins.length} active admins.`);
+                            admins.forEach(admin => {
+                                console.log(`[AUTH_SIGNUP_EMAIL_SIM] TO: ${admin.email} (Admin)`);
+                                console.log(`[AUTH_SIGNUP_EMAIL_SIM] SUBJ: New User Request for ${productName}`);
+                                console.log(`[AUTH_SIGNUP_EMAIL_SIM] BODY: ${email} (ID: ${newUserId}) has requested User access.`);
+                            });
+                        } else {
+                            console.warn(`[AUTH_SIGNUP_EMAIL_SIM_WARN] No active admins found for product ${productName} to approve new user.`);
+                        }
+                        console.log(`[AUTH_SIGNUP_EMAIL_SIM] *** END SIMULATION ***`);
+                    });
+                }
+
+                // 10. Send final response
+                res.status(201).json({ message: 'Signup successful. Please check your email to verify your account.' });
+            });
         });
-        stmt.finalize();
     });
 };
+// --- [END MODIFIED] Signup Function ---
 
+
+// --- [MODIFIED] Login Function ---
 exports.login = (req, res) => {
-    // ... (rest of the function is unchanged)
-    console.log('[Auth] POST /login route hit.');
+    console.log('[AUTH_LOGIN] POST /login route hit.');
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        console.error('[Auth] Validation failed:', errors.array());
+        console.error('[AUTH_LOGIN] Validation failed:', errors.array());
         return res.status(400).json({ errors: errors.array() });
     }
     const { email, password } = req.body;
     const db = getDb();
 
-    console.log(`[Auth] Attempting login for email: ${email}`);
+    console.log(`[AUTH_LOGIN] Attempting login for email: ${email}`);
     db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
         if (!user) {
-            console.warn(`[Auth] Login failed for ${email}: User not found.`);
+            console.warn(`[AUTH_LOGIN_WARN] Login failed for ${email}: User not found.`);
             return res.status(401).json({ message: 'Invalid email or password.' });
         }
 
+        // --- [MODIFIED] RBAC Login Checks ---
+        // 1. Check if email is verified
         if (user.is_email_verified === 0) {
-            console.warn(`[Auth] Login failed for ${email}: Email not verified.`);
+            console.warn(`[AUTH_LOGIN_WARN] Login failed for ${email}: Email not verified.`);
             return res.status(403).json({ message: "Please verify your email before logging in." });
         }
         
+        // 2. Check if user is 'active' (replaces old logic)
+        if (user.status !== 'active') {
+            console.warn(`[AUTH_LOGIN_WARN] Login failed for ${email}: User status is "${user.status}".`);
+            if (user.status === 'suspended_user' || user.status === 'suspended_admin') {
+                return res.status(403).json({ message: "Your account is pending approval by your administrator." });
+            }
+            if (user.status === 'deactivated') {
+                return res.status(403).json({ message: "Your account has been deactivated." });
+            }
+            // Fallback for any other non-active status
+            return res.status(403).json({ message: `Your account is not active (Status: ${user.status}).` });
+        }
+        // --- [END MODIFIED] RBAC Login Checks ---
+        
+        // 3. Check password
         if (bcrypt.compareSync(password, user.password_hash)) {
-            console.log(`[Auth] User ${email} authenticated successfully.`);
+            console.log(`[AUTH_LOGIN_SUCCESS] User ${email} authenticated successfully (Status: ${user.status}).`);
             const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
             res.json({
                 id: user.id,
@@ -232,11 +327,12 @@ exports.login = (req, res) => {
                 token: token
             });
         } else {
-            console.warn(`[Auth] Login failed for ${email}: Incorrect password.`);
+            console.warn(`[AUTH_LOGIN_WARN] Login failed for ${email}: Incorrect password.`);
             res.status(401).json({ message: 'Invalid email or password.' });
         }
     });
 };
+// --- [END MODIFIED] Login Function ---
 
 exports.forgotPassword = (req, res) => {
     // ... (rest of the function is unchanged)
@@ -289,8 +385,10 @@ exports.forgotPassword = (req, res) => {
     });
 };
 
+// --- [MODIFIED] Email Verification ---
+// This function now also sets the user's status, but *only* if they were pending verification.
+// It will NOT activate a 'suspended_user' or 'suspended_admin'.
 exports.handleEmailVerification = (req, res) => {
-    // ... (rest of the function is unchanged)
     console.log('[Auth] GET /verify-email route hit.');
     const { token } = req.query;
     if (!token) {
@@ -300,21 +398,59 @@ exports.handleEmailVerification = (req, res) => {
     console.log(`[Auth] Attempting to verify email with token: ${token}`);
 
     const db = getDb();
-    const stmt = db.prepare('UPDATE users SET is_email_verified = 1, email_verification_token = NULL WHERE email_verification_token = ?');
-
-    stmt.run(token, function (err) {
+    
+    // --- [MODIFIED] Logic ---
+    // We only update the status IF the status is 'pending_email_verification'.
+    // This prevents a user from verifying their email to bypass an admin suspension.
+    const sql = `
+        UPDATE users 
+        SET 
+            is_email_verified = 1, 
+            email_verification_token = NULL,
+            status = CASE 
+                       WHEN status = 'pending_email_verification' THEN 'suspended_user' 
+                       ELSE status 
+                   END
+        WHERE email_verification_token = ?
+    `;
+    
+    // We get the user *first* to check their role, to handle the 'suspended_admin' case.
+    db.get('SELECT role, status FROM users WHERE email_verification_token = ?', [token], (err, user) => {
         if (err) {
-            console.error(`[Auth] Database error during email verification for token ${token}:`, err.message);
+            console.error(`[Auth] DB error finding user by token ${token}:`, err.message);
             return res.status(500).send('<h1>Error during verification.</h1>');
         }
-        if (this.changes === 0) {
+        if (!user) {
             console.warn(`[Auth] Email verification failed: Invalid or expired token ${token}.`);
             return res.status(400).send('<h1>Invalid or expired verification link.</h1>');
         }
-        console.log(`[Auth] Email successfully verified for token ${token}. Redirecting.`);
-        res.redirect(`${process.env.FRONTEND_URL}/login?verified=true`);
+
+        // Now determine the correct new status
+        let newStatus = user.status;
+        if (user.status === 'pending_email_verification') {
+            newStatus = (user.role === 'Administrator') ? 'suspended_admin' : 'suspended_user';
+        }
+
+        console.log(`[Auth] Token is valid. User role is ${user.role}. Old status was ${user.status}. New status will be: ${newStatus}`);
+
+        const updateSql = `
+            UPDATE users SET 
+                is_email_verified = 1, 
+                email_verification_token = NULL,
+                status = ?
+            WHERE email_verification_token = ?
+        `;
+
+        db.run(updateSql, [newStatus, token], function (updateErr) {
+            if (updateErr) {
+                console.error(`[Auth] Database error during email verification update for token ${token}:`, updateErr.message);
+                return res.status(500).send('<h1>Error during verification.</h1>');
+            }
+            console.log(`[Auth] Email successfully verified for token ${token}. Status set to ${newStatus}. Redirecting.`);
+            res.redirect(`${process.env.FRONTEND_URL}/login?verified=true`);
+        });
     });
-    stmt.finalize();
+    // --- [END MODIFIED] ---
 };
 
 exports.checkVerificationStatus = (req, res) => {
@@ -338,12 +474,11 @@ exports.checkVerificationStatus = (req, res) => {
     });
 };
 
-// --- MODIFIED googleLogin FUNCTION ---
+// --- [MODIFIED] googleLogin Function (to align with new schema) ---
 exports.googleLogin = async (req, res) => {
     console.log('[Auth] POST /google route hit.');
     
-    // We no longer need the pictureUrl from the body, but we'll log it
-    const { credential, pictureUrl } = req.body;
+    const { credential, pictureUrl } = req.body; // pictureUrl is from old flow, 'picture' from payload is new
     console.log("[LOG] authController: Picture URL from req.body (for comparison):", pictureUrl);
 
     try {
@@ -353,7 +488,6 @@ exports.googleLogin = async (req, res) => {
         });
         const payload = ticket.getPayload();
         
-        // This is the URL we will download
         const { email, picture } = payload;
         
         console.log("[LOG] authController: Picture URL from Google token payload (to be downloaded):", picture);
@@ -361,7 +495,6 @@ exports.googleLogin = async (req, res) => {
         
         const db = getDb();
         
-        // Make this callback async to allow 'await' for image download
         db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => { 
             if (err) {
                 console.error(`[Auth] Database error during Google login lookup for ${email}:`, err.message);
@@ -376,14 +509,30 @@ exports.googleLogin = async (req, res) => {
                 const localDbPath = await saveProfilePicture(picture, user.id);
                 
                 // 2. Update the user's picture_url to the new local path
-                const updateSql = `UPDATE users SET picture_url = ? WHERE id = ?`;
+                // [MODIFIED] Also ensure their status is 'active' if they are a legacy google user
+                const updateSql = `
+                    UPDATE users SET 
+                        picture_url = ?,
+                        status = CASE 
+                                   WHEN status = 'pending_email_verification' THEN 'active' 
+                                   ELSE status 
+                               END
+                    WHERE id = ?
+                `;
                 db.run(updateSql, [localDbPath, user.id], (updateErr) => {
                     if (updateErr) {
-                        console.error(`[Auth] Failed to update picture URL for user ${user.id}:`, updateErr.message);
+                        console.error(`[Auth] Failed to update picture/status for user ${user.id}:`, updateErr.message);
                         // Non-fatal, still log them in
                     } else {
-                        console.log(`[Auth] Successfully updated picture_url for user ${user.id} to ${localDbPath}`);
+                        console.log(`[Auth] Successfully updated picture_url/status for user ${user.id} to ${localDbPath}`);
                     }
+                    
+                    // [MODIFIED] Add new RBAC checks before login
+                    if (user.status !== 'active' && user.status !== 'pending_email_verification') {
+                         console.warn(`[AUTH_LOGIN_WARN] Google Login failed for ${email}: User status is "${user.status}".`);
+                         return res.status(403).json({ message: `Your account is not active (Status: ${user.status}).` });
+                    }
+                    
                     // 3. Log them in
                     const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
                     res.json({ id: user.id, email: user.email, token });
@@ -392,13 +541,22 @@ exports.googleLogin = async (req, res) => {
                 // --- NEW USER FLOW ---
                 console.log(`[Auth] Google login: User ${email} not found, creating new account.`);
                 
+                // [MODIFIED] Google users bypass the standard signup, so we create them as active.
+                // This is a gap, as they won't be associated with a product.
+                // For now, we make them 'active' to allow them to log in.
                 const password_hash = 'google_user_' + crypto.randomBytes(16).toString('hex'); 
+                const newRole = 'User';
+                const newStatus = 'active'; // Google users are auto-activated
+
+                console.warn(`[AUTH_SIGNUP_WARN] New Google user ${email} is being created as 'active' and 'User' without a product.`);
                 
                 // 1. Insert user *without* the picture URL first, so we can get their ID
-                const stmt = db.prepare('INSERT INTO users (email, password_hash, is_email_verified) VALUES (?, ?, 1)');
+                const stmt = db.prepare(`
+                    INSERT INTO users (email, password_hash, is_email_verified, role, status) 
+                    VALUES (?, ?, 1, ?, ?)
+                `);
                 
-                // Make this callback async
-                stmt.run(email, password_hash, async function (err) { 
+                stmt.run(email, password_hash, newRole, newStatus, async function (err) { 
                     if (err) {
                         console.error(`[Auth] Database error during Google user creation for ${email}:`, err.message);
                         return res.status(500).json({ message: 'Could not register user.' });
@@ -431,6 +589,8 @@ exports.googleLogin = async (req, res) => {
         res.status(401).json({ message: 'Invalid Google token.' });
     }
 };
+// --- [END MODIFIED] googleLogin Function ---
+
 
 exports.logoutUser = (req, res) => {
     // ... (rest of the function is unchanged)

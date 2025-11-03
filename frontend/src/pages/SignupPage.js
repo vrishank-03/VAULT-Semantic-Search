@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { signupUser, checkVerificationStatus } from '../services/api';
+// --- [MODIFIED] Removed checkVerificationStatus ---
+import { signupUser, getConfirmedProducts } from '../services/api';
 import AuthLayout from '../components/AuthLayout';
-import SuccessAnimation from '../components/SuccessAnimation';
+// --- [MODIFIED] Import GenericSuccessAnimation (removed unused SuccessAnimation) ---
+import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
 import GoogleLoginButton from '../components/GoogleLoginButton';
 import Toast from '../Toast';
-// CHANGED: Import the new LoadingSpinner
-import LoadingSpinner from '../components/LoadingSpinner';
+// --- [MODIFIED] Removed unused LoadingSpinner ---
 
 const validatePassword = (password) => {
     // ... (validation logic remains the same)
@@ -28,88 +29,196 @@ const SignupPage = () => {
     const navigate = useNavigate();
     const [step, setStep] = useState('form');
 
-    useEffect(() => {
-        let intervalId;
-        if (step === 'verifying') {
-            intervalId = setInterval(async () => {
-                try {
-                    const response = await checkVerificationStatus(email);
-                    if (response.data.isVerified) {
-                        setStep('verified');
-                        clearInterval(intervalId);
-                        setTimeout(() => {
-                            navigate('/login', { state: { message: 'Verification successful! Please log in.' } });
-                        }, 2000);
-                    }
-                } catch (err) {
-                    console.log("Polling for verification status...");
-                }
-            }, 5000);
-        }
-        return () => clearInterval(intervalId);
-    }, [step, email, navigate]);
+    // --- [NEW] State for RBAC Signup ---
+    const [role, setRole] = useState('User'); // 'User' or 'Administrator'
+    const [productName, setProductName] = useState(''); // Selected product for Admin
+    
+    // --- [NEW] Placeholder for product list. We will fetch this in the next step. ---
+    const [productList, setProductList] = useState([]); 
+    const [isProductListLoading, setIsProductListLoading] = useState(false);
+    // --- [END NEW] ---
+
+    // --- [REMOVED] Old polling useEffect has been removed ---
 
     useEffect(() => {
         setPasswordErrors(password ? validatePassword(password) : []);
     }, [password]);
 
+    // --- [MODIFIED] Effect to fetch REAL products on component mount ---
+    useEffect(() => {
+        const fetchProducts = async () => {
+            console.log('[SIGNUP_EFFECT] Page loaded. Fetching product list...');
+            setIsProductListLoading(true);
+            setProductList([]); // Clear old list
+            
+            try {
+                // --- [MODIFIED] This is now a REAL API call ---
+                console.log('[SIGNUP_EFFECT_API] Calling getConfirmedProducts()...');
+                const response = await getConfirmedProducts();
+                console.log(`[SIGNUP_EFFECT_API_SUCCESS] Found ${response.data.length} products.`);
+                setProductList(response.data);
+                // --- [END MODIFIED] ---
+
+            } catch (err) {
+                console.error('[SIGNUP_EFFECT_API_ERROR] Failed to fetch products:', err.response?.data?.message || err.message);
+                setToast({ message: 'Could not load products. Please try again later.', type: 'error' });
+            } finally {
+                setIsProductListLoading(false);
+                console.log('[SIGNUP_EFFECT_API] Finished fetching products.');
+            }
+        };
+
+        fetchProducts();
+    }, []); // --- Runs once on mount
+    // --- [END MODIFIED] ---
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setToast(null);
+        console.log('[SIGNUP_SUBMIT] Form submitted.');
+
+        // 1. Validate Password
         const validationErrors = validatePassword(password);
         if (validationErrors.length > 0) {
-            setToast({ message: `Password is missing: ${validationErrors.join(', ')}.`, type: 'error' });
+            const errorMsg = `Password is missing: ${validationErrors.join(', ')}.`;
+            console.warn(`[SIGNUP_SUBMIT_WARN] Validation failed: ${errorMsg}`);
+            setToast({ message: errorMsg, type: 'error' });
             return;
         }
+
+        // 2. [MODIFIED] Validate Product Name (now required for ALL roles)
+        if (!productName) {
+            const errorMsg = 'Please select a product.';
+            console.warn(`[SIGNUP_SUBMIT_WARN] Validation failed: ${errorMsg}`);
+            setToast({ message: errorMsg, type: 'error' });
+            return;
+        }
+        // --- [END MODIFIED] ---
+
+        console.log('[SIGNUP_SUBMIT] Validation passed. Setting loading state.');
         setIsLoading(true);
+
+        // 3. [MODIFIED] Create payload with role (productName is now always sent)
+        const payload = {
+            email,
+            password,
+            role,
+            productName: productName 
+        };
+        // --- [END MODIFIED] ---
+
+        console.log('[SIGNUP_SUBMIT_API] Calling signupUser with payload:', payload);
+
         try {
-            await signupUser({ email, password });
+            await signupUser(payload); // Send new payload to backend
+            console.log('[SIGNUP_SUBMIT_API_SUCCESS] Signup request successful.');
             setIsLoading(false);
-            setStep('verifying');
+            // --- [MODIFIED] Set step to 'success' instead of 'verifying' ---
+            setStep('success');
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Failed to sign up. The email might already be in use.';
+            console.error('[SIGNUP_SUBMIT_API_ERROR] Signup failed:', errorMessage);
             setToast({ message: errorMessage, type: 'error' });
             setIsLoading(false);
         }
     };
 
+    // --- [NEW] Handler for role change ---
+    const handleRoleChange = (newRole) => {
+        console.log(`[SIGNUP_PAGE] Role changed to: ${newRole}`);
+        setRole(newRole);
+    };
+
     const renderContent = () => {
         switch (step) {
-            case 'verifying':
+            // --- [NEW] 'success' case replaces 'verifying' and 'verified' ---
+            case 'success':
+                console.log('[SIGNUP_RENDER] Rendering "success" step.');
                 return (
                     <div className="text-center">
-                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Check Your Inbox</h2>
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Account Created!</h2>
                         <p className="mt-2 text-gray-600 dark:text-gray-400">
                             A verification link has been sent to <br />
                             <strong className="text-blue-600 dark:text-blue-400">{email}</strong>.
                         </p>
                         <div className="my-6">
-                            {/* CHANGED: Use the new LoadingSpinner */}
-                            <LoadingSpinner />
+                            <GenericSuccessAnimation message="Email Sent!" />
                         </div>
                         <p className="text-sm text-gray-500 dark:text-gray-500">
-                            This screen will update automatically after you verify.
+                            Please verify your email. Once verified, your account will be placed in the queue for administrator approval.
+                        </p>
+                        <p className="!mt-6 text-sm text-center text-gray-500 dark:text-gray-400">
+                            <Link to="/login" className="font-semibold text-blue-600 hover:underline dark:text-blue-500">
+                                Back to Login
+                            </Link>
                         </p>
                     </div>
                 );
-            case 'verified':
-                return (
-                    <div className="text-center">
-                        <h2 className="text-3xl font-bold text-green-500 dark:text-green-400">Email Verified!</h2>
-                        <p className="mt-2 text-gray-600 dark:text-gray-400">Redirecting you to login...</p>
-                        <SuccessAnimation />
-                    </div>
-                );
+            // --- [END NEW] ---
             case 'form':
             default:
+                console.log('[SIGNUP_RENDER] Rendering "form" step.');
+                
+                // --- [MODIFIED] Check button disabled logic (productName always required) ---
+                const isSubmitDisabled = 
+                    isLoading || 
+                    (password.length > 0 && passwordErrors.length > 0) ||
+                    !productName;
+                // --- [END MODIFIED] ---
+
                 return (
                     <>
-                        {/* The form JSX remains exactly the same */}
                         <div className="text-center">
                             <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Create Your Account</h2>
                             <p className="mt-2 text-gray-600 dark:text-gray-400">Join VAULT to start securing your knowledge.</p>
                         </div>
                         <form onSubmit={handleSubmit} className="space-y-4">
+                            
+                            {/* --- [NEW] Role Selector --- */}
+                            <div>
+                                <label className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Sign up as:</label>
+                                <div className="flex gap-4">
+                                    <label className="flex-1 flex items-center p-3 border border-gray-300 dark:border-gray-600 rounded-md cursor-pointer has-[:checked]:bg-blue-50 dark:has-[:checked]:bg-blue-900/30 has-[:checked]:border-blue-500">
+                                        <input type="radio" name="role" value="User" checked={role === 'User'} onChange={() => handleRoleChange('User')} className="w-4 h-4 text-blue-600" />
+                                        <span className="ml-3 text-sm font-medium text-gray-900 dark:text-gray-100">User</span>
+                                    </label>
+                                    <label className="flex-1 flex items-center p-3 border border-gray-300 dark:border-gray-600 rounded-md cursor-pointer has-[:checked]:bg-blue-50 dark:has-[:checked]:bg-blue-900/30 has-[:checked]:border-blue-500">
+                                        <input type="radio" name="role" value="Administrator" checked={role === 'Administrator'} onChange={() => handleRoleChange('Administrator')} className="w-4 h-4 text-blue-600" />
+                                        <span className="ml-3 text-sm font-medium text-gray-900 dark:text-gray-100">Administrator</span>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            {/* --- [MODIFIED] Product Dropdown (now always visible) --- */}
+                            <div className="animate-in fade-in duration-300">
+                                <label htmlFor="product-name" className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Product</label>
+                                <select 
+                                    id="product-name" 
+                                    value={productName} 
+                                    onChange={(e) => {
+                                        console.log(`[SIGNUP_PAGE] Product selected: ${e.target.value}`);
+                                        setProductName(e.target.value);
+                                    }} 
+                                    required 
+                                    className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white"
+                                >
+                                    <option value="" disabled>
+                                        {isProductListLoading ? 'Loading products...' : 'Select a product...'}
+                                    </option>
+                                    
+                                    {!isProductListLoading && productList.length === 0 && (
+                                        <option value="" disabled>No confirmed products found.</option>
+                                    )}
+
+                                    {productList.map((product) => (
+                                        <option key={product.id} value={product.product_name}>
+                                            {product.product_name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            {/* --- [END MODIFIED] --- */}
+
                             <div>
                                 <label className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
                                 <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="name@company.com" className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" />
@@ -130,7 +239,7 @@ const SignupPage = () => {
                                     </ul>
                                 </div>
                             )}
-                            <button type="submit" disabled={isLoading || (password.length > 0 && passwordErrors.length > 0)} className="w-full py-3 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                            <button type="submit" disabled={isSubmitDisabled} className="w-full py-3 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
                                 {isLoading ? 'Creating Account...' : 'Create Account'}
                             </button>
                         </form>

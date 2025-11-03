@@ -4,15 +4,18 @@ const router = express.Router();
 const { createConversation, getConversations, getConversationHistory } = require('../controllers/chatController');
 const { protect } = require('../middleware/authMiddleware'); // Assuming the middleware function is 'protect'
 
-// @route   POST /api/chat/new
-// @desc    Create a new empty conversation
+// --- [MODIFIED] Route now includes :roomId ---
+// @route   POST /api/chat/new/:roomId
+// @desc    Create a new empty conversation in a specific room
 // @access  Private
-router.post('/new', protect, createConversation);
+router.post('/new/:roomId', protect, createConversation);
 
-// @route   GET /api/chat/conversations
-// @desc    Get all conversations for the logged-in user
+// --- [MODIFIED] Route now includes :roomId ---
+// @route   GET /api/chat/conversations/:roomId
+// @desc    Get all conversations for a specific room
 // @access  Private
-router.get('/conversations', protect, getConversations);
+router.get('/conversations/:roomId', protect, getConversations);
+// --- [END MODIFIED] ---
 
 // --- NEW ROUTE START ---
 // @route   GET /api/chat/history/:conversationId
