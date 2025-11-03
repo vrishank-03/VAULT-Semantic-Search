@@ -112,7 +112,7 @@ Clone the repository and move into the `development` branch. **Do not** run on `
 git clone <your-repository-url>
 cd VAULT-Semantic-Search
 git checkout development
-
+```
 ### Step 2: Backend Setup
 Install dependencies, set up environment variables, and install Python packages.
 
