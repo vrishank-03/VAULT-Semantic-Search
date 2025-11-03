@@ -141,3 +141,4 @@ vite.config.ts.timestamp-*
 # Local files
 backend/uploads/
 backend/vault.db
+backend/.env
