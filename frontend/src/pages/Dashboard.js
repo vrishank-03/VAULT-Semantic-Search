@@ -1,539 +1,646 @@
-import React, { useState, useEffect, useRef } from 'react';
-// --- MODIFIED IMPORT: Added getConversationHistory ---
-import { uploadDocument, search, getDocument, getUserInfo, getDocuments, createNewConversation, getConversations, getConversationHistory } from '../services/api';
+// --- [NEW] This is the new "Purgatory Page" Dashboard ---
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import PdfViewer from '../PdfViewer';
-import ReactMarkdown from 'react-markdown';
-import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp, FiCopy, FiSquare, FiEdit2 } from 'react-icons/fi';
+// --- [MODIFIED] Import ALL new API functions ---
+import { 
+    getRooms, 
+    createRoom, 
+    getClients, 
+    createClient,
+    getPendingUsers,
+    approveUser,
+    rejectUser // --- [NEW] ---
+} from '../services/api';
+import Sidebar from '../components/Sidebar'; 
+import ThemeToggleButton from '../components/ThemeToggleButton'; 
 import Toast from '../Toast';
-import Sidebar from '../components/Sidebar';
-import ThemeToggleButton from '../components/ThemeToggleButton';
-import { motion } from 'framer-motion';
-import ProcessingAnimation from '../components/ProcessingAnimation';
-import ThinkingAnimation from '../components/ThinkingAnimation';
-import logo from '../assets/logo.png';
+// --- [MODIFIED] Import new icons ---
+import { FiPlus, FiLock, FiEye, FiEdit2, FiUserCheck, FiUsers, FiX, FiTrash2 } from 'react-icons/fi';
+import LoadingSpinner from '../components/LoadingSpinner';
 
-const getInitialMessages = () => {
-    return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your knowledge base.' }];
-};
+// --- [NEW] User Approval Modal Component ---
+const UserApprovalModal = ({ isOpen, onClose, userRole, onUpdate }) => {
+    const [pendingUsers, setPendingUsers] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
 
-function Dashboard() {
-    const [messages, setMessages] = useState(getInitialMessages);
-    const [input, setInput] = useState('');
-    const [isSearching, setIsSearching] = useState(false);
-    const [isUploading, setIsUploading] = useState(false);
-
-    const [activeConversationId, setActiveConversationId] = useState(null);
-    const [conversations, setConversations] = useState([]);
-
-    const [pdfUrl, setPdfUrl] = useState(null);
-    const [isPdfLoading, setIsPdfLoading] = useState(false);
-    const [currentHighlight, setCurrentHighlight] = useState(null);
-
-    const [toast, setToast] = useState(null);
-    const messagesEndRef = useRef(null);
-    const fileInputRef = useRef(null);
-
-    const searchAbortControllerRef = useRef(null);
-    const uploadAbortControllerRef = useRef(null);
-
-    const mainInputRef = useRef(null);
-
-    const { user } = useAuth();
-
-    const [documents, setDocuments] = useState([]);
-    const [showDocuments, setShowDocuments] = useState(false);
-
-    const fetchDocuments = async () => {
+    const fetchPending = async () => {
+        console.log('[USER_APPROVAL_MODAL] Fetching pending users...');
+        setIsLoading(true);
+        setError(null);
         try {
-            const response = await getDocuments();
-            setDocuments(response.data);
-        } catch (error) {
-            console.error("Failed to fetch documents:", error);
-            setToast({ message: 'Could not load your document list.', type: 'error' });
-        }
-    };
-
-    const fetchConversations = async () => {
-        console.log("[LOG] Dashboard: Attempting to fetch conversations...");
-        try {
-            const response = await getConversations();
-            setConversations(response.data);
-            console.log(`[LOG] Dashboard: Successfully fetched ${response.data.length} conversations.`);
-        } catch (error) {
-            console.error("[LOG] Dashboard: Failed to fetch conversations:", error);
-            setToast({ message: 'Could not load your chat history.', type: 'error' });
+            const response = await getPendingUsers();
+            console.log('[USER_APPROVAL_MODAL] Fetched pending users:', response.data);
+            setPendingUsers(response.data);
+        } catch (err) {
+            console.error('[USER_APPROVAL_MODAL] Error fetching users:', err);
+            setError(err.response?.data?.message || 'Failed to load pending users.');
+        } finally {
+            setIsLoading(false);
         }
     };
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
+        if (isOpen) {
+            fetchPending();
+        }
+    }, [isOpen]);
 
-    useEffect(() => {
-        fetchDocuments();
-        fetchConversations();
-    }, []);
-
-    const handleSearch = async (e) => {
-        e.preventDefault();
-        console.log("[LOG] Dashboard: handleSearch triggered.");
-        if (!input.trim() || isSearching) return;
-
-        console.log("[LOG] Dashboard: Creating new Search AbortController.");
-        const controller = new AbortController();
-        searchAbortControllerRef.current = controller;
-
-        const userMessage = { sender: 'user', text: input };
-        const currentHistory = [...messages, userMessage];
-        // Add "Thinking..." immediately for responsiveness
-        setMessages([...currentHistory, { sender: 'ai', text: 'Thinking...', isLoading: true }]);
-
-        const currentInput = input;
-        setInput('');
-        setIsSearching(true);
-
-        let convoId = activeConversationId; // Use a local variable
-
+    const handleApprove = async (userId, email) => {
+        console.log(`[USER_APPROVAL_MODAL] Attempting to approve user ${userId}`);
         try {
-             // Check if it's the first message of a new chat session (not just a new convo)
-            if (!convoId) {
-                console.log("[LOG] Dashboard: No active conversation. Creating a new one first...");
-                const response = await createNewConversation();
-                convoId = response.data.conversation_id;
-                setActiveConversationId(convoId); // Update state *after* successful creation
-                console.log(`[LOG] Dashboard: New conversation automatically created with ID: ${convoId}`);
-                fetchConversations(); // Refresh list in sidebar
-            }
-
-            console.log(`[LOG] Dashboard: Calling search() API for Convo ID: ${convoId} with signal.`);
-            const result = await search(currentInput, currentHistory, convoId, controller.signal);
-
-            const responseData = result.data;
-            if (!responseData || typeof responseData.answer === 'undefined') {
-                throw new Error("Invalid response structure from server.");
-            }
-
-            console.log("[LOG] Dashboard: Search successful. Got AI response.");
-            const aiResponse = { sender: 'ai', text: responseData.answer, results: responseData };
-             // Replace "Thinking..." with the actual response
-            setMessages(prev => [...prev.slice(0, -1), aiResponse]);
-
-        } catch (error) {
-            console.error("[LOG] Dashboard: Search encountered an error:", error);
-
-            // Handle abort specifically
-            if (error.name === 'CanceledError' || error.name === 'AbortError') {
-                console.log("[LOG] Dashboard: Search request was successfully aborted by user.");
-                const errorResponse = { sender: 'system', text: "Generation stopped." };
-                 // Replace "Thinking..." with the system message
-                setMessages(prev => [...prev.slice(0, -1), errorResponse]);
-            } else if (error.config && error.config.url.endsWith('/api/chat/new')) {
-                 // Handle failure to create the *initial* conversation
-                console.error("[LOG] Dashboard: CRITICAL: Failed to create initial conversation.");
-                setToast({ message: 'A new chat session could not be started. Please refresh.', type: 'error' });
-                 // Remove the user message and "Thinking..."
-                setMessages(prev => prev.slice(0, -2));
-            } else {
-                 // Generic error during search
-                const errorText = error.response?.data?.message || 'Sorry, I encountered an error.';
-                setToast({ message: errorText, type: 'error' });
-                const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again in sometime." };
-                 // Replace "Thinking..." with the error message
-                setMessages(prev => [...prev.slice(0, -1), errorResponse]);
-            }
-        } finally {
-            console.log("[LOG] Dashboard: Search finalized. Cleaning up controller and state.");
-            setIsSearching(false);
-            searchAbortControllerRef.current = null;
+            await approveUser(userId);
+            console.log(`[USER_APPROVAL_MODAL] Successfully approved user ${userId}`);
+            onUpdate({ message: `User ${email} approved successfully!`, type: 'success' });
+            // Refresh list
+            fetchPending();
+        } catch (err) {
+            console.error(`[USER_APPROVAL_MODAL] Error approving user ${userId}:`, err);
+            onUpdate({ message: err.response?.data?.message || 'Failed to approve user.', type: 'error' });
         }
     };
 
-    const handleStopGeneration = () => {
-        console.log("[LOG] Dashboard: handleStopGeneration triggered.");
-        if (searchAbortControllerRef.current) {
-            searchAbortControllerRef.current.abort();
-            console.log("[LOG] Dashboard: Abort signal sent for search.");
-        } else {
-            console.warn("[LOG] Dashboard: Stop Generation clicked, but no Search AbortController found.");
-        }
-    };
-
-    const handleStopUpload = () => {
-        console.log("[LOG] Dashboard: handleStopUpload triggered.");
-        if (uploadAbortControllerRef.current) {
-            uploadAbortControllerRef.current.abort();
-            console.log("[LOG] Dashboard: Abort signal sent for upload.");
-        } else {
-            console.warn("[LOG] Dashboard: Stop Upload clicked, but no Upload AbortController found.");
-        }
-    };
-
-    const handleEditMessage = (messageIndex) => {
-        console.log(`[LOG] Dashboard: handleEditMessage triggered for index: ${messageIndex}`);
-        const messageToEdit = messages[messageIndex];
-
-        if (messageToEdit.sender !== 'user') {
-            console.warn(`[LOG] Dashboard: Edit attempt on non-user message index ${messageIndex}.`);
+    // --- [NEW] Handler for rejecting a user ---
+    const handleReject = async (userId, email) => {
+        console.log(`[USER_APPROVAL_MODAL] Attempting to REJECT user ${userId}`);
+        // Simple confirmation before deleting
+        if (!window.confirm(`Are you sure you want to reject and delete the user ${email}? This action cannot be undone.`)) {
             return;
         }
-
-        console.log(`[LOG] Dashboard: Setting input to: "${messageToEdit.text}"`);
-        setInput(messageToEdit.text);
-
-        console.log(`[LOG] Dashboard: Rewinding message history to index ${messageIndex}.`);
-        setMessages(prevMessages => prevMessages.slice(0, messageIndex));
-
-        mainInputRef.current?.focus();
-    };
-
-    const handleFileUpload = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
-
-        console.log("[LOG] Dashboard: handleFileUpload triggered.");
-        const controller = new AbortController();
-        uploadAbortControllerRef.current = controller;
-        setIsUploading(true);
-        setToast(null);
-
+        
         try {
-            console.log("[LOG] Dashboard: Calling uploadDocument() API with signal.");
-            const result = await uploadDocument(files, controller.signal);
-            console.log("[LOG] Dashboard: Upload successful.");
-            setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
-            fetchDocuments();
-        } catch (error) {
-            console.error("[LOG] Dashboard: Upload encountered an error:", error);
-            if (error.name === 'CanceledError' || error.name === 'AbortError') {
-                 console.log("[LOG] Dashboard: Upload request was successfully aborted by user.");
-                 setToast({ message: "Upload stopped.", type: 'warning' });
-            } else if (error.response && error.response.status === 409) {
-                console.warn("[LOG] Dashboard: Duplicate file upload detected.");
-                setToast({ message: error.response.data.error, type: 'error' });
-            } else {
-                console.error("[LOG] Dashboard: Generic upload failure.");
-                setToast({ message: `Upload failed. Please try again.`, type: 'error' });
-            }
-        } finally {
-            console.log("[LOG] Dashboard: Upload finalized. Cleaning up controller and state.");
-            setIsUploading(false);
-            uploadAbortControllerRef.current = null;
-            if(fileInputRef.current) {
-                fileInputRef.current.value = "";
-                console.log("[LOG] Dashboard: File input cleared.");
-            }
+            await rejectUser(userId);
+            console.log(`[USER_APPROVAL_MODAL] Successfully rejected user ${userId}`);
+            onUpdate({ message: `User ${email} rejected and deleted.`, type: 'success' });
+            // Refresh list
+            fetchPending();
+        } catch (err) {
+            console.error(`[USER_APPROVAL_MODAL] Error rejecting user ${userId}:`, err);
+            onUpdate({ message: err.response?.data?.message || 'Failed to reject user.', type: 'error' });
         }
     };
+    // --- [END NEW] ---
 
-    const handleSourceClick = async (source) => {
-        setIsPdfLoading(true);
-        setPdfUrl(null);
-        try {
-            const documentId = source.metadata.documentId;
-            const pdfBlob = await getDocument(documentId);
-            const url = URL.createObjectURL(pdfBlob);
-            setPdfUrl(url);
-            setCurrentHighlight(source.metadata && source.metadata.pageNumber ? {
-                pageNumber: source.metadata.pageNumber,
-                textToHighlight: source.text
-            } : null);
-        } catch (error) {
-            setToast({ message: 'Could not load the protected PDF.', type: 'error' });
-        } finally {
-            setIsPdfLoading(false);
-        }
-    };
-
-    const closePdfViewer = () => {
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-        setPdfUrl(null);
-        setCurrentHighlight(null);
-    };
-
-    const handleOpenDocument = async (documentId, documentName) => {
-        console.log(`[LOG] Dashboard: handleOpenDocument triggered for docId: ${documentId}, name: ${documentName}`);
-        setIsPdfLoading(true);
-        setPdfUrl(null);
-        setCurrentHighlight(null);
-        try {
-            console.log(`[LOG] Dashboard: Calling getDocument(${documentId})`);
-            const pdfBlob = await getDocument(documentId);
-            const url = URL.createObjectURL(pdfBlob);
-            console.log(`[LOG] Dashboard: PDF Blob URL created. Setting PDF URL.`);
-            setPdfUrl(url);
-        } catch (error) {
-            console.error("Failed to load document:", error);
-            setToast({ message: 'Could not load the document.', type: 'error' });
-        } finally {
-            console.log(`[LOG] Dashboard: Setting isPdfLoading to false.`);
-            setIsPdfLoading(false);
-        }
-    };
-
-    const handleCopyToClipboard = (text) => {
-        console.log(`[LOG] Dashboard: Attempting to copy text: "${text}"`);
-        if (!navigator.clipboard) {
-            console.error('[LOG] Dashboard: Clipboard API not available.');
-            setToast({ message: 'Clipboard API is not available in your browser.', type: 'error' });
-            return;
-        }
-        navigator.clipboard.writeText(text).then(() => {
-            console.log(`[LOG] Dashboard: Successfully copied to clipboard.`);
-            const toastMessage = `Copied "${text.length > 20 ? text.substring(0, 20) + '...' : text}" to clipboard!`;
-            setToast({ message: toastMessage, type: 'success' });
-        }, (err) => {
-            console.error('[LOG] Dashboard: Failed to copy text: ', err);
-            setToast({ message: 'Failed to copy text.', type: 'error' });
-        });
-    };
-
-    const handleNewChat = async () => {
-        console.log("[LOG] Dashboard: handleNewChat triggered.");
-        const hasUserMessages = messages.some(m => m.sender === 'user');
-
-        // Only prevent creating new chat if the *current* active chat has no user messages.
-        // If activeConversationId is null, it means we are in the initial state, allow creating one.
-        if (!hasUserMessages && activeConversationId !== null) {
-            console.log("[LOG] Dashboard: No user messages in current chat. No new chat created.");
-            return;
-        }
-
-        console.log("[LOG] Dashboard: Creating new conversation via API...");
-        try {
-            const response = await createNewConversation();
-            const newConversation = response.data;
-            console.log("[LOG] Dashboard: Successfully created new conversation. ID:", newConversation.conversation_id);
-            setActiveConversationId(newConversation.conversation_id);
-            setMessages(getInitialMessages());
-            fetchConversations(); // Refresh list
-            setToast({ message: 'New chat created!', type: 'success' });
-        } catch (error) {
-            console.error("[LOG] Dashboard: Failed to create new conversation:", error);
-            setToast({ message: 'Could not create a new chat. Please try again.', type: 'error' });
-        }
-    };
-
-    // --- NEW FUNCTION START: Handle selecting a conversation ---
-    const handleSelectConversation = async (selectedId) => {
-        console.log(`[LOG] Dashboard: handleSelectConversation triggered for ID: ${selectedId}`);
-
-        if (selectedId === activeConversationId) {
-            console.log("[LOG] Dashboard: Selected conversation is already active. No action needed.");
-            return; // Avoid unnecessary re-fetch
-        }
-
-        // Immediately update the active ID
-        setActiveConversationId(selectedId);
-        // Show loading state
-        setMessages([{ sender: 'system', text: 'Loading chat history...' }]);
-
-        try {
-            console.log(`[LOG] Dashboard: Calling getConversationHistory(${selectedId})...`);
-            const response = await getConversationHistory(selectedId);
-            const history = response.data;
-            console.log(`[LOG] Dashboard: Successfully fetched history with ${history.length} messages.`);
-
-            // If history is empty (e.g., a newly created chat that wasn't used), show welcome.
-            // Otherwise, show the fetched history.
-            setMessages(history.length > 0 ? history : getInitialMessages());
-
-        } catch (error) {
-            console.error(`[LOG] Dashboard: Failed to fetch history for conversation ${selectedId}:`, error);
-            setToast({ message: 'Could not load the selected chat history.', type: 'error' });
-            // Fallback to the initial welcome message on error
-            setMessages(getInitialMessages());
-             // Optionally reset activeConversationId if loading fails catastrophically?
-            // setActiveConversationId(null);
-        }
-    };
-    // --- NEW FUNCTION END ---
-
+    if (!isOpen) return null;
 
     return (
-        <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
-
-            {isUploading && <ProcessingAnimation onStopUpload={handleStopUpload} />}
-
-            {/* --- MODIFIED: Pass conversations list AND selection handler to Sidebar --- */}
-            <Sidebar
-                handleNewChat={handleNewChat}
-                conversations={conversations}
-                onSelectConversation={handleSelectConversation} // <-- Pass the handler
-            />
-
-            <div className="flex flex-col flex-grow relative">
-                {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-                <header className="absolute top-0 right-0 p-4 z-10 flex items-center gap-4">
-                    {documents.length > 0 && (
-                        <div className="relative">
-                            <button
-                                onClick={() => setShowDocuments(!showDocuments)}
-                                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gray-100 dark:bg-gray-800 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                            >
-                                Show Documents ({documents.length})
-                                {showDocuments ? <FiChevronUp /> : <FiChevronDown />}
-                            </button>
-                            {showDocuments && (
-                                <motion.div
-                                    initial={{ opacity: 0, y: -10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    className="absolute top-full right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-lg shadow-2xl border dark:border-gray-700 z-20"
-                                >
-                                    <table className="w-full text-sm text-left">
-                                        <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
-                                            <tr>
-                                                <th scope="col" className="px-4 py-3 w-12">No.</th>
-                                                <th scope="col" className="px-4 py-3">Document Name</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {documents.map((doc, index) => (
-                                                <tr key={doc.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 group">
-                                                    <td className="px-4 py-3">{index + 1}</td>
-                                                    <td className="px-4 py-3 font-medium">
-                                                        <div className="flex items-center justify-between">
-                                                            <span
-                                                                className="truncate cursor-pointer text-blue-600 dark:text-blue-400 hover:underline"
-                                                                onClick={() => handleOpenDocument(doc.id, doc.name)}
-                                                                title={`Click to open ${doc.name}`}
-                                                            >
-                                                                {doc.name}
-                                                            </span>
-                                                            <button
-                                                                onClick={() => handleCopyToClipboard(doc.name)}
-                                                                className="ml-2 p-1 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                                title={`Copy name "${doc.name}" to clipboard`}
-                                                            >
-                                                                <FiCopy size={14} />
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </motion.div>
-                            )}
+        <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
+            onClick={onClose}
+        >
+            <div 
+                className="relative w-full max-w-2xl p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-900"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">
+                    <FiX size={24} />
+                </button>
+                <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Pending User Approvals</h2>
+                
+                {error && <p className="text-center text-red-500">{error}</p>}
+                
+                <div className="max-h-96 overflow-y-auto">
+                    {isLoading ? (
+                        <div className="flex justify-center items-center h-48">
+                            <LoadingSpinner />
                         </div>
+                    ) : pendingUsers.length === 0 ? (
+                        <p className="text-center text-gray-500 dark:text-gray-400 py-10">There are no users pending approval.</p>
+                    ) : (
+                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead className="bg-gray-50 dark:bg-gray-800">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Role Requested</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
+                                {pendingUsers.map(user => (
+                                    <tr key={user.id}>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{user.email}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{user.role}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                                                {user.status.replace('_', ' ')}
+                                            </span>
+                                        </td>
+                                        {/* --- [MODIFIED] Added Reject Button --- */}
+                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-end gap-4">
+                                            <button 
+                                                onClick={() => handleApprove(user.id, user.email)}
+                                                className="flex items-center gap-1 text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300"
+                                            >
+                                                <FiUserCheck size={16} />
+                                                Approve
+                                            </button>
+                                            <button
+                                                onClick={() => handleReject(user.id, user.email)}
+                                                className="flex items-center gap-1 text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                            >
+                                                <FiTrash2 size={16} />
+                                                Reject
+                                            </button>
+                                        </td>
+                                        {/* --- [END MODIFIED] --- */}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     )}
-                    <ThemeToggleButton />
-                </header>
-                <div className="flex-grow overflow-y-auto pt-20 pb-40 px-4 sm:px-6 lg:px-8">
-                    <div className="max-w-4xl mx-auto space-y-8">
-
-                        {messages.map((msg, index) => {
-                             // --- MODIFIED: Added check for 'system' message type during history load ---
-                            if (msg.sender === 'system') {
-                                return (
-                                    <motion.div
-                                        key={index} // Use index as key for system messages too
-                                        initial={{ opacity: 0, y: 10 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        transition={{ duration: 0.3 }}
-                                        className="flex justify-center items-center my-2"
-                                    >
-                                        <span className="text-sm text-gray-500 dark:text-gray-400 italic">
-                                            {msg.text} {/* Display loading/error text */}
-                                        </span>
-                                    </motion.div>
-                                );
-                            }
-
-                            const showLargeSpace = index > 0 && messages[index - 1].sender !== msg.sender;
-
-                            return (
-                                <motion.div
-                                    key={index} // Consider using msg.message_id if available and unique
-                                    initial={{ opacity: 0, y: 20 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ duration: 0.3 }}
-                                    className={`flex items-start gap-4 group ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} ${showLargeSpace ? 'mt-8' : 'mt-2'}`}
-                                >
-                                    {msg.sender === 'ai' && (
-                                        <img src={logo} alt="VAULT Logo" className="w-10 h-10 pt-1 flex-shrink-0" />
-                                    )}
-
-                                    {msg.sender === 'user' && !isSearching && (
-                                        <div className="flex items-center self-start pt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button onClick={() => handleEditMessage(index)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" title="Edit and resend"> <FiEdit2 size={16} /> </button>
-                                            <button onClick={() => handleCopyToClipboard(msg.text)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" title="Copy question"> <FiCopy size={16} /> </button>
-                                        </div>
-                                    )}
-
-                                    {msg.isLoading ? (
-                                        <ThinkingAnimation />
-                                    ) : (
-                                        <div className={`max-w-2xl px-6 py-4 rounded-3xl shadow-lg ${msg.sender === 'user' ? 'bg-blue-600 text-white rounded-br-lg' : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-lg'}`}>
-                                            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-2">
-                                                <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
-                                            </div>
-                                            {msg.results && Array.isArray(msg.results.sources) && msg.results.sources.length > 0 && (
-                                                <div className="mt-4 pt-3 border-t border-gray-200/20 dark:border-gray-700/50">
-                                                    <details>
-                                                        <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-gray-400 hover:underline">Show Sources ({msg.results.sources.length})</summary>
-                                                        <div className="mt-2 space-y-3">
-                                                            {msg.results.sources.map((source, i) => (
-                                                                <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
-                                                                    <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
-                                                                        Source from: {source.metadata.documentName || `Doc ID ${source.metadata.documentId}`} {source.metadata.pageNumber && `(Page ${source.metadata.pageNumber})`}
-                                                                    </p>
-                                                                    <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2 overflow-wrap-break-word">
-                                                                        <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
-                                                                    </div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </details>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {msg.sender === 'user' && (
-                                        user && user.pictureUrl ? (
-                                            <img src={user.pictureUrl} alt="User Avatar" className="w-10 h-10 rounded-full flex-shrink-0 shadow-lg pt-1" />
-                                        ) : (
-                                            <div className="w-10 h-10 rounded-full bg-gray-600 flex-shrink-0 shadow-lg flex items-center justify-center text-white font-semibold">
-                                                {user && user.email ? user.email.charAt(0).toUpperCase() : '?'}
-                                            </div>
-                                        )
-                                    )}
-                                    {msg.sender === 'ai' && !msg.isLoading && (
-                                        <button onClick={() => handleCopyToClipboard(msg.text)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity pt-3" title="Copy response"> <FiCopy size={16} /> </button>
-                                    )}
-                                </motion.div>
-                            );
-                        })}
-                        <div ref={messagesEndRef} />
-                    </div>
-                </div>
-                <div className="absolute bottom-0 left-0 right-0 p-4 sm:p-6 lg:px-8 from-white dark:from-gray-900 to-transparent bg-gradient-to-t">
-                    <div className="max-w-4xl mx-auto">
-                        <form onSubmit={handleSearch} className="flex items-center p-2 bg-white dark:bg-gray-800/70 dark:backdrop-blur-lg rounded-full shadow-2xl border border-gray-200 dark:border-gray-700">
-                            <button type="button" onClick={() => fileInputRef.current.click()} className="p-3 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-full"> <FiPaperclip size={22} /> </button>
-                            <input id="file-upload" ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".pdf" />
-                            <input ref={mainInputRef} type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask VAULT" disabled={isSearching} className="flex-grow px-4 py-2 bg-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none" />
-                            {isSearching ? (
-                                <button type="button" onClick={handleStopGeneration} className="p-3 rounded-full text-gray-200 bg-gray-700 hover:bg-gray-600 transition-all duration-200 active:scale-90" title="Stop Generation"> <FiSquare size={22} /> </button>
-                            ) : (
-                                <button type="submit" disabled={!input.trim()} className="p-3 rounded-full text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-gray-600 transition-all duration-200 active:scale-90" title="Send Message"> <FiSend size={22} /> </button>
-                            )}
-                        </form>
-                    </div>
                 </div>
             </div>
-            {(isPdfLoading || pdfUrl) && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-                    {isPdfLoading ? (
-                        <div className="text-white text-lg">Loading secure document...</div>
-                    ) : (
-                        <PdfViewer fileUrl={pdfUrl} onClose={closePdfViewer} highlight={currentHighlight} />
+        </div>
+    );
+};
+// --- [END NEW] ---
+
+
+// --- [MODIFIED] CreateRoomModal (now client-aware) ---
+const CreateRoomModal = ({ isOpen, onClose, onSuccess }) => {
+    console.log('[MODAL_RENDER] Rendering Create Room Modal.');
+    
+    // --- State for the form ---
+    const [name, setName] = useState('');
+    const [color, setColor] = useState('#6366F1'); // Default color
+    const [password, setPassword] = useState('');
+    const [isCreating, setIsCreating] = useState(false);
+    const [modalToast, setModalToast] = useState(null); // Modal-specific toast
+
+    // --- [NEW] State for Client Management ---
+    const [clients, setClients] = useState([]);
+    const [selectedClientId, setSelectedClientId] = useState('');
+    const [isClientListLoading, setIsClientListLoading] = useState(true);
+    const [showNewClientForm, setShowNewClientForm] = useState(false);
+    const [newClientName, setNewClientName] = useState('');
+    const [isCreatingClient, setIsCreatingClient] = useState(false);
+    // --- [END NEW] ---
+
+    // --- [NEW] Fetch clients when modal opens ---
+    const fetchClients = async () => {
+        console.log('[MODAL_LOG] Fetching clients for admin...');
+        setIsClientListLoading(true);
+        try {
+            const response = await getClients();
+            console.log(`[MODAL_LOG] Found ${response.data.length} clients.`);
+            setClients(response.data);
+        } catch (error) {
+            console.error('[MODAL_ERROR] Failed to fetch clients:', error);
+            setModalToast({ message: 'Could not load client list.', type: 'error' });
+        } finally {
+            setIsClientListLoading(false);
+        }
+    };
+    
+    useEffect(() => {
+        if (isOpen) {
+            console.log('[MODAL_EFFECT] Modal opened. Fetching clients.');
+            // Reset form
+            setName('');
+            setPassword('');
+            setSelectedClientId('');
+            setNewClientName('');
+            setShowNewClientForm(false);
+            setModalToast(null);
+            // Fetch client list
+            fetchClients();
+        }
+    }, [isOpen]); // Only re-run when modal opens
+    // --- [END NEW] ---
+
+    // --- [NEW] Handler for creating a new client ---
+    const handleCreateClient = async (e) => {
+        e.preventDefault();
+        setModalToast(null);
+        if (!newClientName.trim()) {
+            setModalToast({ message: 'Client name is required.', type: 'error' });
+            return;
+        }
+        console.log(`[MODAL_LOG] Creating new client: ${newClientName}`);
+        setIsCreatingClient(true);
+        try {
+            const response = await createClient({ name: newClientName });
+            console.log('[MODAL_LOG] Client created successfully:', response.data);
+            setModalToast({ message: `Client "${response.data.name}" created!`, type: 'success' });
+            
+            // --- Add new client to list, hide form, and auto-select it ---
+            const newClient = response.data;
+            setClients(prevClients => [...prevClients, newClient]);
+            setSelectedClientId(newClient.id.toString()); // Auto-select the new client (ensure string)
+            setNewClientName('');
+            setShowNewClientForm(false);
+
+        } catch (error) {
+            console.error('[MODAL_ERROR] Failed to create client:', error);
+            setModalToast({ message: error.response?.data?.message || 'Failed to create client.', type: 'error' });
+        } finally {
+            setIsCreatingClient(false);
+        }
+    };
+    // --- [END NEW] ---
+
+    // --- [MODIFIED] Handler for creating the room ---
+    const handleCreateRoom = async (e) => {
+        e.preventDefault();
+        console.log('[MODAL_LOG] Create room form submitted.');
+        setModalToast(null);
+
+        // --- [MODIFIED] Validate both name and client_id ---
+        if (!name) {
+            setModalToast({ message: 'Room name is required.', type: 'error' });
+            return;
+        }
+        if (!selectedClientId) {
+            setModalToast({ message: 'Please select a client for this room.', type: 'error' });
+            return;
+        }
+        // --- [END MODIFIED] ---
+
+        setIsCreating(true);
+        try {
+            // --- [MODIFIED] Payload now includes client_id ---
+            const payload = { 
+                name, 
+                color, 
+                password: password || undefined, 
+                client_id: parseInt(selectedClientId, 10) // Ensure it's a number
+            };
+            console.log('[MODAL_LOG_API] Calling createRoom() with payload:', payload);
+            await createRoom(payload);
+            
+            console.log('[MODAL_LOG_API_SUCCESS] Room created.');
+            onSuccess(); // Call parent's success function (refreshes list, shows main toast)
+            onClose();   // Close modal
+        } catch (error) {
+            console.error('[MODAL_ERROR] Failed to create room:', error);
+            setModalToast({ message: error.response?.data?.message || 'Failed to create room.', type: 'error' });
+        } finally {
+            setIsCreating(false);
+        }
+    };
+
+    if (!isOpen) return null; // Conditional return is now *after* hooks
+
+    return (
+        <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
+            onClick={onClose}
+        >
+            {/* Modal-specific toast container */}
+            <div className="absolute top-0 right-0 p-4">
+                {modalToast && <Toast message={modalToast.message} type={modalToast.type} onClose={() => setModalToast(null)} />}
+            </div>
+
+            <div 
+                className="relative w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-900"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Create New Chat Room</h2>
+                <form className="space-y-4" onSubmit={handleCreateRoom}>
+                    
+                    {/* --- [NEW] Client Dropdown / Creator --- */}
+                    <div>
+                        <label htmlFor="client-select" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Client</label>
+                        <div className="flex gap-2 mt-1">
+                            <select 
+                                id="client-select" 
+                                value={selectedClientId}
+                                onChange={(e) => setSelectedClientId(e.target.value)}
+                                disabled={isClientListLoading || showNewClientForm}
+                                required
+                                className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white disabled:opacity-50"
+                            >
+                                <option value="" disabled>{isClientListLoading ? 'Loading clients...' : 'Select a client...'}</option>
+                                {!isClientListLoading && clients.length === 0 && (
+                                    <option value="" disabled>No clients found. Add one.</option>
+                                )}
+                                {clients.map(client => (
+                                    <option key={client.id} value={client.id}>{client.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                title="Add New Client"
+                                onClick={() => setShowNewClientForm(prev => !prev)}
+                                className={`p-3 rounded-md text-white ${showNewClientForm ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                            >
+                                {showNewClientForm ? <FiPlus className="transform rotate-45" /> : <FiPlus />}
+                            </button>
+                        </div>
+                    </div>
+
+                    {showNewClientForm && (
+                        <div className="p-4 border border-gray-300 dark:border-gray-700 rounded-md animate-in fade-in duration-300">
+                            <label htmlFor="new-client-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">New Client Name</label>
+                            <div className="flex gap-2 mt-1">
+                                <input 
+                                    id="new-client-name" 
+                                    type="text" 
+                                    value={newClientName}
+                                    onChange={(e) => setNewClientName(e.target.value)}
+                                    className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
+                                    placeholder="e.g., ICICI"
+                                />
+                                <button
+                                    type="button"
+                                    disabled={isCreatingClient || !newClientName.trim()}
+                                    onClick={handleCreateClient}
+                                    className="px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700 disabled:opacity-50"
+                                >
+                                    {isCreatingClient ? 'Adding...' : 'Add'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {/* --- [END NEW] --- */}
+
+                    <div>
+                        <label htmlFor="room-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Name</label>
+                        <input 
+                            id="room-name" 
+                            type="text" 
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            required 
+                            className="mt-1 relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
+                            placeholder="e.g., Q4 Analysis"
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="room-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Password (Optional)</label>
+                        <input 
+                            id="room-password" 
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)} 
+                            className="mt-1 relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
+                            placeholder="Leave blank for public" 
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="room-color" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Color</label>
+                        <input 
+                            id="room-color" 
+                            type="color"
+                            value={color}
+                            onChange={(e) => setColor(e.target.value)}
+                            className="mt-1 w-full h-10 p-1 border border-gray-300 dark:border-gray-600 rounded-md cursor-pointer"
+                        />
+                    </div>
+                    <div className="flex gap-4 pt-4">
+                        <button 
+                            type="button" 
+                            onClick={onClose}
+                            disabled={isCreating}
+                            className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-gray-700 bg-gray-200 border border-transparent rounded-md group hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500 disabled:opacity-50"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            type="submit" 
+                            disabled={isCreating || !selectedClientId} 
+                            className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 disabled:opacity-50"
+                        >
+                            {isCreating ? 'Creating...' : 'Create Room'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+// --- [END FIX] ---
+
+
+// --- Main Dashboard/Purgatory Page Component ---
+function Dashboard() {
+    const [rooms, setRooms] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isRoomModalOpen, setIsRoomModalOpen] = useState(false);
+    // --- [NEW] State for Admin Panel ---
+    const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+    // --- [END NEW] ---
+    const [toast, setToast] = useState(null);
+    const { user } = useAuth(); // Get user info (including role and productName)
+    const navigate = useNavigate();
+
+    console.log('[DASHBOARD_LOG] Page loaded. User:', user);
+
+    // --- [NEW] Fetch rooms on page load ---
+    const fetchRooms = async () => {
+        console.log('[DASHBOARD_LOG] Fetching rooms...');
+        setIsLoading(true);
+        try {
+            const response = await getRooms();
+            console.log('[DASHBOARD_LOG] getRooms() API success:', response.data);
+            setRooms(response.data);
+        } catch (error) {
+            console.error('[DASHBOARD_ERROR] Failed to fetch rooms:', error);
+            setToast({ message: 'Could not load chat rooms.', type: 'error' });
+        } finally {
+            setIsLoading(false);
+            console.log('[DASHBOARD_LOG] Finished fetching rooms.');
+        }
+    };
+
+    useEffect(() => {
+        fetchRooms();
+    }, []);
+
+    // --- [NEW] Handler to join a room ---
+    const handleJoinRoom = (room) => {
+        console.log(`[DASHBOARD_LOG] Attempting to join room: ${room.name} (ID: ${room.id})`);
+        
+        if (room.isPasswordProtected) {
+            console.log('[DASHBOARD_LOG] Room is password protected.');
+            // TODO: Show password prompt modal
+            setToast({ message: 'Password protected rooms are not yet implemented.', type: 'warning' });
+        } else {
+            console.log(`[DASHBOARD_LOG] Room is public. Navigating to /chat/${room.id}`);
+            // --- [NEW] This will be the route for our new chat page ---
+            navigate(`/chat/${room.id}`);
+        }
+    };
+
+    // --- [NEW] Success handler for modal ---
+    const onRoomCreated = () => {
+         console.log('[DASHBOARD_LOG] onRoomCreated callback triggered.');
+         fetchRooms(); // Refresh the list
+         setToast({ message: 'Room created successfully!', type: 'success' }); // Show toast on main page
+    }
+
+    // --- [NEW] Handler for user approval success ---
+    const onUserApproved = (toastMessage) => {
+        console.log('[DASHBOARD_LOG] onUserApproved callback triggered.');
+        setToast(toastMessage); // Show the success/error toast on the main dashboard
+    };
+
+    // --- [NEW] Component: The main page content ---
+    const renderContent = () => {
+        if (isLoading) {
+            console.log('[DASHBOARD_RENDER] Showing LoadingSpinner.');
+            return (
+                <div className="flex justify-center items-center h-64">
+                    <LoadingSpinner />
+                </div>
+            );
+        }
+
+        if (rooms.length === 0 && user?.role === 'User') {
+            console.log('[DASHBOARD_RENDER] No rooms found for User.');
+            return (
+                <div className="text-center text-gray-500 dark:text-gray-400">
+                    <p>You have not been assigned to any clients or rooms yet.</p>
+                    <p className="mt-2">Please contact your administrator.</p>
+                </div>
+            );
+        }
+        
+        if (rooms.length === 0 && (user?.role === 'Administrator' || user?.role === 'ProductOwner')) {
+            console.log('[DASHBOARD_RENDER] No rooms found for Admin/PO.');
+            return (
+                <div className="text-center text-gray-500 dark:text-gray-400">
+                    <p>No clients or chat rooms have been created yet.</p>
+                    {user?.role === 'Administrator' && (
+                        <p className="mt-2">Click "Create New Room" to get started.</p>
                     )}
                 </div>
-            )}
+            );
+        }
+
+        console.log(`[DASHBOARD_RENDER] Rendering ${rooms.length} room cards.`);
+        return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {rooms.map((room) => (
+                    <div 
+                        key={room.id}
+                        className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transform transition-all hover:scale-105"
+                        style={{ borderTop: `4px solid ${room.color || '#4F46E5'}` }}
+                    >
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className="text-xl font-bold text-gray-900 dark:text-white truncate" title={room.name}>{room.name}</h3>
+                                {room.isPasswordProtected && (
+                                    <FiLock className="text-gray-400" title="Password Protected" />
+                                )}
+                            </div>
+                            
+                            {/* --- [NEW] Show Client/Product context --- */}
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                                {user?.role === 'ProductOwner' && (
+                                    <span className="font-medium">{room.product_name} / {room.client_name}</span>
+                                )}
+                                {(user?.role === 'Administrator' || user?.role === 'User') && (
+                                    <span className="font-medium">Client: {room.client_name}</span>
+                                )}
+                            </p>
+                            {/* --- [END NEW] --- */}
+
+                            <button 
+                                onClick={() => handleJoinRoom(room)}
+                                className="w-full flex justify-center items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700"
+                            >
+                                <FiEye />
+                                Join Room
+                            </button>
+                            {user?.role === 'Administrator' && (
+                                <button 
+                                    onClick={() => setToast({ message: 'Editing rooms not yet implemented.', type: 'info' })}
+                                    className="w-full flex justify-center items-center gap-2 px-4 py-2 mt-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 border border-transparent rounded-md hover:bg-gray-200 dark:hover:bg-gray-600"
+                                >
+                                    <FiEdit2 />
+                                    Edit
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
+    // --- [NEW] Main JSX Return ---
+    return (
+        <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
+            {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+            
+            <Sidebar 
+                handleNewChat={() => {}} 
+                conversations={[]}       
+                onSelectConversation={() => {}} 
+            />
+
+            {/* Modal for creating a room */}
+            <CreateRoomModal 
+                isOpen={isRoomModalOpen}
+                onClose={() => setIsRoomModalOpen(false)}
+                onSuccess={onRoomCreated}
+            />
+            
+            {/* --- [NEW] Modal for User Approval --- */}
+            <UserApprovalModal
+                isOpen={isAdminPanelOpen}
+                onClose={() => setIsAdminPanelOpen(false)}
+                userRole={user?.role}
+                onUpdate={onUserApproved}
+            />
+            {/* --- [END NEW] --- */}
+            
+            {/* Main Content Area */}
+            <main className="flex-grow overflow-y-auto p-6 lg:p-12 relative">
+                
+                <header className="absolute top-0 right-0 p-4 z-10">
+                    <ThemeToggleButton />
+                </header>
+                
+                <div className="max-w-7xl mx-auto pt-10">
+                    {/* Header */}
+                    <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+                                Chat Rooms
+                            </h1>
+                            <p className="mt-1 text-md text-gray-600 dark:text-gray-400">
+                                Welcome, <span className="font-semibold">{user?.email}</span>. 
+                                You are a <span className="font-semibold">{user?.role}</span> for <span className="font-semibold">{user?.productName || 'your Product'}</span>.
+                            </p>
+                        </div>
+                        
+                        {/* --- [NEW] Button Container for Admin actions --- */}
+                        <div className="flex flex-shrink-0 gap-2">
+                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner') && (
+                                <button
+                                    onClick={() => setIsAdminPanelOpen(true)}
+                                    title="Manage Users"
+                                    className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md shadow-sm hover:bg-green-700"
+                                >
+                                    <FiUsers size={18} />
+                                    <span className="hidden sm:inline">Manage Users</span>
+                                </button>
+                            )}
+                            {user?.role === 'Administrator' && (
+                                <button
+                                    onClick={() => setIsRoomModalOpen(true)}
+                                    title="Create New Room"
+                                    className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md shadow-sm hover:bg-blue-700"
+                                >
+                                    <FiPlus size={18} />
+                                    <span className="hidden sm:inline">Create Room</span>
+                                </button>
+                            )}
+                        </div>
+                        {/* --- [END NEW] --- */}
+                    </div>
+                    
+                    {/* Room Grid */}
+                    {renderContent()}
+                </div>
+            </main>
         </div>
     );
 }
 
 export default Dashboard;
+

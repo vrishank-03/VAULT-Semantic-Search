@@ -2,39 +2,51 @@ const { getDb } = require('../database');
 const { v4: uuidv4 } = require('uuid'); // We'll use UUID for unique IDs
 
 /**
- * Creates a new, empty conversation for a user.
+ * Creates a new, empty conversation for a user in a specific room.
+ * @route POST /api/chat/new/:roomId
  */
 const createConversation = (req, res) => {
-    // req.user is expected to be populated by authMiddleware
+    // 1. Get user from auth middleware
     if (!req.user || !req.user.id) {
         console.error('[CHAT_CTRL_ERROR] User not found in request. Check authMiddleware.');
         return res.status(401).json({ error: 'User not authenticated' });
     }
+    
+    // --- [NEW] Get roomId from URL parameters ---
+    const { roomId } = req.params;
+    if (!roomId) {
+        console.error('[CHAT_CTRL_ERROR] Room ID missing from request parameters.');
+        return res.status(400).json({ error: 'Room ID is required' });
+    }
+    // --- [END NEW] ---
 
     const userId = req.user.id;
     const conversationId = uuidv4();
     const title = "New Chat"; // We can make this editable later
 
-    console.log(`[CHAT_CTRL] Attempting to create new conversation for user ${userId}...`);
+    console.log(`[CHAT_CTRL] Attempting to create new conversation for user ${userId} in room ${roomId}...`);
 
     try {
         const db = getDb();
-        const sql = `INSERT INTO conversations (conversation_id, user_id, title) VALUES (?, ?, ?)`;
+        // --- [MODIFIED] Added room_id to SQL query ---
+        const sql = `INSERT INTO conversations (conversation_id, user_id, title, room_id) VALUES (?, ?, ?, ?)`;
+        const params = [conversationId, userId, title, roomId];
 
-        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${conversationId}, ${userId}, ${title}]`);
+        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${conversationId}, ${userId}, ${title}, ${roomId}]`);
 
-        db.run(sql, [conversationId, userId, title], function(err) {
+        db.run(sql, params, function(err) {
             if (err) {
                 console.error('[CHAT_CTRL_DB_ERROR] Failed to insert new conversation:', err.message);
                 return res.status(500).json({ error: 'Failed to create conversation' });
             }
 
-            console.log(`[CHAT_CTRL_SUCCESS] Conversation created with ID: ${conversationId} for user: ${userId}. Rows affected: ${this.changes}`);
+            console.log(`[CHAT_CTRL_SUCCESS] Conversation created with ID: ${conversationId} for user: ${userId} in room: ${roomId}. Rows affected: ${this.changes}`);
 
             // Return the new conversation object to the frontend
             res.status(201).json({
                 conversation_id: conversationId,
                 user_id: userId,
+                room_id: parseInt(roomId, 10), // --- [NEW] Send back room_id
                 title: title,
                 created_at: new Date().toISOString() // Send back the new object
             });
@@ -47,32 +59,47 @@ const createConversation = (req, res) => {
 };
 
 /**
- * Fetches all conversations for the logged-in user.
+ * Fetches all conversations for the logged-in user for a specific room.
+ * @route GET /api/chat/conversations/:roomId
  */
 const getConversations = (req, res) => {
-    // req.user is expected to be populated by authMiddleware
+    // 1. Get user from auth middleware
     if (!req.user || !req.user.id) {
         console.error('[CHAT_CTRL_ERROR] User not found in request. Check authMiddleware.');
         return res.status(401).json({ error: 'User not authenticated' });
     }
+    
+    // --- [NEW] Get roomId from URL parameters ---
+    const { roomId } = req.params;
+    if (!roomId) {
+        console.error('[CHAT_CTRL_ERROR] Room ID missing from request parameters.');
+        return res.status(400).json({ error: 'Room ID is required' });
+    }
+    // --- [END NEW] ---
 
     const userId = req.user.id;
-    console.log(`[CHAT_CTRL] Attempting to fetch conversations for user ${userId}...`);
+    console.log(`[CHAT_CTRL] Attempting to fetch conversations for user ${userId} in room ${roomId}...`);
 
     try {
         const db = getDb();
-        const sql = `SELECT conversation_id, title, created_at FROM conversations WHERE user_id = ? ORDER BY created_at DESC`;
+        // --- [MODIFIED] Added room_id to WHERE clause ---
+        const sql = `SELECT conversation_id, title, created_at, room_id 
+                     FROM conversations 
+                     WHERE user_id = ? AND room_id = ? 
+                     ORDER BY created_at DESC`;
+        
+        const params = [userId, roomId];
 
-        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${userId}]`);
+        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${userId}, ${roomId}]`);
 
-        db.all(sql, [userId], (err, rows) => {
+        db.all(sql, params, (err, rows) => {
             if (err) {
                 console.error('[CHAT_CTRL_DB_ERROR] Failed to fetch conversations:', err.message);
                 return res.status(500).json({ error: 'Failed to fetch conversations' });
             }
 
             const conversations = rows || [];
-            console.log(`[CHAT_CTRL_SUCCESS] Found ${conversations.length} conversations for user: ${userId}.`);
+            console.log(`[CHAT_CTRL_SUCCESS] Found ${conversations.length} conversations for user: ${userId} in room: ${roomId}.`);
 
             // Return the list of conversations
             res.status(200).json(conversations);

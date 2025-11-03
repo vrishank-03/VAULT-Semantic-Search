@@ -11,13 +11,19 @@ const chromaClient = new ChromaClient({
 
 const initializeDatabase = () => {
     return new Promise((resolve, reject) => {
+        console.log('[DB_INIT] Attempting to connect to SQLite database...');
         db = new sqlite3.Database(DB_FILE, (err) => {
             if (err) {
-                console.error('Error opening database:', err.message);
+                console.error('[DB_INIT_ERROR] Error opening database:', err.message);
                 return reject(err);
             }
-            console.log('Connected to the SQLite database.');
+            console.log('[DB_INIT_SUCCESS] Connected to the SQLite database.');
+            
             db.serialize(() => {
+                console.log('[DB_INIT] Starting table serialization...');
+
+                // --- Users Table ---
+                console.log('[DB_INIT] Attempting to create_users_table...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,36 +34,152 @@ const initializeDatabase = () => {
                         email_verification_token TEXT,
                         password_reset_token TEXT,
                         password_reset_expires INTEGER,
-                        picture_url TEXT
+                        picture_url TEXT,
+                        role TEXT NOT NULL DEFAULT 'User',
+                        status TEXT NOT NULL DEFAULT 'pending_email_verification',
+                        product_id INTEGER,
+                        admin_id INTEGER, -- [NEW] Links a User to their Admin
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
+                        FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
                     )
                 `, (err) => {
-                    if (err) return reject(err);
-                    console.log("Table 'users' is ready.");
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_users_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log("[DB_INIT_SUCCESS] 'users' table verified/created.");
                 });
 
+                // --- Products Table ---
+                console.log('[DB_INIT] Attempting to create_products_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_name TEXT NOT NULL UNIQUE,
+                        product_owner_name TEXT NOT NULL,
+                        product_owner_email TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'suspended', 
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_products_table:', err.message);
+                        return reject(err); 
+                    } else {
+                        console.log('[DB_INIT_SUCCESS] products_table verified/created.');
+                    }
+                });
+                
+                // --- Clients Table (For categorization) ---
+                console.log('[DB_INIT] Attempting to create_clients_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS clients (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+                        UNIQUE(product_id, name)
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_clients_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] clients_table verified/created.');
+                });
+                
+                // --- [REMOVED] user_client_access table ---
+                console.log('[DB_INIT] Dropping obsolete table user_client_access if it exists...');
+                db.run(`DROP TABLE IF EXISTS user_client_access`, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to drop user_client_access_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] Obsolete table user_client_access removed.');
+                });
+                // --- [END REMOVED] ---
+
+                // --- [MODIFIED] Chat Rooms Table ---
+                console.log('[DB_INIT] Attempting to create_chat_rooms_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS chat_rooms (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id INTEGER NOT NULL,
+                        client_id INTEGER,
+                        admin_creator_id INTEGER, -- [NEW] Links room to its creator Admin
+                        name TEXT NOT NULL,
+                        color TEXT,
+                        password_hash TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                        FOREIGN KEY (admin_creator_id) REFERENCES users(id) ON DELETE SET NULL
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_chat_rooms_table:', err.message);
+                        return reject(err);
+                    } else {
+                        console.log('[DB_INIT_SUCCESS] chat_rooms_table verified/created.');
+                    }
+                });
+                // --- [END MODIFIED] ---
+                
+                // --- [NEW] Room Session Logs Table ---
+                console.log('[DB_INIT] Attempting to create_room_session_logs_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS room_session_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        room_id INTEGER NOT NULL,
+                        login_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        logout_timestamp DATETIME,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_room_session_logs_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] room_session_logs_table verified/created.');
+                });
+                // --- [END NEW] ---
+
+                // --- [MODIFIED] Documents Table (Added room_id) ---
+                console.log('[DB_INIT] Attempting to create_documents_table...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS documents (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
+                        room_id INTEGER,
                         name TEXT NOT NULL,
                         file_path TEXT NOT NULL,
                         uploaded_at TEXT NOT NULL,
-                        FOREIGN KEY (user_id) REFERENCES users (id)
+                        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE SET NULL
                     )
                 `, (err) => {
-                    if (err) return reject(err);
-                    console.log("Table 'documents' is ready.");
+                    if (err) {
+                         console.error('[DB_INIT_ERROR] Failed to create_documents_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log("[DB_INIT_SUCCESS] 'documents' table verified/created.");
                 });
+                // --- [END MODIFIED] ---
 
-                // Create the conversations table
+                // --- [MODIFIED] Conversations Table (Added room_id) ---
                 console.log('[DB_INIT] Attempting to create_conversations_table...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS conversations (
                         conversation_id TEXT PRIMARY KEY,
                         user_id INTEGER NOT NULL,
+                        room_id INTEGER, 
                         title TEXT NOT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE
                     )
                 `, (err) => {
                     if (err) {
@@ -66,8 +188,10 @@ const initializeDatabase = () => {
                         console.log('[DB_INIT_SUCCESS] conversations_table verified/created.');
                     }
                 });
+                // --- [END MODIFIED] ---
 
-                // Create the chat_history table
+
+                // --- Chat History Table (and final migration checks) ---
                 console.log('[DB_INIT] Attempting to create_chat_history_table...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS chat_history (
@@ -82,37 +206,148 @@ const initializeDatabase = () => {
                 `, (err) => {
                     if (err) {
                         console.error('[DB_INIT_ERROR] Failed to create_chat_history_table:', err.message);
-                        // Don't reject immediately, try altering first
                     } else {
                         console.log('[DB_INIT_SUCCESS] chat_history_table verified/created.');
                     }
 
-                    // --- Add 'results' column if it doesn't exist (for existing databases) ---
-                    console.log('[DB_ALTER] Checking if chat_history.results column exists...');
-                    db.all("PRAGMA table_info(chat_history)", (pragmaErr, columns) => {
-                        if (pragmaErr) {
-                            console.error('[DB_ALTER_ERROR] Could not get table info for chat_history:', pragmaErr.message);
-                            return reject(pragmaErr); // If we can't check, reject
+                    // --- [NEW] Start DB Alter block ---
+                    console.log('[DB_ALTER] Checking if "users" RBAC columns exist...');
+                    db.all("PRAGMA table_info(users)", (userPragmaErr, userColumns) => {
+                        if (userPragmaErr) {
+                            console.error('[DB_ALTER_ERROR] Could not get table info for users:', userPragmaErr.message);
+                            return reject(userPragmaErr);
                         }
 
-                        const resultsColumnExists = columns.some(col => col.name === 'results');
-                        if (!resultsColumnExists) {
-                            console.log('[DB_ALTER] Adding "results" column to chat_history table...');
-                            db.run('ALTER TABLE chat_history ADD COLUMN results TEXT', (alterErr) => {
-                                if (alterErr) {
-                                    console.error('[DB_ALTER_ERROR] Failed to add "results" column:', alterErr.message);
-                                    return reject(alterErr); // Reject if alter fails
+                        const hasRole = userColumns.some(col => col.name === 'role');
+                        const hasStatus = userColumns.some(col => col.name === 'status');
+                        const hasProductId = userColumns.some(col => col.name === 'product_id');
+                        const hasAdminId = userColumns.some(col => col.name === 'admin_id'); // [NEW]
+
+                        db.serialize(() => {
+                            // --- Users Table Migration ---
+                            if (!hasRole) {
+                                console.log('[DB_ALTER] Adding "role" column to "users" table...');
+                                db.run('ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT \'User\'', (alterErr) => {
+                                    if (alterErr) return reject(alterErr);
+                                    console.log('[DB_ALTER_SUCCESS] "role" column added.');
+                                });
+                            } else {
+                                console.log('[DB_ALTER] "role" column already exists.');
+                            }
+                            if (!hasStatus) {
+                                console.log('[DB_ALTER] Adding "status" column to "users" table...');
+                                db.run('ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT \'pending_email_verification\'', (alterErr) => {
+                                    if (alterErr) return reject(alterErr);
+                                    console.log('[DB_ALTER_SUCCESS] "status" column added.');
+                                });
+                            } else {
+                                console.log('[DB_ALTER] "status" column already exists.');
+                            }
+                            if (!hasProductId) {
+                                console.log('[DB_ALTER] Adding "product_id" column to "users" table...');
+                                db.run('ALTER TABLE users ADD COLUMN product_id INTEGER', (alterErr) => {
+                                    if (alterErr) return reject(alterErr);
+                                    console.log('[DB_ALTER_SUCCESS] "product_id" column added.');
+                                });
+                            } else {
+                                console.log('[DB_ALTER] "product_id" column already exists.');
+                            }
+                            if (!hasAdminId) { // [NEW]
+                                console.log('[DB_ALTER] Adding "admin_id" column to "users" table...');
+                                db.run('ALTER TABLE users ADD COLUMN admin_id INTEGER', (alterErr) => {
+                                    if (alterErr) return reject(alterErr);
+                                    console.log('[DB_ALTER_SUCCESS] "admin_id" column added.');
+                                });
+                            } else {
+                                console.log('[DB_ALTER] "admin_id" column already exists.');
+                            }
+                            
+                            // --- Conversations Table Migration ---
+                            console.log('[DB_ALTER] Checking if "conversations.room_id" column exists...');
+                            db.all("PRAGMA table_info(conversations)", (convoPragmaErr, convoColumns) => {
+                                if (convoPragmaErr) return reject(convoPragmaErr);
+                                const hasRoomId = convoColumns.some(col => col.name === 'room_id');
+                                if (!hasRoomId) {
+                                    console.log('[DB_ALTER] Adding "room_id" column to "conversations" table...');
+                                    db.run('ALTER TABLE conversations ADD COLUMN room_id INTEGER', (alterErr) => {
+                                        if (alterErr) return reject(alterErr);
+                                        console.log('[DB_ALTER_SUCCESS] "room_id" column added.');
+                                    });
                                 } else {
-                                    console.log('[DB_ALTER_SUCCESS] "results" column added successfully.');
-                                    resolve(); // Resolve after successful alter
+                                    console.log('[DB_ALTER] "room_id" column already exists.');
                                 }
                             });
-                        } else {
-                            console.log('[DB_ALTER] "results" column already exists.');
-                            resolve(); // Resolve if column already exists
-                        }
+                            
+                            // --- Documents Table Migration ---
+                            console.log('[DB_ALTER] Checking if "documents.room_id" column exists...');
+                            db.all("PRAGMA table_info(documents)", (docPragmaErr, docColumns) => {
+                                if (docPragmaErr) return reject(docPragmaErr);
+                                const hasRoomId = docColumns.some(col => col.name === 'room_id');
+                                if (!hasRoomId) {
+                                    console.log('[DB_ALTER] Adding "room_id" column to "documents" table...');
+                                    db.run('ALTER TABLE documents ADD COLUMN room_id INTEGER', (alterErr) => {
+                                        if (alterErr) return reject(alterErr);
+                                        console.log('[DB_ALTER_SUCCESS] "room_id" column added to documents.');
+                                    });
+                                } else {
+                                    console.log('[DB_ALTER] "documents.room_id" column already exists.');
+                                }
+                            });
+
+                            // --- Chat Rooms Table Migration ---
+                            console.log('[DB_ALTER] Checking if "chat_rooms.client_id" and "admin_creator_id" columns exist...');
+                            db.all("PRAGMA table_info(chat_rooms)", (roomPragmaErr, roomColumns) => {
+                                if (roomPragmaErr) return reject(roomPragmaErr);
+                                const hasClientId = roomColumns.some(col => col.name === 'client_id');
+                                const hasAdminCreatorId = roomColumns.some(col => col.name === 'admin_creator_id');
+                                
+                                if (!hasClientId) {
+                                    console.log('[DB_ALTER] Adding "client_id" column to "chat_rooms" table...');
+                                    db.run('ALTER TABLE chat_rooms ADD COLUMN client_id INTEGER', (alterErr) => {
+                                        if (alterErr) return reject(alterErr);
+                                        console.log('[DB_ALTER_SUCCESS] "client_id" column added to chat_rooms.');
+                                    });
+                                } else {
+                                    console.log('[DB_ALTER] "chat_rooms.client_id" column already exists.');
+                                }
+                                if (!hasAdminCreatorId) {
+                                    console.log('[DB_ALTER] Adding "admin_creator_id" column to "chat_rooms" table...');
+                                    db.run('ALTER TABLE chat_rooms ADD COLUMN admin_creator_id INTEGER', (alterErr) => {
+                                        if (alterErr) return reject(alterErr);
+                                        console.log('[DB_ALTER_SUCCESS] "admin_creator_id" column added to chat_rooms.');
+                                    });
+                                } else {
+                                    console.log('[DB_ALTER] "chat_rooms.admin_creator_id" column already exists.');
+                                }
+                            });
+
+                            // --- Chat History Table Migration (FINAL STEP) ---
+                            console.log('[DB_ALTER] Checking if chat_history.results column exists...');
+                            db.all("PRAGMA table_info(chat_history)", (pragmaErr, columns) => {
+                                if (pragmaErr) {
+                                    console.error('[DB_ALTER_ERROR] Could not get table info for chat_history:', pragmaErr.message);
+                                    return reject(pragmaErr); 
+                                }
+                                const resultsColumnExists = columns.some(col => col.name === 'results');
+                                if (!resultsColumnExists) {
+                                    console.log('[DB_ALTER] Adding "results" column to chat_history table...');
+                                    db.run('ALTER TABLE chat_history ADD COLUMN results TEXT', (alterErr) => {
+                                        if (alterErr) {
+                                            return reject(alterErr);
+                                        } else {
+                                            console.log('[DB_ALTER_SUCCESS] "results" column added successfully.');
+                                            console.log('[DB_INIT] Database initialization complete.');
+                                            resolve(); 
+                                        }
+                                    });
+                                } else {
+                                    console.log('[DB_ALTER] "results" column already exists.');
+                                    console.log('[DB_INIT] Database initialization complete.');
+                                    resolve(); 
+                                }
+                            });
+                        });
                     });
-                    // --- End Add Column ---
                 });
             });
         });
@@ -124,51 +359,62 @@ const getDb = () => {
     return db;
 };
 
-const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVectors) => {
+// --- [MODIFIED] Added roomId parameter ---
+const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVectors, roomId = null) => {
     const db = getDb();
     return new Promise(async (resolve, reject) => {
         const uploadedAt = new Date().toISOString();
-        db.run('INSERT INTO documents (user_id, name, file_path, uploaded_at) VALUES (?, ?, ?, ?)', [userId, documentName, filePath, uploadedAt], async function(err) {
+        
+        // --- [MODIFIED] Added room_id to insert ---
+        const sql = 'INSERT INTO documents (user_id, name, file_path, uploaded_at, room_id) VALUES (?, ?, ?, ?, ?)';
+        const params = [userId, documentName, filePath, uploadedAt, roomId];
+        
+        console.log(`[DB_SAVE_DOC] Saving doc metadata with room_id: ${roomId}`);
+        db.run(sql, params, async function(err) {
             if (err) return reject(err);
             const documentId = this.lastID;
-            console.log(`Document saved to SQLite with ID: ${documentId} for user ID: ${userId}`);
+            console.log(`[DB_SAVE_DOC] Document metadata saved to SQLite with ID: ${documentId} for user ID: ${userId}`);
 
-            if (chunksWithVectors.length === 0) return resolve({ documentId, chunks: 0 });
+            if (chunksWithVectors.length === 0) {
+                 console.log(`[DB_SAVE_DOC] No chunks to save to Chroma for document ${documentId}.`);
+                 return resolve({ documentId, chunks: 0 });
+            }
 
             try {
+                console.log(`[DB_SAVE_DOC] Getting or creating Chroma collection 'documents' for doc ${documentId}.`);
                 const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
                 const ids = chunksWithVectors.map((_, i) => `user_${userId}_doc_${documentId}_chunk_${i}`);
 
+                // --- [MODIFIED] Added roomId to metadata ---
                 const metadatas = chunksWithVectors.map((chunk, i) => ({
                     userId: Number(userId),
                     documentId: Number(documentId),
+                    roomId: Number(roomId), // Add roomId to Chroma metadata
                     chunkIndex: i,
                     documentName,
                     pageNumber: chunk.pageNumber
                 }));
+                // --- [END MODIFIED] ---
 
+                console.log(`[DB_SAVE_DOC] Adding ${chunksWithVectors.length} chunks to Chroma for doc ${documentId}...`);
                 await collection.add({
                     ids,
                     embeddings: chunksWithVectors.map(c => c.vector),
                     documents: chunksWithVectors.map(c => c.text),
                     metadatas
                 });
-                console.log(`Saved ${chunksWithVectors.length} chunks to ChromaDB with page numbers.`);
+                console.log(`[DB_SAVE_DOC_SUCCESS] Saved ${chunksWithVectors.length} chunks to ChromaDB for doc ${documentId}.`);
                 resolve({ documentId, chunks: chunksWithVectors.length });
             } catch (chromaErr) {
+                console.error(`[DB_SAVE_DOC_ERROR] Failed to save chunks to Chroma for doc ${documentId}:`, chromaErr);
                 reject(chromaErr);
             }
         });
     });
 };
+// --- [END MODIFIED] ---
 
-// --- NEW FUNCTION START ---
-/**
- * Updates the title of a specific conversation.
- * @param {string} conversationId - The ID of the conversation to update.
- * @param {string} newTitle - The new title for the conversation.
- * @returns {Promise<{ changes: number }>} A promise that resolves with the number of rows changed.
- */
+
 const updateConversationTitle = (conversationId, newTitle) => {
     return new Promise((resolve, reject) => {
         console.log(`[DB_UPDATE_TITLE] Attempting to update title for conversation ${conversationId} to "${newTitle}"`);
@@ -191,13 +437,13 @@ const updateConversationTitle = (conversationId, newTitle) => {
         });
     });
 };
-// --- NEW FUNCTION END ---
 
 
 module.exports = {
     initializeDatabase,
     getDb,
     saveDocumentChunks,
-    updateConversationTitle, // --- ADDED EXPORT ---
+    updateConversationTitle,
     chromaClient
 };
+
