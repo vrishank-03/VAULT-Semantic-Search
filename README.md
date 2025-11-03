@@ -71,7 +71,7 @@ This is the core of the VAULT platform. Access is determined by a strict, "Admin
     * **Permissions:** Sees **all** rooms for **all** products. Can manage Admins (approve/reject).
 * **Administrator**
     * **Authentication:** Signs up for a specific, *confirmed* Product. Account is `suspended_admin` until approved by a PO.
-    * **Permissions:** Tied to a single **Product** (e.g., "MercuryFX").
+    * **Permissions:** Tied to a single **Product** (e.g., "TestFX").
         * Sees **all** rooms for **all** clients associated with their Product (e.g., "ICICI" + "SBI" rooms).
         * Can create/edit Clients (e.g., "ICICI", "SBI") within their Product.
         * Can create/edit Rooms and assign them to a Client.
@@ -86,7 +86,7 @@ This is the core of the VAULT platform. Access is determined by a strict, "Admin
 
 ### 3.2. Data & Entity Relationships
 
-* `Products` are the top-level container (e.g., "MercuryFX").
+* `Products` are the top-level container (e.g., "TestFX").
 * `Clients` (e.g., "ICICI") belong to one `Product`. This is for categorization, not security.
 * `Chat Rooms` are created by one `Administrator` (`admin_creator_id`) and assigned to one `Client` (`client_id`).
 * `Documents` are uploaded by an Admin/PO and are tied to one `Room` (`room_id`).
