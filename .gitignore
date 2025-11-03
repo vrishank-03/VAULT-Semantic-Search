@@ -142,3 +142,4 @@ vite.config.ts.timestamp-*
 backend/uploads/
 backend/vault.db
 backend/.env
+backend/credentials.js
