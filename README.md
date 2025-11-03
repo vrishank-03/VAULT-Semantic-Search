@@ -109,7 +109,7 @@ Follow these steps to set up and run the entire VAULT platform on your local mac
 Clone the repository and move into the `development` branch. **Do not** run on `main`.
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/vrishank-03/VAULT-Semantic-Search
 cd VAULT-Semantic-Search
 git checkout development
 ```
