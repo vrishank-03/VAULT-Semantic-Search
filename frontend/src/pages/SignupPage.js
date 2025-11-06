@@ -1,13 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-// --- [MODIFIED] Removed checkVerificationStatus ---
-import { signupUser, getConfirmedProducts } from '../services/api';
+// --- [SIGNUP_FIX] Import signupAdmin and new getAdminsForProduct ---
+import { signupUser, signupAdmin, getConfirmedProducts, getAdminsForProduct } from '../services/api';
 import AuthLayout from '../components/AuthLayout';
-// --- [MODIFIED] Import GenericSuccessAnimation (removed unused SuccessAnimation) ---
 import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
-import GoogleLoginButton from '../components/GoogleLoginButton';
 import Toast from '../Toast';
-// --- [MODIFIED] Removed unused LoadingSpinner ---
 
 const validatePassword = (password) => {
     // ... (validation logic remains the same)
@@ -29,22 +26,26 @@ const SignupPage = () => {
     const navigate = useNavigate();
     const [step, setStep] = useState('form');
 
-    // --- [NEW] State for RBAC Signup ---
+    // --- State for RBAC Signup ---
     const [role, setRole] = useState('User'); // 'User' or 'Administrator'
-    const [productName, setProductName] = useState(''); // Selected product for Admin
+    const [productName, setProductName] = useState(''); 
     
-    // --- [NEW] Placeholder for product list. We will fetch this in the next step. ---
     const [productList, setProductList] = useState([]); 
     const [isProductListLoading, setIsProductListLoading] = useState(false);
-    // --- [END NEW] ---
+    
+    // --- [SIGNUP_FIX] State for Admin dropdown ---
+    const [adminId, setAdminId] = useState(''); // Selected admin for User
+    const [adminList, setAdminList] = useState([]);
+    const [isAdminListLoading, setIsAdminListLoading] = useState(false);
+    // --- [END SIGNUP_FIX] ---
 
-    // --- [REMOVED] Old polling useEffect has been removed ---
+    const [successMessage, setSuccessMessage] = useState('');
 
     useEffect(() => {
         setPasswordErrors(password ? validatePassword(password) : []);
     }, [password]);
 
-    // --- [MODIFIED] Effect to fetch REAL products on component mount ---
+    // --- Effect to fetch REAL products on component mount ---
     useEffect(() => {
         const fetchProducts = async () => {
             console.log('[SIGNUP_EFFECT] Page loaded. Fetching product list...');
@@ -52,13 +53,10 @@ const SignupPage = () => {
             setProductList([]); // Clear old list
             
             try {
-                // --- [MODIFIED] This is now a REAL API call ---
                 console.log('[SIGNUP_EFFECT_API] Calling getConfirmedProducts()...');
                 const response = await getConfirmedProducts();
                 console.log(`[SIGNUP_EFFECT_API_SUCCESS] Found ${response.data.length} products.`);
                 setProductList(response.data);
-                // --- [END MODIFIED] ---
-
             } catch (err) {
                 console.error('[SIGNUP_EFFECT_API_ERROR] Failed to fetch products:', err.response?.data?.message || err.message);
                 setToast({ message: 'Could not load products. Please try again later.', type: 'error' });
@@ -70,7 +68,37 @@ const SignupPage = () => {
 
         fetchProducts();
     }, []); // --- Runs once on mount
-    // --- [END MODIFIED] ---
+
+    // --- [SIGNUP_FIX] NEW Effect to fetch Admins when Product changes ---
+    useEffect(() => {
+        const fetchAdmins = async () => {
+            if (role === 'User' && productName) {
+                console.log(`[SIGNUP_EFFECT_ADMINS] Product changed to ${productName}. Fetching admins...`);
+                setIsAdminListLoading(true);
+                setAdminList([]);
+                setAdminId(''); // Reset selection
+                
+                try {
+                    const response = await getAdminsForProduct(productName);
+                    console.log(`[SIGNUP_EFFECT_ADMINS_SUCCESS] Found ${response.data.length} admins.`);
+                    setAdminList(response.data);
+                } catch (err) {
+                    console.error('[SIGNUP_EFFECT_ADMINS_ERROR] Failed to fetch admins:', err.response?.data?.message || err.message);
+                    setToast({ message: 'Could not load administrators for that product.', type: 'error' });
+                } finally {
+                    setIsAdminListLoading(false);
+                }
+            } else {
+                // If not a User or no product, clear the admin list
+                setAdminList([]);
+                setAdminId('');
+            }
+        };
+
+        fetchAdmins();
+    }, [productName, role]); // Re-run when product OR role changes
+    // --- [END SIGNUP_FIX] ---
+
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -86,35 +114,50 @@ const SignupPage = () => {
             return;
         }
 
-        // 2. [MODIFIED] Validate Product Name (now required for ALL roles)
+        // 2. Validate Product Name
         if (!productName) {
             const errorMsg = 'Please select a product.';
             console.warn(`[SIGNUP_SUBMIT_WARN] Validation failed: ${errorMsg}`);
             setToast({ message: errorMsg, type: 'error' });
             return;
         }
-        // --- [END MODIFIED] ---
+
+        // --- [SIGNUP_FIX] 3. Validate Admin ID if role is User ---
+        if (role === 'User' && !adminId) {
+            const errorMsg = 'Please select an administrator.';
+            console.warn(`[SIGNUP_SUBMIT_WARN] Validation failed: ${errorMsg}`);
+            setToast({ message: errorMsg, type: 'error' });
+            return;
+        }
+        // --- [END SIGNUP_FIX] ---
 
         console.log('[SIGNUP_SUBMIT] Validation passed. Setting loading state.');
         setIsLoading(true);
 
-        // 3. [MODIFIED] Create payload with role (productName is now always sent)
+        // 4. Create payload
         const payload = {
             email,
             password,
-            role,
-            productName: productName 
+            productName: productName,
+            adminId: role === 'User' ? adminId : undefined // Only send adminId if User
         };
-        // --- [END MODIFIED] ---
-
-        console.log('[SIGNUP_SUBMIT_API] Calling signupUser with payload:', payload);
-
+        
+        // --- [SIGNUP_FIX] Call correct API based on role ---
         try {
-            await signupUser(payload); // Send new payload to backend
+            if (role === 'Administrator') {
+                console.log('[SIGNUP_SUBMIT_API] Calling signupAdmin with payload:', payload);
+                await signupAdmin(payload);
+                setSuccessMessage('Please verify your email. Once verified, your account will be placed in the queue for Product Owner approval.');
+            } else { // Default to 'User'
+                console.log('[SIGNUP_SUBMIT_API] Calling signupUser with payload:', payload);
+                await signupUser(payload);
+                setSuccessMessage('Please verify your email. Once verified, your account will be placed in the queue for administrator approval.');
+            }
+            
             console.log('[SIGNUP_SUBMIT_API_SUCCESS] Signup request successful.');
             setIsLoading(false);
-            // --- [MODIFIED] Set step to 'success' instead of 'verifying' ---
             setStep('success');
+        // --- [END SIGNUP_FIX] ---
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Failed to sign up. The email might already be in use.';
             console.error('[SIGNUP_SUBMIT_API_ERROR] Signup failed:', errorMessage);
@@ -144,9 +187,11 @@ const SignupPage = () => {
                         <div className="my-6">
                             <GenericSuccessAnimation message="Email Sent!" />
                         </div>
+                        {/* --- [SIGNUP_FIX] Use dynamic success message --- */}
                         <p className="text-sm text-gray-500 dark:text-gray-500">
-                            Please verify your email. Once verified, your account will be placed in the queue for administrator approval.
+                            {successMessage}
                         </p>
+                        {/* --- [END SIGNUP_FIX] --- */}
                         <p className="!mt-6 text-sm text-center text-gray-500 dark:text-gray-400">
                             <Link to="/login" className="font-semibold text-blue-600 hover:underline dark:text-blue-500">
                                 Back to Login
@@ -159,12 +204,13 @@ const SignupPage = () => {
             default:
                 console.log('[SIGNUP_RENDER] Rendering "form" step.');
                 
-                // --- [MODIFIED] Check button disabled logic (productName always required) ---
+                // --- [SIGNUP_FIX] Modified disabled logic ---
                 const isSubmitDisabled = 
                     isLoading || 
                     (password.length > 0 && passwordErrors.length > 0) ||
-                    !productName;
-                // --- [END MODIFIED] ---
+                    !productName ||
+                    (role === 'User' && !adminId); // Must select admin if user
+                // --- [END SIGNUP_FIX] ---
 
                 return (
                     <>
@@ -189,7 +235,7 @@ const SignupPage = () => {
                                 </div>
                             </div>
                             
-                            {/* --- [MODIFIED] Product Dropdown (now always visible) --- */}
+                            {/* --- Product Dropdown --- */}
                             <div className="animate-in fade-in duration-300">
                                 <label htmlFor="product-name" className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Product</label>
                                 <select 
@@ -217,7 +263,40 @@ const SignupPage = () => {
                                     ))}
                                 </select>
                             </div>
-                            {/* --- [END MODIFIED] --- */}
+
+                            {/* --- [SIGNUP_FIX] NEW Administrator Dropdown --- */}
+                            {role === 'User' && (
+                                <div className="animate-in fade-in duration-300">
+                                    <label htmlFor="admin-id" className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Administrator</label>
+                                    <select 
+                                        id="admin-id" 
+                                        value={adminId} 
+                                        onChange={(e) => {
+                                            console.log(`[SIGNUP_PAGE] Admin selected: ${e.target.value}`);
+                                            setAdminId(e.target.value);
+                                        }} 
+                                        required 
+                                        disabled={!productName || isAdminListLoading} // Disable if no product or if loading
+                                        className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white disabled:opacity-50"
+                                    >
+                                        <option value="" disabled>
+                                            {!productName ? 'Select a product first' : 
+                                            isAdminListLoading ? 'Loading admins...' : 'Select your administrator...'}
+                                        </option>
+                                        
+                                        {!isAdminListLoading && adminList.length === 0 && productName && (
+                                            <option value="" disabled>No active admins found for this product.</option>
+                                        )}
+
+                                        {adminList.map((admin) => (
+                                            <option key={admin.id} value={admin.id}>
+                                                {admin.email}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                            {/* --- [END SIGNUP_FIX] --- */}
 
                             <div>
                                 <label className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
@@ -243,11 +322,11 @@ const SignupPage = () => {
                                 {isLoading ? 'Creating Account...' : 'Create Account'}
                             </button>
                         </form>
-                        <div className="relative my-4">
-                            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300 dark:border-gray-600" /></div>
-                            <div className="relative flex justify-center text-sm"><span className="px-2 bg-white dark:bg-gray-800/80 text-gray-500 dark:text-gray-400">Or</span></div>
-                        </div>
-                        <GoogleLoginButton setError={(msg) => setToast({ message: msg, type: 'error' })} />
+                        
+                        {/* --- [PHASE 1.E] REMOVED GOOGLE LOGIN --- */}
+                        {/* (Google login button and 'Or' divider removed) */}
+                        {/* --- [END REMOVAL] --- */}
+
                         <p className="!mt-6 text-sm text-center text-gray-500 dark:text-gray-400">
                             Already have an account? <Link to="/login" className="font-semibold text-blue-600 hover:underline dark:text-blue-500">Login</Link>
                         </p>
