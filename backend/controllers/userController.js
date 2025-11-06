@@ -1,231 +1,350 @@
 const { getDb } = require('../database');
+// [SIGNUP_FIX] Removed local nodemailer.
+require('dotenv').config();
+// [SIGNUP_FIX] Import centralized email service.
+const { sendEmail } = require('../services/emailService');
 
 /**
- * @desc    Get all users pending approval for the admin/PO's product
+ * @desc    Get all users pending approval for the logged-in manager
  * @route   GET /api/users/pending
- * @access  Private (Admin or ProductOwner)
+ * @access  Private (Admin, ProductOwner, CTO)
  */
-// --- [FIX] Changed to const declaration ---
 const getPendingUsers = (req, res) => {
-    const adminUserId = req.user.id;
-    console.log(`[USER_CTRL] Received GET /pending for user ID: ${adminUserId}`);
+    // [TASK 10 ATOMIC LOG] Get the logged-in manager's ID from req.user
+    const managerId = req.user.id;
+    console.log(`[USER_CTRL] Received GET /pending for manager ID: ${managerId}`);
     
     const db = getDb();
 
-    // 1. Get the logged-in user's role and product ID
-    const userSql = `SELECT role, product_id FROM users WHERE id = ?`;
-    db.get(userSql, [adminUserId], (err, adminUser) => {
+    // [TASK 10 ATOMIC LOG] Refactored SQL to use manager_id.
+    // This single query correctly finds pending users for ANY manager role.
+    // An Admin will see 'suspended_user's.
+    // A PO will see 'suspended_admin's.
+    const sql = `
+        SELECT id, email, role, status, created_at 
+        FROM users 
+        WHERE manager_id = ? 
+        AND (status = 'suspended_user' OR status = 'suspended_admin')
+        ORDER BY created_at ASC
+    `;
+    const params = [managerId];
+
+    console.log(`[USER_CTRL_DB] Executing: ${sql} with params: [${params.join(',')}]`);
+    
+    db.all(sql, params, (err, users) => {
         if (err) {
-            console.error(`[USER_CTRL_ERROR] DB error fetching admin user ${adminUserId}:`, err.message);
-            return res.status(500).json({ message: "Error fetching user data." });
+            console.error(`[USER_CTRL_DB_ERROR] DB error fetching pending users:`, err.message);
+            return res.status(500).json({ message: "Error fetching pending users." });
         }
-        if (!adminUser) {
-            console.warn(`[USER_CTRL_WARN] Admin user ${adminUserId} not found.`);
-            return res.status(404).json({ message: "User not found." });
-        }
-
-        console.log(`[USER_CTRL] User ${adminUserId} is Role: ${adminUser.role}, ProductID: ${adminUser.product_id}`);
-
-        // 2. Build the query based on the user's role
-        let pendingSql = `SELECT id, email, role, status, created_at FROM users WHERE product_id = ?`;
-        const params = [adminUser.product_id];
-
-        if (adminUser.role === 'ProductOwner') {
-            // Product Owners see suspended Admins AND Users for their product
-            console.log(`[USER_CTRL] User is 'ProductOwner'. Fetching all suspended users for product ${adminUser.product_id}`);
-            pendingSql += ` AND (status = 'suspended_admin' OR status = 'suspended_user')`;
-        } else if (adminUser.role === 'Administrator') {
-            // Admins see ONLY suspended Users for their product
-            console.log(`[USER_CTRL] User is 'Administrator'. Fetching only suspended users for product ${adminUser.product_id}`);
-            pendingSql += ` AND status = 'suspended_user'`;
-        } else {
-            // Regular Users have no access
-            console.warn(`[USER_CTRL_FAIL] User ${adminUserId} (Role: ${adminUser.role}) tried to get pending list. Forbidden.`);
-            return res.status(403).json({ message: "Forbidden: You do not have permission to view this list." });
-        }
-
-        pendingSql += ` ORDER BY created_at ASC`;
-
-        // 3. Execute the query
-        console.log(`[USER_CTRL_DB] Executing: ${pendingSql} with params: [${params.join(',')}]`);
-        db.all(pendingSql, params, (pendingErr, users) => {
-            if (pendingErr) {
-                console.error(`[USER_CTRL_DB_ERROR] DB error fetching pending users:`, pendingErr.message);
-                return res.status(500).json({ message: "Error fetching pending users." });
-            }
-
-            console.log(`[USER_CTRL_SUCCESS] Found ${users.length} pending users.`);
-            res.status(200).json(users);
-        });
+        console.log(`[USER_CTRL_SUCCESS] Found ${users.length} pending users.`);
+        res.status(200).json(users);
     });
 };
 
 /**
  * @desc    Approve a pending user
  * @route   POST /api/users/approve/:userId
- * @access  Private (Admin or ProductOwner)
+ * @access  Private (Admin, ProductOwner, CTO)
  */
-// --- [FIX] Changed to const declaration ---
 const approveUser = (req, res) => {
-    const adminUserId = req.user.id;
+    const managerId = req.user.id;
     const { userId: targetUserId } = req.params;
-    console.log(`[USER_CTRL_APPROVE] User ${adminUserId} is attempting to approve user ${targetUserId}`);
+    console.log(`[USER_CTRL_APPROVE] Manager ${managerId} is attempting to approve user ${targetUserId}`);
 
     const db = getDb();
 
-    // 1. Get the logged-in user's details
-    const adminSql = `SELECT role, product_id FROM users WHERE id = ?`;
-    db.get(adminSql, [adminUserId], (err, adminUser) => {
-        if (err || !adminUser) {
-            console.error(`[USER_CTRL_APPROVE_ERROR] DB error fetching admin user ${adminUserId}:`, err ? err.message : "Not Found");
-            return res.status(500).json({ message: "Error fetching user data." });
+    // [TASK 10 ATOMIC LOG] Refactored to a single, secure, atomic SQL query.
+    // This query updates the user's status to 'active' ONLY if:
+    // 1. The user exists (id = ?)
+    // 2. The user reports to the manager (manager_id = ?)
+    // 3. The user is currently suspended.
+    // This completely replaces the old, insecure authorization logic.
+    const sql = `
+        UPDATE users 
+        SET status = 'active' 
+        WHERE id = ? 
+        AND manager_id = ?
+        AND (status = 'suspended_user' OR status = 'suspended_admin')
+    `;
+    const params = [targetUserId, managerId];
+            
+    db.run(sql, params, function(updateErr) {
+        if (updateErr) {
+            console.error(`[USER_CTRL_APPROVE_ERROR] Failed to update user status for ${targetUserId}:`, updateErr.message);
+            return res.status(500).json({ message: "Database error updating user status." });
         }
+
+        // [TASK 10 ATOMIC LOG] Check if any row was actually changed.
+        if (this.changes === 0) {
+            console.warn(`[USER_CTRL_APPROVE_FAIL] Manager ${managerId} failed to approve ${targetUserId}. User not found, not their report, or not suspended.`);
+            return res.status(403).json({ message: "Failed to approve user: You may not be this user's manager or the user is not pending approval." });
+        }
+
+        console.log(`[USER_CTRL_APPROVE_SUCCESS] User ${targetUserId} is now 'active'.`);
         
-        // 2. Get the target user's details
-        const targetSql = `SELECT email, role, status, product_id FROM users WHERE id = ?`;
-        db.get(targetSql, [targetUserId], (targetErr, targetUser) => {
-            if (targetErr || !targetUser) {
-                console.error(`[USER_CTRL_APPROVE_ERROR] DB error fetching target user ${targetUserId}:`, targetErr ? targetErr.message : "Not Found");
-                return res.status(404).json({ message: "User to approve not found." });
+        // [TASK 10 ATOMIC LOG] Send REAL email to approved user. We must fetch their email.
+        db.get('SELECT email FROM users WHERE id = ?', [targetUserId], (err, user) => {
+            if (user && user.email) {
+                console.log(`[USER_CTRL_EMAIL] Sending REAL email to ${user.email}.`);
+                sendEmail(
+                    user.email,
+                    "Your VAULT Account is Approved!",
+                    `<h3>Welcome to VAULT!</h3><p>Your account has been approved by your manager and is now active.</p><p>You can now log in to the application.</p><a href="${process.env.FRONTEND_URL}/login" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;">Log In</a>`
+                );
             }
-
-            console.log(`[USER_CTRL_APPROVE] Admin Role: ${adminUser.role}, Target Role: ${targetUser.role}, Target Status: ${targetUser.status}`);
-
-            // 3. Authorize the action
-            let isAuthorized = false;
-            
-            // Check if they are in the same product
-            if (adminUser.product_id === targetUser.product_id) {
-                if (adminUser.role === 'ProductOwner') {
-                    // PO can approve Admins and Users
-                    if (targetUser.status === 'suspended_admin' || targetUser.status === 'suspended_user') {
-                        isAuthorized = true;
-                    }
-                } else if (adminUser.role === 'Administrator') {
-                    // Admin can ONLY approve Users
-                    if (targetUser.status === 'suspended_user') {
-                        isAuthorized = true;
-                    }
-                }
-            }
-
-            if (!isAuthorized) {
-                console.warn(`[USER_CTRL_APPROVE_FAIL] User ${adminUserId} (Role: ${adminUser.role}) is NOT authorized to approve user ${targetUserId} (Status: ${targetUser.status}). Forbidden.`);
-                return res.status(403).json({ message: "Forbidden: You do not have permission to approve this user." });
-            }
-
-            // 4. Action: Approve the user
-            console.log(`[USER_CTRL_APPROVE_SUCCESS] User ${adminUserId} is authorized. Activating user ${targetUserId}.`);
-            
-            // --- [MODIFIED] Set status to 'active' AND link the user to their admin ---
-            // We set admin_id to the ID of the person *doing the approving*
-            // unless the person being approved is an Admin (they don't have an admin_id)
-            const newAdminId = targetUser.role === 'Administrator' ? null : adminUserId;
-            
-            const updateSql = `UPDATE users SET status = 'active', admin_id = ? WHERE id = ?`;
-            const params = [newAdminId, targetUserId];
-            
-            console.log(`[USER_CTRL_APPROVE_DB] Setting user ${targetUserId} to active and admin_id to ${newAdminId}`);
-            
-            db.run(updateSql, params, function(updateErr) {
-                if (updateErr) {
-                    console.error(`[USER_CTRL_APPROVE_ERROR] Failed to update user status for ${targetUserId}:`, updateErr.message);
-                    return res.status(500).json({ message: "Database error updating user status." });
-                }
-
-                console.log(`[USER_CTRL_APPROVE_SUCCESS] User ${targetUserId} (${targetUser.email}) is now 'active'.`);
-                
-                // 5. --- SIMULATE EMAIL to approved user ---
-                console.log(`[USER_CTRL_EMAIL] SIMULATING email send to ${targetUser.email}.`);
-                console.log(`[USER_CTRL_EMAIL] SUBJ: Your VAULT Account is Approved!`);
-                console.log(`[USER_CTRL_EMAIL] BODY: Your account has been approved by an administrator. You can now log in.`);
-                // --- END SIMULATION ---
-
-                res.status(200).json({ message: `User ${targetUser.email} has been approved and is now active.` });
-            });
         });
+        
+        res.status(200).json({ message: `User has been approved and is now active.` });
     });
 };
 
-// --- [NEW] Function to reject and delete a user ---
 /**
  * @desc    Reject and delete a pending user
  * @route   DELETE /api/users/reject/:userId
- * @access  Private (Admin or ProductOwner)
+ * @access  Private (Admin, ProductOwner, CTO)
  */
 const rejectUser = (req, res) => {
-    const adminUserId = req.user.id;
+    const managerId = req.user.id;
     const { userId: targetUserId } = req.params;
-    console.log(`[USER_CTRL_REJECT] User ${adminUserId} is attempting to REJECT user ${targetUserId}`);
+    console.log(`[USER_CTRL_REJECT] Manager ${managerId} is attempting to REJECT user ${targetUserId}`);
 
     const db = getDb();
-
-    // 1. Get the logged-in user's details
-    const adminSql = `SELECT role, product_id FROM users WHERE id = ?`;
-    db.get(adminSql, [adminUserId], (err, adminUser) => {
-        if (err || !adminUser) {
-            console.error(`[USER_CTRL_REJECT_ERROR] DB error fetching admin user ${adminUserId}:`, err ? err.message : "Not Found");
-            return res.status(500).json({ message: "Error fetching user data." });
+    
+    // [TASK 10 ATOMIC LOG] Refactored to a single, secure, atomic SQL query.
+    // Deletes the user ONLY if they report to this manager AND are suspended.
+    const sql = `
+        DELETE FROM users 
+        WHERE id = ? 
+        AND manager_id = ?
+        AND (status = 'suspended_user' OR status = 'suspended_admin')
+    `;
+    const params = [targetUserId, managerId];
+            
+    db.run(sql, params, function(deleteErr) {
+        if (deleteErr) {
+            console.error(`[USER_CTRL_REJECT_ERROR] Failed to delete user ${targetUserId}:`, deleteErr.message);
+            return res.status(500).json({ message: "Database error deleting user." });
         }
+
+        if (this.changes === 0) {
+            console.warn(`[USER_CTRL_REJECT_FAIL] Manager ${managerId} failed to reject ${targetUserId}. User not found, not their report, or not suspended.`);
+            return res.status(403).json({ message: "Failed to reject user: You may not be this user's manager or the user is not pending approval." });
+        }
+
+        console.log(`[USER_CTRL_REJECT_SUCCESS] User ${targetUserId} has been deleted.`);
         
-        // 2. Get the target user's details
-        const targetSql = `SELECT email, role, status, product_id FROM users WHERE id = ?`;
-        db.get(targetSql, [targetUserId], (targetErr, targetUser) => {
-            if (targetErr || !targetUser) {
-                console.error(`[USER_CTRL_REJECT_ERROR] DB error fetching target user ${targetUserId}:`, targetErr ? targetErr.message : "Not Found");
-                return res.status(404).json({ message: "User to reject not found." });
-            }
+        // We can't email the user because we don't know their email after deleting them.
+        // This is acceptable, as they were rejected.
+        
+        res.status(200).json({ message: `User has been rejected and deleted.` });
+    });
+};
 
-            console.log(`[USER_CTRL_REJECT] Admin Role: ${adminUser.role}, Target Role: ${targetUser.role}, Target Status: ${targetUser.status}`);
 
-            // 3. Authorize the action (Same logic as approving)
-            let isAuthorized = false;
+/**
+ * @desc    Get all active team members for the manager
+ * @route   GET /api/users/team
+ * @access  Private (Admin, ProductOwner, CTO)
+ */
+const getTeam = (req, res) => {
+    const managerId = req.user.id;
+    console.log(`[USER_CTRL] Received GET /team for manager ID: ${managerId}`);
+    
+    const db = getDb();
+
+    // [TASK 10 ATOMIC LOG] Refactored SQL to use manager_id.
+    // This finds all *active* users who report to the logged-in manager.
+    const sql = `
+        SELECT id, email, role, status, created_at 
+        FROM users 
+        WHERE manager_id = ? 
+        AND status = 'active'
+        ORDER BY role, email ASC
+    `;
+    const params = [managerId];
+
+    db.all(sql, params, (err, users) => {
+        if (err) {
+            console.error(`[USER_CTRL_DB_ERROR] DB error fetching team:`, err.message);
+            return res.status(500).json({ message: "Error fetching team members." });
+        }
+        console.log(`[USER_CTRL_SUCCESS] Found ${users.length} active team members.`);
+        res.status(200).json(users);
+    });
+};
+
+/**
+ * @desc    Get ALL team members (all statuses) for the manager
+ * @route   GET /api/users/team/all
+ * @access  Private (Admin, ProductOwner, CTO)
+ */
+const getAllTeamMembers = (req, res) => {
+    const managerId = req.user.id;
+    console.log(`[USER_CTRL] Received GET /team/all for manager ID: ${managerId}`);
+    
+    const db = getDb();
+
+    // [TASK 10 ATOMIC LOG] Refactored SQL to use manager_id.
+    // This finds all users (active, suspended, deactivated) who report to the manager.
+    const sql = `
+        SELECT id, email, role, status, created_at 
+        FROM users 
+        WHERE manager_id = ?
+        ORDER BY status, role, email ASC
+    `;
+    const params = [managerId];
+
+    db.all(sql, params, (err, users) => {
+        if (err) {
+            console.error(`[USER_CTRL_DB_ERROR] DB error fetching all team:`, err.message);
+            return res.status(500).json({ message: "Error fetching all team members." });
+        }
+        console.log(`[USER_CTRL_SUCCESS] Found ${users.length} total team members.`);
+        res.status(200).json(users);
+    });
+};
+
+// --- [TASK 10] NEW Function to Deactivate an active user ---
+/**
+ * @desc    Deactivate an active user
+ * @route   POST /api/users/deactivate/:userId
+ * @access  Private (Admin, ProductOwner, CTO)
+ */
+const deactivateUser = (req, res) => {
+    const managerId = req.user.id;
+    const { userId: targetUserId } = req.params;
+    console.log(`[USER_CTRL_DEACTIVATE] Manager ${managerId} is attempting to DEACTIVATE user ${targetUserId}`);
+
+    const db = getDb();
+    
+    // [TASK 10 ATOMIC LOG] New atomic SQL to deactivate.
+    // Sets status to 'deactivated' ONLY if user is their report AND is 'active'.
+    const sql = `
+        UPDATE users 
+        SET status = 'deactivated' 
+        WHERE id = ? 
+        AND manager_id = ?
+        AND status = 'active'
+    `;
+    const params = [targetUserId, managerId];
             
-            if (adminUser.product_id === targetUser.product_id) {
-                if (adminUser.role === 'ProductOwner') {
-                    if (targetUser.status === 'suspended_admin' || targetUser.status === 'suspended_user') {
-                        isAuthorized = true;
-                    }
-                } else if (adminUser.role === 'Administrator') {
-                    if (targetUser.status === 'suspended_user') {
-                        isAuthorized = true;
-                    }
-                }
-            }
+    db.run(sql, params, function(updateErr) {
+        if (updateErr) {
+            console.error(`[USER_CTRL_DEACTIVATE_ERROR] Failed to deactivate user ${targetUserId}:`, updateErr.message);
+            return res.status(500).json({ message: "Database error." });
+        }
 
-            if (!isAuthorized) {
-                console.warn(`[USER_CTRL_REJECT_FAIL] User ${adminUserId} (Role: ${adminUser.role}) is NOT authorized to reject user ${targetUserId} (Status: ${targetUser.status}). Forbidden.`);
-                return res.status(403).json({ message: "Forbidden: You do not have permission to reject this user." });
-            }
+        if (this.changes === 0) {
+            console.warn(`[USER_CTRL_DEACTIVATE_FAIL] Manager ${managerId} failed to deactivate ${targetUserId}. User not found, not their report, or not active.`);
+            return res.status(403).json({ message: "Failed to deactivate user: You may not be this user's manager or the user is not active." });
+        }
 
-            // 4. Action: Delete the user
-            console.log(`[USER_CTRL_REJECT_SUCCESS] User ${adminUserId} is authorized. Deleting user ${targetUserId}.`);
-            const deleteSql = `DELETE FROM users WHERE id = ?`;
+        console.log(`[USER_CTRL_DEACTIVATE_SUCCESS] User ${targetUserId} is now 'deactivated'.`);
+        res.status(200).json({ message: `User has been deactivated.` });
+    });
+};
+
+// --- [TASK 10] NEW Function to Reactivate a deactivated user ---
+/**
+ * @desc    Reactivate a deactivated user
+ * @route   POST /api/users/reactivate/:userId
+ * @access  Private (Admin, ProductOwner, CTO)
+ */
+const reactivateUser = (req, res) => {
+    const managerId = req.user.id;
+    const { userId: targetUserId } = req.params;
+    console.log(`[USER_CTRL_REACTIVATE] Manager ${managerId} is attempting to REACTIVATE user ${targetUserId}`);
+
+    const db = getDb();
+    
+    // [TASK 10 ATOMIC LOG] New atomic SQL to reactivate.
+    // Sets status to 'active' ONLY if user is their report AND is 'deactivated'.
+    const sql = `
+        UPDATE users 
+        SET status = 'active' 
+        WHERE id = ? 
+        AND manager_id = ?
+        AND status = 'deactivated'
+    `;
+    const params = [targetUserId, managerId];
             
-            db.run(deleteSql, [targetUserId], function(deleteErr) {
-                if (deleteErr) {
-                    console.error(`[USER_CTRL_REJECT_ERROR] Failed to delete user ${targetUserId}:`, deleteErr.message);
-                    return res.status(500).json({ message: "Database error deleting user." });
-                }
+    db.run(sql, params, function(updateErr) {
+        if (updateErr) {
+            console.error(`[USER_CTRL_REACTIVATE_ERROR] Failed to reactivate user ${targetUserId}:`, updateErr.message);
+            return res.status(500).json({ message: "Database error." });
+        }
 
-                console.log(`[USER_CTRL_REJECT_SUCCESS] User ${targetUserId} (${targetUser.email}) has been deleted.`);
-                
-                // 5. --- SIMULATE EMAIL to rejected user ---
-                console.log(`[USER_CTRL_EMAIL] SIMULATING email send to ${targetUser.email}.`);
-                console.log(`[USER_CTRL_EMAIL] SUBJ: Your VAULT Account Request`);
-                console.log(`[USER_CTRL_EMAIL] BODY: Your request to join VAULT has been rejected by an administrator. Please contact support if you believe this is an error.`);
-                // --- END SIMULATION ---
+        if (this.changes === 0) {
+            console.warn(`[USER_CTRL_REACTIVATE_FAIL] Manager ${managerId} failed to reactivate ${targetUserId}. User not found, not their report, or not deactivated.`);
+            return res.status(403).json({ message: "Failed to reactivate user: You may not be this user's manager or the user is not deactivated." });
+        }
 
-                res.status(200).json({ message: `User ${targetUser.email} has been rejected and deleted.` });
-            });
+        console.log(`[USER_CTRL_REACTIVATE_SUCCESS] User ${targetUserId} is now 'active' again.`);
+        res.status(200).json({ message: `User has been reactivated.` });
+    });
+};
+
+// --- [SIGNUP_FIX] NEW FUNCTION ---
+/**
+ * @desc    Get all active admins for a specific product
+ * @route   GET /api/users/admins-for-product?productName=...
+ * @access  Public
+ */
+const getAdminsForProduct = (req, res) => {
+    const { productName } = req.query;
+    console.log(`[USER_CTRL] [SIGNUP_FIX] Received GET /admins-for-product for product: ${productName}`);
+
+    if (!productName) {
+        console.warn('[USER_CTRL_WARN] [SIGNUP_FIX] No product name provided.');
+        return res.status(400).json({ message: 'Product name is required.' });
+    }
+
+    const db = getDb();
+    
+    // First, get the product ID from the name.
+    const productSql = `SELECT id FROM products WHERE product_name = ? AND status = 'confirmed'`;
+    db.get(productSql, [productName], (err, product) => {
+        if (err) {
+            console.error(`[USER_CTRL_DB_ERROR] [SIGNUP_FIX] Error finding product '${productName}':`, err.message);
+            return res.status(500).json({ message: 'Database error.' });
+        }
+        if (!product) {
+            console.warn(`[USER_CTRL_WARN] [SIGNUP_FIX] Product '${productName}' not found or not confirmed.`);
+            return res.status(404).json({ message: 'Product not found or not confirmed.' });
+        }
+
+        const productId = product.id;
+        console.log(`[USER_CTRL_DB] [SIGNUP_FIX] Found product ID ${productId}. Searching for active admins...`);
+
+        // Now, find all active admins for that product ID.
+        const adminsSql = `
+            SELECT id, email 
+            FROM users 
+            WHERE product_id = ? 
+            AND role = 'Administrator' 
+            AND status = 'active'
+        `;
+        db.all(adminsSql, [productId], (adminErr, admins) => {
+            if (adminErr) {
+                console.error(`[USER_CTRL_DB_ERROR] [SIGNUP_FIX] Error finding admins for product ID ${productId}:`, adminErr.message);
+                return res.status(500).json({ message: 'Database error fetching admins.' });
+            }
+
+            console.log(`[USER_CTRL_SUCCESS] [SIGNUP_FIX] Found ${admins.length} active admins for product '${productName}'.`);
+            res.status(200).json(admins);
         });
     });
 };
-// --- [END NEW] ---
+// --- [END SIGNUP_FIX] ---
 
-// --- [FIX] Use const definitions in module.exports ---
+
 module.exports = {
     getPendingUsers,
     approveUser,
-    rejectUser // --- [NEW] Export the new function
+    rejectUser,
+    getTeam,
+    getAllTeamMembers,
+    deactivateUser,     // --- [TASK 10] NEW Export
+    reactivateUser,     // --- [TASK 10] NEW Export
+    getAdminsForProduct // --- [SIGNUP_FIX] NEW Export
 };

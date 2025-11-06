@@ -33,21 +33,21 @@ api.interceptors.response.use(
   }
 );
 
+// --- Auth ---
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
 export const signupUser = (userData) => api.post('/auth/signup', userData);
 
-// --- MODIFICATION BELOW ---
-
-export const googleLogin = (credential, pictureUrl) => { // <-- 1. MODIFIED SIGNATURE
-    console.log("[LOG] api.js: Sending Google login request with pictureUrl:", pictureUrl); // <-- 2. ADDED LOG
-    return api.post('/auth/google', { credential, pictureUrl }); // <-- 3. MODIFIED BODY
+// --- [SIGNUP_FIX] NEW FUNCTION ---
+export const signupAdmin = (userData) => {
+    console.log('[LOG] api.js: Sending request to sign up ADMIN...', userData);
+    return api.post('/auth/signup-admin', userData);
 };
+// --- [END SIGNUP_FIX] ---
 
-// --- END OF MODIFICATION ---
+// --- [TASK 16] REMOVED googleLogin function ---
 
 export const sendPasswordResetEmail = (email) => api.post('/auth/forgot-password', { email });
 export const resetPassword = (token, password) => api.post('/auth/reset-password', { token, password });
-
 export const getUserInfo = async () => {
     try {
         const response = await api.get('/user');
@@ -57,33 +57,20 @@ export const getUserInfo = async () => {
         throw error;
     }
 };
-
 export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
 
-// --- [MODIFIED] Document Upload (now room-aware) ---
+// --- Documents ---
 export const uploadDocument = (files, roomId, signal) => {
     console.log(`[LOG] api.js: Sending upload request for room ${roomId} with cancellation signal...`);
     const formData = new FormData();
     files.forEach(file => {
         formData.append('documents', file);
     });
-    // [MODIFIED] Route is now room-specific
     return api.post(`/documents/upload/${roomId}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         signal: signal, 
     });
 };
-// --- [END MODIFIED] ---
-
-// --- [MODIFIED] Search (now room-aware) ---
-export const search = (query, history, conversationId, roomId, signal) => {
-    console.log(`[LOG] api.js: Sending search request for Convo ID: ${conversationId} in room ${roomId}...`);
-    // [MODIFIED] Route is now room-specific
-    return api.post(`/search/${roomId}`, { query, history, conversationId }, { signal });
-};
-// --- [END MODIFIED] ---
-
-// --- [MODIFIED] Get Single Document (for PDF Viewer) ---
 export const getDocument = async (documentId) => {
     console.log(`[LOG] api.js: Sending request to get document blob: ${documentId}...`);
     const response = await api.get(`/documents/download/${documentId}`, {
@@ -91,98 +78,148 @@ export const getDocument = async (documentId) => {
     });
     return response.data;
 };
-// --- [END MODIFIED] ---
-
-// --- [MODIFIED] Get Document List (now room-aware) ---
 export const getDocuments = (roomId) => {
     console.log(`[LOG] api.js: Sending request to get document list for room: ${roomId}...`);
     return api.get(`/documents/list/${roomId}`);
 };
-// --- [END MODIFIED] ---
 
-// --- [MODIFIED] Now requires a roomId ---
+// --- Chat & Search ---
+export const search = (query, history, conversationId, roomId, signal) => {
+    console.log(`[LOG] api.js: Sending search request for Convo ID: ${conversationId} in room ${roomId}...`);
+    return api.post(`/search/${roomId}`, { query, history, conversationId }, { signal });
+};
 export const createNewConversation = (roomId) => {
     console.log(`[LOG] api.js: Sending request to create new conversation in room: ${roomId}...`);
     return api.post(`/chat/new/${roomId}`);
 };
-
-// --- [MODIFIED] Now requires a roomId ---
 export const getConversations = (roomId) => {
     console.log(`[LOG] api.js: Sending request to get conversations for room: ${roomId}...`);
     return api.get(`/chat/conversations/${roomId}`);
 };
-// --- [END MODIFIED] ---
-
-// --- NEW FUNCTION START ---
 export const getConversationHistory = (conversationId) => {
     console.log(`[LOG] api.js: Sending request to get history for conversation ID: ${conversationId}...`);
     return api.get(`/chat/history/${conversationId}`);
 };
-// --- NEW FUNCTION END ---
 
-// --- [NEW] PRODUCT API FUNCTION ---
+// --- Products ---
 export const requestProductCreation = (productData) => {
     console.log('[LOG] api.js: Sending request to create new product with data:', productData);
     return api.post('/products/request-product', productData);
 };
-// --- [END NEW] ---
-
-// --- [NEW] GET CONFIRMED PRODUCTS FUNCTION ---
 export const getConfirmedProducts = () => {
     console.log('[LOG] api.js: Sending request to get confirmed products...');
     return api.get('/products/confirmed');
 };
-// --- [END NEW] ---
 
-// --- [NEW] CHAT ROOM API FUNCTIONS ---
+// --- [PHASE 1.C] NEW FUNCTIONS ---
+export const getPendingProducts = () => {
+    console.log('[LOG] api.js: [PHASE 1.C] Sending request to get PENDING products...');
+    return api.get('/products/pending');
+};
+
+export const approveProduct = (productId) => {
+    console.log(`[LOG] api.js: [PHASE 1.C] Sending request to APPROVE product ${productId}...`);
+    return api.post(`/products/approve/${productId}`);
+};
+
+export const rejectProduct = (productId) => {
+    console.log(`[LOG] api.js: [PHASE 1.C] Sending request to REJECT product ${productId}...`);
+    return api.delete(`/products/reject/${productId}`);
+};
+// --- [END NEW FUNCTIONS] ---
+
+// --- [PHASE 1.D] NEW FUNCTIONS ---
+export const getAllProducts = () => {
+    console.log('[LOG] api.js: [PHASE 1.D] Sending request to get ALL products...');
+    return api.get('/products/all');
+};
+
+export const updateProduct = (productId, productData) => {
+    console.log(`[LOG] api.js: [PHASE 1.D] Sending request to UPDATE product ${productId}...`);
+    return api.put(`/products/${productId}`, productData);
+};
+// --- [END NEW FUNCTIONS] ---
+
+
+// --- Rooms ---
 export const getRooms = () => {
     console.log('[LOG] api.js: Sending request to get chat rooms...');
     return api.get('/rooms');
 };
-
 export const createRoom = (roomData) => {
     console.log('[LOG] api.js: Sending request to create new chat room...', roomData);
     return api.post('/rooms', roomData);
 };
-// --- [END NEW] ---
-
-// --- [NEW] CLIENT API FUNCTIONS ---
-export const getClients = () => {
-    console.log('[LOG] api.js: Sending request to get clients for admin...');
-    return api.get('/clients');
-};
-
-export const createClient = (clientData) => {
-    console.log('[LOG] api.js: Sending request to create new client...', clientData);
-    return api.post('/clients', clientData);
-};
-// --- [END NEW] ---
-
-// --- [NEW] AUDIT LOG FUNCTION ---
 export const logRoomEntry = (roomId) => {
     console.log(`[LOG] api.js: Logging entry into room ${roomId}...`);
     api.post(`/rooms/log-entry/${roomId}`).catch(err => {
         console.error(`[API_ERROR] Failed to log room entry for room ${roomId}:`, err.message);
     });
 };
-// --- [END NEW] ---
+export const joinRoom = (roomId) => {
+    console.log(`[LOG] api.js: Sending request to join room ${roomId}...`);
+    return api.post(`/rooms/join/${roomId}`);
+};
 
-// --- [NEW] USER APPROVAL API FUNCTIONS ---
+// --- JIT Access Request Management Functions ---
+export const getPendingRoomRequests = () => {
+    console.log('[LOG] api.js: Sending request to get pending room requests...');
+    return api.get('/rooms/requests/pending');
+};
+export const approveRoomRequest = (requestId, duration) => {
+    console.log(`[LOG] api.js: Sending request to approve room request ${requestId} for duration ${duration}...`);
+    return api.put(`/rooms/requests/approve/${requestId}`, { duration });
+};
+export const rejectRoomRequest = (requestId) => {
+    console.log(`[LOG] api.js: Sending request to reject room request ${requestId}...`);
+    return api.put(`/rooms/requests/reject/${requestId}`);
+};
+
+// --- User Management ---
 export const getPendingUsers = () => {
     console.log('[LOG] api.js: Sending request to get pending users...');
     return api.get('/users/pending');
 };
-
 export const approveUser = (userId) => {
     console.log(`[LOG] api.js: Sending request to approve user ${userId}...`);
     return api.post(`/users/approve/${userId}`);
 };
-
 export const rejectUser = (userId) => {
     console.log(`[LOG] api.js: Sending request to REJECT user ${userId}...`);
     return api.delete(`/users/reject/${userId}`);
 };
-// --- [END NEW] ---
+export const getTeam = () => {
+    console.log('[LOG] api.js: Sending request to get active team...');
+    return api.get('/users/team');
+};
+export const getAllTeamMembers = () => {
+    console.log('[LOG] api.js: Sending request to get ALL team members...');
+    return api.get('/users/team/all');
+};
+export const deactivateUser = (userId) => {
+    console.log(`[LOG] api.js: Sending request to DEACTIVATE user ${userId}...`);
+    return api.post(`/users/deactivate/${userId}`);
+};
+export const reactivateUser = (userId) => {
+    console.log(`[LOG] api.js: Sending request to REACTIVATE user ${userId}...`);
+    return api.post(`/users/reactivate/${userId}`);
+};
 
+// --- [SIGNUP_FIX] NEW FUNCTION ---
+export const getAdminsForProduct = (productName) => {
+    console.log(`[LOG] api.js: Sending request to get admins for product: ${productName}...`);
+    return api.get(`/users/admins-for-product?productName=${encodeURIComponent(productName)}`);
+};
+// --- [END SIGNUP_FIX] ---
+
+// --- Clients ---
+export const getClients = () => {
+    console.log('[LOG] api.js: Sending request to get clients for admin...');
+    return api.get('/clients');
+};
+export const createClient = (clientData) => {
+    console.log('[LOG] api.js: Sending request to create new client...', clientData);
+    return api.post('/clients', clientData);
+};
 
 export default api;

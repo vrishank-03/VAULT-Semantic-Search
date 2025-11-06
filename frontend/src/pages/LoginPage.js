@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-// --- [NEW] Import the new API function we will create in the next step ---
+// [TASK 16] Removed googleLogin from imports
 import { sendPasswordResetEmail, requestProductCreation } from '../services/api';
 import AuthLayout from '../components/AuthLayout';
 import Typewriter from '../components/Typewriter';
-import GoogleLoginButton from '../components/GoogleLoginButton';
+// [TASK 16] Removed GoogleLoginButton import
 import Toast from '../Toast';
 import logo from '../assets/logo.png';
 import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
@@ -24,14 +24,13 @@ function LoginPage() {
     const [showSuccess, setShowSuccess] = useState(false);
     const [successMessage, setSuccessMessage] = useState("");
 
-    // --- [NEW] State for Set Product Modal ---
+    // State for Set Product Modal
     const [isSetProductModalOpen, setIsSetProductModalOpen] = useState(false);
     const [productName, setProductName] = useState('');
     const [productOwnerName, setProductOwnerName] = useState('');
     const [productOwnerEmail, setProductOwnerEmail] = useState('');
     const [isProductLoading, setIsProductLoading] = useState(false);
     const [productSuccessMessage, setProductSuccessMessage] = useState(null);
-    // --- [END NEW] ---
 
     // General state
     const [isLoading, setIsLoading] = useState(false);
@@ -42,17 +41,14 @@ function LoginPage() {
     
     const hasHandledRedirect = useRef(false);
 
-    // THIS IS THE KEY CHANGE. This effect now reliably handles redirection.
     useEffect(() => {
         console.log('[LOGIN_PAGE_EFFECT] useEffect running. Auth status:', isAuthenticated);
         
-        // Handle redirecting if user becomes authenticated
         if (isAuthenticated) {
             console.log('[LOGIN_PAGE_EFFECT] User is authenticated. Navigating to /dashboard.');
             navigate('/dashboard', { replace: true });
         }
 
-        // Handle toast messages on component load (e.g., after email verification)
         const searchParams = new URLSearchParams(location.search);
         const justVerified = searchParams.get('verified') === 'true';
 
@@ -61,7 +57,6 @@ function LoginPage() {
             console.log(`[LOGIN_PAGE_EFFECT] Displaying toast from location state: ${message}`);
             setToast({ message, type: 'success' });
             hasHandledRedirect.current = true;
-            // Clean up the URL so the message doesn't reappear on refresh
             window.history.replaceState({}, document.title, location.pathname);
         }
     }, [isAuthenticated, navigate, location.state, location.search, location.pathname]);
@@ -83,8 +78,6 @@ function LoginPage() {
         try {
             await login({ email, password });
             console.log('[LOGIN_PAGE] login() successful. useEffect will handle redirect.');
-            // REMOVED: The navigate() call is removed from here.
-            // The useEffect hook will now handle the redirection when isAuthenticated becomes true.
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Login failed. Please check your credentials.';
             console.error('[LOGIN_PAGE_ERROR] Login failed:', errorMessage);
@@ -123,13 +116,11 @@ function LoginPage() {
         }
     };
 
-    // --- [NEW] Handler for the Set Product form submission ---
     const handleSetProductSubmit = async (e) => {
         e.preventDefault();
         setToast(null);
         console.log('[SET_PRODUCT] Form submit initiated.');
 
-        // 1. Validate inputs
         if (!productName || !productOwnerName || !productOwnerEmail) {
             console.warn('[SET_PRODUCT_WARN] Validation failed: Missing fields.');
             setToast({ message: 'All fields are required.', type: 'error' });
@@ -146,17 +137,14 @@ function LoginPage() {
         setProductSuccessMessage(null);
 
         try {
-            // 2. Call the new API function
             const payload = { productName, productOwnerName, productOwnerEmail };
             console.log('[SET_PRODUCT_API] Calling requestProductCreation with payload:', payload);
             
-            // This function will be created in api.js in the next step
             const response = await requestProductCreation(payload);
             
             console.log('[SET_PRODUCT_API_SUCCESS] API call successful:', response);
             setProductSuccessMessage('Product request sent! The CTO has been notified for approval.');
             
-            // 3. Clear form on success
             setProductName('');
             setProductOwnerName('');
             setProductOwnerEmail('');
@@ -171,7 +159,6 @@ function LoginPage() {
         }
     };
 
-    // --- [NEW] Function to close and reset the product modal ---
     const closeProductModal = () => {
         console.log('[SET_PRODUCT] Closing product modal.');
         setIsSetProductModalOpen(false);
@@ -180,25 +167,21 @@ function LoginPage() {
         setProductOwnerEmail('');
         setIsProductLoading(false);
         setProductSuccessMessage(null);
-        // Clear any modal-specific toasts
         setToast(null);
     };
 
-    // --- [NEW] Component to render the Set Product modal ---
     const renderSetProductModal = () => {
         console.log(`[SET_PRODUCT] renderSetProductModal called. Loading: ${isProductLoading}, Success: ${productSuccessMessage}`);
         
         return (
-            // Backdrop
             <div 
                 className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
-                onClick={closeProductModal} // Close modal on backdrop click
+                onClick={closeProductModal}
             >
                 <div 
                     className="relative w-full max-w-lg p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-800"
-                    onClick={(e) => e.stopPropagation()} // Prevent closing modal on content click
+                    onClick={(e) => e.stopPropagation()}
                 >
-                    {/* Close Button */}
                     <button 
                         onClick={closeProductModal}
                         className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
@@ -206,7 +189,6 @@ function LoginPage() {
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
 
-                    {/* Content: Success Message */}
                     {productSuccessMessage ? (
                         <div className="text-center">
                             <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Request Sent</h2>
@@ -219,7 +201,6 @@ function LoginPage() {
                             </button>
                         </div>
                     ) : 
-                    // Content: Loading Animation
                     isProductLoading ? (
                         <div className="text-center">
                             <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Submitting Request...</h2>
@@ -229,7 +210,6 @@ function LoginPage() {
                             </div>
                         </div>
                     ) : (
-                    // Content: Form
                         <>
                             <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Register a New Product</h2>
                             <p className="text-center text-gray-600 dark:text-gray-400 text-sm">
@@ -263,7 +243,6 @@ function LoginPage() {
             </div>
         );
     };
-    // --- [END NEW] ---
 
     const renderMainContent = () => {
         if (showSuccess) {
@@ -326,7 +305,6 @@ function LoginPage() {
                     </div>
                     <div>
                         <label htmlFor="password" className="sr-only">Password</label>
-                        {/* --- [FIX] Corrected e.gtarget.value to e.target.value --- */}
                         <input id="password" name="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Password" />
                     </div>
                     <div className="flex items-center justify-end">
@@ -342,17 +320,14 @@ function LoginPage() {
                         </button>
                     </div>
                 </form>
-                <div className="relative my-4">
-                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300 dark:border-gray-600" /></div>
-                    <div className="relative flex justify-center text-sm"><span className="px-2 bg-white dark:bg-gray-800/80 text-gray-500 dark:text-gray-400">Or continue with</span></div>
-                </div>
-                <GoogleLoginButton setError={(msg) => setToast({ message: msg, type: 'error' })} />
+                
+                {/* --- [TASK 16] REMOVED DIVIDER AND GOOGLE LOGIN BUTTON --- */}
+
                 <p className="!mt-6 text-sm text-center text-gray-600 dark:text-gray-400">
                     Don't have an account?{' '}
                     <Link to="/signup" className="font-medium text-blue-600 hover:underline dark:text-blue-500">Sign up</Link>
                 </p>
 
-                {/* --- [NEW] Set Product Button --- */}
                 <p className="!mt-4 text-sm text-center text-gray-600 dark:text-gray-400">
                     Need to register a new product?{' '}
                     <button 
@@ -360,7 +335,6 @@ function LoginPage() {
                         onClick={() => {
                             console.log('[LOGIN_PAGE] "Set Product" button clicked, opening modal.');
                             setIsSetProductModalOpen(true);
-                            // Clear any old toasts
                             setToast(null);
                         }} 
                         className="font-medium text-blue-600 hover:underline dark:text-blue-500"
@@ -368,7 +342,6 @@ function LoginPage() {
                         Set Product
                     </button>
                 </p>
-                {/* --- [END NEW] --- */}
             </>
         );
     };
@@ -377,9 +350,7 @@ function LoginPage() {
         <AuthLayout>
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
             
-            {/* --- [NEW] Render the modal if state is true --- */}
             {isSetProductModalOpen && renderSetProductModal()}
-            {/* --- [END NEW] --- */}
 
             <div className="flex flex-col items-center justify-center space-y-6">
                 <img src={logo} alt="VAULT Logo" className="w-16 h-16" />

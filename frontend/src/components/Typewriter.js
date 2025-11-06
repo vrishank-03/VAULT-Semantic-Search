@@ -15,7 +15,7 @@ const Typewriter = ({ initialSentence }) => {
     "Vítejte", // Czech
     "Добро пожаловать", // Russian
     "Hoşgeldiniz", // Turkish
-    "Welcome" // English
+    "Welcome to VAULT 1.0" // English
   ], [initialSentence]);
 
   const colors = useMemo(() => [

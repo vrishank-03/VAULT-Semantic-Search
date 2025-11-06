@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-// --- [MODIFIED] Import React Router hooks ---
 import { useParams, useNavigate } from 'react-router-dom';
-// --- MODIFIED IMPORT: All chat/doc functions ---
 import {
     uploadDocument,
     search,
@@ -10,12 +8,14 @@ import {
     createNewConversation,
     getConversations,
     getConversationHistory,
-    logRoomEntry // --- [NEW] Import logger
+    logRoomEntry,
+    joinRoom // --- [TASK 13] Import joinRoom
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import PdfViewer from '../PdfViewer';
 import ReactMarkdown from 'react-markdown';
-import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp, FiCopy, FiSquare, FiEdit2 } from 'react-icons/fi';
+// --- [TASK 13] Import new icons ---
+import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp, FiCopy, FiSquare, FiEdit2, FiAlertTriangle, FiCheckCircle, FiClock } from 'react-icons/fi';
 import Toast from '../Toast';
 import Sidebar from '../components/Sidebar';
 import ThemeToggleButton from '../components/ThemeToggleButton';
@@ -23,27 +23,72 @@ import { motion } from 'framer-motion';
 import ProcessingAnimation from '../components/ProcessingAnimation';
 import ThinkingAnimation from '../components/ThinkingAnimation';
 import logo from '../assets/logo.png';
+import LoadingSpinner from '../components/LoadingSpinner'; // --- [TASK 13] NEW ---
 
-// --- [MODIFIED] Now accepts a room name ---
 const getInitialMessages = (roomName = "this chat room") => {
-    // --- [FIX] Removed duplicate "Chat Room" ---
     return [{ sender: 'ai', text: `Welcome to ${roomName}. Upload a document or ask me a question about your knowledge base.` }];
 };
 
-// --- [MODIFIED] Renamed component ---
+// --- [TASK 13] NEW: JIT Access Modal Component ---
+const JitAccessModal = ({ status, onGoBack }) => {
+    const getStatusContent = () => {
+        switch (status) {
+            case 'pending':
+                return {
+                    icon: <FiClock className="text-yellow-500" size={48} />,
+                    title: "Access Pending",
+                    message: "Your request to access this room is pending approval from the room owner."
+                };
+            case 'rejected':
+                return {
+                    icon: <FiAlertTriangle className="text-red-500" size={48} />,
+                    title: "Access Rejected",
+                    message: "Your request to access this room was rejected by the room owner. Please contact them for more information."
+                };
+            default:
+                return {
+                    icon: <FiAlertTriangle className="text-gray-500" size={48} />,
+                    title: "Access Denied",
+                    message: "You do not have permission to view this room."
+                };
+        }
+    };
+
+    const { icon, title, message } = getStatusContent();
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 backdrop-blur-sm">
+            <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="relative w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-900 text-center"
+            >
+                <div className="flex justify-center mb-4">{icon}</div>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">{title}</h2>
+                <p className="text-gray-600 dark:text-gray-300">{message}</p>
+                <button
+                    onClick={onGoBack}
+                    className="w-full px-4 py-3 mt-4 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700"
+                >
+                    Back to Dashboard
+                </button>
+            </motion.div>
+        </div>
+    );
+};
+// --- [END TASK 13] ---
+
+
 function ChatRoomPage() {
-    // --- [NEW] Get the room ID from the URL ---
     const { roomId } = useParams();
-    const navigate = useNavigate(); // --- [NEW] Hook for navigation
-    console.log(`[CHAT_ROOM_LOG] Loaded chat room page for room ID: ${roomId}`);
-    // --- [END NEW] ---
-
-    // --- [NEW] State for room details ---
-    // TODO: This should be fetched from an API
+    const navigate = useNavigate();
+    
+    // --- [TASK 13] NEW: State for access control ---
+    const [accessStatus, setAccessStatus] = useState('checking'); // 'checking', 'granted', 'pending', 'rejected', 'denied'
+    // --- [END TASK 13] ---
+    
     const [roomName, setRoomName] = useState(`Room ${roomId}`); 
-    // --- [END NEW] ---
-
-    const [messages, setMessages] = useState(getInitialMessages(roomName));
+    const [messages, setMessages] = useState([]); // Start with empty messages
     const [input, setInput] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -69,26 +114,22 @@ function ChatRoomPage() {
     const [documents, setDocuments] = useState([]);
     const [showDocuments, setShowDocuments] = useState(false);
 
-    // --- [FIX] Wrapped function in useCallback ---
     const fetchDocuments = useCallback(async () => {
-        if (!roomId) return; // Don't fetch if roomId isn't available
+        if (!roomId) return;
         console.log(`[CHAT_ROOM_LOG] Fetching documents (for room ${roomId})...`);
         try {
-            // --- [MODIFIED] Pass roomId to getDocuments ---
             const response = await getDocuments(roomId); 
             setDocuments(response.data);
         } catch (error) {
             console.error("Failed to fetch documents:", error);
             setToast({ message: 'Could not load your document list.', type: 'error' });
         }
-    }, [roomId, setToast]); // --- [FIX] Added dependencies ---
+    }, [roomId]);
 
-    // --- [FIX] Wrapped function in useCallback ---
     const fetchConversations = useCallback(async () => {
-        if (!roomId) return; // Don't fetch if roomId isn't available yet
+        if (!roomId) return;
         console.log(`[CHAT_ROOM_LOG] Fetching conversations (for room ${roomId})...`);
         try {
-            // --- [MODIFIED] Now passes roomId to the API call ---
             const response = await getConversations(roomId); 
             setConversations(response.data);
             console.log(`[CHAT_ROOM_LOG] Successfully fetched ${response.data.length} conversations.`);
@@ -96,35 +137,60 @@ function ChatRoomPage() {
             console.error("[CHAT_ROOM_LOG] Failed to fetch conversations:", error);
             setToast({ message: 'Could not load your chat history.', type: 'error' });
         }
-    }, [roomId, setToast]); // --- [FIX] Added dependencies ---
+    }, [roomId]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    useEffect(() => {
-        // --- [NEW] Load data based on the room ID ---
-        if (roomId) {
-            console.log(`[CHAT_ROOM_EFFECT] New room ID: ${roomId}. Reloading data.`);
+    // --- [TASK 13] NEW: checkRoomAccess function ---
+    const checkRoomAccess = useCallback(async (currentRoomId) => {
+        console.log(`[CHAT_ROOM_ACCESS] Checking access for room ID: ${currentRoomId}...`);
+        try {
+            const response = await joinRoom(currentRoomId);
+            const status = response.data.status;
             
-            // --- [NEW] Call the audit logger ---
-            logRoomEntry(roomId);
-            // --- [END NEW] ---
+            console.log(`[CHAT_ROOM_ACCESS] API response: ${status}`);
             
-            // --- [MODIFIED] Set room name and initial message ---
-            // TODO: In the future, fetch room details from API to get the *real* name
-            const currentRoomName = `Room ${roomId}`; // Placeholder
-            setRoomName(currentRoomName);
-            setMessages(getInitialMessages(currentRoomName));
-            // --- [END MODIFIED] ---
-
-            setActiveConversationId(null); // Reset active conversation
-            
-            fetchDocuments();
-            fetchConversations();
+            if (status === 'granted') {
+                // User has access. Log entry and load the room.
+                setAccessStatus('granted');
+                logRoomEntry(currentRoomId);
+                
+                // TODO: In the future, fetch room details from API to get the *real* name
+                const currentRoomName = `Room ${currentRoomId}`; // Placeholder
+                setRoomName(currentRoomName);
+                setMessages(getInitialMessages(currentRoomName));
+                setActiveConversationId(null);
+                
+                fetchDocuments();
+                fetchConversations();
+            } else {
+                // 'pending', 'rejected', or 'denied'
+                setAccessStatus(status || 'denied');
+            }
+        } catch (error) {
+            console.error("[CHAT_ROOM_ACCESS_FAIL] Failed to check room access:", error);
+            const status = error.response?.data?.status;
+            if (status) {
+                // Handle API-known statuses like 'denied'
+                setAccessStatus(status);
+            } else {
+                // Handle 404, 500, etc.
+                setToast({ message: error.response?.data?.message || 'Error joining room.', type: 'error' });
+                navigate('/dashboard');
+            }
         }
-    // --- [FIX] Added missing dependencies to satisfy the linter ---
-    }, [roomId, fetchDocuments, fetchConversations]);
+    }, [navigate, fetchDocuments, fetchConversations]); // Add dependencies
+
+    // --- [TASK 13] MODIFIED: This effect now *only* handles access control ---
+    useEffect(() => {
+        if (roomId) {
+            console.log(`[CHAT_ROOM_EFFECT] New room ID: ${roomId}. Checking access...`);
+            setAccessStatus('checking'); // Set to checking on every room change
+            checkRoomAccess(roomId);
+        }
+    }, [roomId, checkRoomAccess]); // checkRoomAccess is now a dependency
 
     const handleSearch = async (e) => {
         e.preventDefault();
@@ -137,30 +203,25 @@ function ChatRoomPage() {
 
         const userMessage = { sender: 'user', text: input };
         const currentHistory = [...messages, userMessage];
-        // Add "Thinking..." immediately for responsiveness
         setMessages([...currentHistory, { sender: 'ai', text: 'Thinking...', isLoading: true }]);
 
         const currentInput = input;
         setInput('');
         setIsSearching(true);
 
-        let convoId = activeConversationId; // Use a local variable
+        let convoId = activeConversationId;
 
         try {
-             // Check if it's the first message of a new chat session (not just a new convo)
             if (!convoId) {
                 console.log("[CHAT_ROOM_LOG] No active conversation. Creating a new one first...");
-                // --- [MODIFIED] Pass roomId to createNewConversation ---
                 const response = await createNewConversation(roomId);
                 convoId = response.data.conversation_id;
-                setActiveConversationId(convoId); // Update state *after* successful creation
+                setActiveConversationId(convoId);
                 console.log(`[CHAT_ROOM_LOG] New conversation automatically created with ID: ${convoId}`);
-                fetchConversations(); // Refresh list in sidebar
+                fetchConversations();
             }
 
             console.log(`[CHAT_ROOM_LOG] Calling search() API for Convo ID: ${convoId} in room ${roomId}...`);
-            
-            // --- [MODIFIED] Pass roomId to search API ---
             const result = await search(currentInput, currentHistory, convoId, roomId, controller.signal);
 
             const responseData = result.data;
@@ -170,30 +231,22 @@ function ChatRoomPage() {
 
             console.log("[CHAT_ROOM_LOG] Search successful. Got AI response.");
             const aiResponse = { sender: 'ai', text: responseData.answer, results: responseData };
-             // Replace "Thinking..." with the actual response
             setMessages(prev => [...prev.slice(0, -1), aiResponse]);
 
         } catch (error) {
             console.error("[CHAT_ROOM_LOG] Search encountered an error:", error);
-
-            // Handle abort specifically
             if (error.name === 'CanceledError' || error.name === 'AbortError') {
                 console.log("[CHAT_ROOM_LOG] Search request was successfully aborted by user.");
                 const errorResponse = { sender: 'system', text: "Generation stopped." };
-                 // Replace "Thinking..." with the system message
                 setMessages(prev => [...prev.slice(0, -1), errorResponse]);
             } else if (error.config && error.config.url.includes('/api/chat/new')) {
-                 // Handle failure to create the *initial* conversation
                 console.error("[CHAT_ROOM_LOG] CRITICAL: Failed to create initial conversation.");
                 setToast({ message: 'A new chat session could not be started. Please refresh.', type: 'error' });
-                 // Remove the user message and "Thinking..."
                 setMessages(prev => prev.slice(0, -2));
             } else {
-                 // Generic error during search
                 const errorText = error.response?.data?.message || 'Sorry, I encountered an error.';
                 setToast({ message: errorText, type: 'error' });
                 const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again in sometime." };
-                 // Replace "Thinking..." with the error message
                 setMessages(prev => [...prev.slice(0, -1), errorResponse]);
             }
         } finally {
@@ -226,18 +279,14 @@ function ChatRoomPage() {
     const handleEditMessage = (messageIndex) => {
         console.log(`[CHAT_ROOM_LOG] handleEditMessage triggered for index: ${messageIndex}`);
         const messageToEdit = messages[messageIndex];
-
         if (messageToEdit.sender !== 'user') {
             console.warn(`[CHAT_ROOM_LOG] Edit attempt on non-user message index ${messageIndex}.`);
             return;
         }
-
         console.log(`[CHAT_ROOM_LOG] Setting input to: "${messageToEdit.text}"`);
         setInput(messageToEdit.text);
-
         console.log(`[CHAT_ROOM_LOG] Rewinding message history to index ${messageIndex}.`);
         setMessages(prevMessages => prevMessages.slice(0, messageIndex));
-
         mainInputRef.current?.focus();
     };
 
@@ -253,13 +302,11 @@ function ChatRoomPage() {
 
         try {
             console.log(`[CHAT_ROOM_LOG] Calling uploadDocument() API for room ${roomId} with signal.`);
-            
-            // --- [MODIFIED] Pass roomId to uploadDocument ---
             const result = await uploadDocument(files, roomId, controller.signal);
             
             console.log("[CHAT_ROOM_LOG] Upload successful.");
             setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
-            fetchDocuments(); // Refresh the document list
+            fetchDocuments();
         } catch (error) {
             console.error("[CHAT_ROOM_LOG] Upload encountered an error:", error);
             if (error.name === 'CanceledError' || error.name === 'AbortError') {
@@ -269,13 +316,12 @@ function ChatRoomPage() {
                 console.warn("[CHAT_ROOM_LOG] Duplicate file upload detected.");
                 setToast({ message: error.response.data.error, type: 'error' });
             } else {
-                // --- [NEW] Handle 403 Forbidden error ---
                 if (error.response && error.response.status === 403) {
                      console.warn("[CHAT_ROOM_LOG] Upload forbidden for user.");
                      setToast({ message: "You do not have permission to upload documents.", type: 'error' });
                 } else {
-                    console.error("[CHAT_ROOM_LOG] Generic upload failure.");
-                    setToast({ message: `Upload failed. Please try again.`, type: 'error' });
+                     console.error("[CHAT_ROOM_LOG] Generic upload failure.");
+                     setToast({ message: `Upload failed. Please try again.`, type: 'error' });
                 }
             }
         } finally {
@@ -302,7 +348,6 @@ function ChatRoomPage() {
                 textToHighlight: source.text
             } : null);
         } catch (error) {
-            // --- [FIX] Corrected syntax error ---
             setToast({ message: 'Could not load the protected PDF.', type: 'error' });
         } finally {
             setIsPdfLoading(false);
@@ -363,13 +408,12 @@ function ChatRoomPage() {
 
         console.log("[CHAT_ROOM_LOG] Creating new conversation via API...");
         try {
-            // --- [MODIFIED] Pass roomId to createNewConversation ---
             const response = await createNewConversation(roomId);
             const newConversation = response.data;
             console.log("[CHAT_ROOM_LOG] Successfully created new conversation. ID:", newConversation.conversation_id);
             setActiveConversationId(newConversation.conversation_id);
-            setMessages(getInitialMessages(roomName)); // --- [MODIFIED] Pass roomName
-            fetchConversations(); // Refresh list
+            setMessages(getInitialMessages(roomName));
+            fetchConversations();
             setToast({ message: 'New chat created!', type: 'success' });
         } catch (error) {
             console.error("[CHAT_ROOM_LOG] Failed to create new conversation:", error);
@@ -382,12 +426,10 @@ function ChatRoomPage() {
 
         if (selectedId === activeConversationId) {
             console.log("[CHAT_ROOM_LOG] Selected conversation is already active. No action needed.");
-            return; // Avoid unnecessary re-fetch
+            return;
         }
 
-        // Immediately update the active ID
         setActiveConversationId(selectedId);
-        // Show loading state
         setMessages([{ sender: 'system', text: 'Loading chat history...' }]);
 
         try {
@@ -395,39 +437,37 @@ function ChatRoomPage() {
             const response = await getConversationHistory(selectedId);
             const history = response.data;
             console.log(`[CHAT_ROOM_LOG] Successfully fetched history with ${history.length} messages.`);
-
-            // If history is empty (e.g., a newly created chat that wasn't used), show welcome.
-            // Otherwise, show the fetched history.
-            setMessages(history.length > 0 ? history : getInitialMessages(roomName)); // --- [MODIFIED] Pass roomName
-
+            setMessages(history.length > 0 ? history : getInitialMessages(roomName));
         } catch (error) {
             console.error(`[CHAT_ROOM_LOG] Failed to fetch history for conversation ${selectedId}:`, error);
             setToast({ message: 'Could not load the selected chat history.', type: 'error' });
-            // Fallback to the initial welcome message on error
-            setMessages(getInitialMessages(roomName)); // --- [MODIFIED] Pass roomName
-             // Optionally reset activeConversationId if loading fails catastrophically?
-            // setActiveConversationId(null);
+            setMessages(getInitialMessages(roomName));
         }
     };
-    // --- NEW FUNCTION END ---
-
 
     return (
         <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
 
             {isUploading && <ProcessingAnimation onStopUpload={handleStopUpload} />}
 
-            {/* --- MODIFIED: Pass conversations list AND selection handler to Sidebar --- */}
             <Sidebar
                 handleNewChat={handleNewChat}
                 conversations={conversations}
-                onSelectConversation={handleSelectConversation} // <-- Pass the handler
-                // --- [NEW] Pass navigate to allow "back to dashboard" button ---
+                onSelectConversation={handleSelectConversation}
                 onGoBack={() => navigate('/dashboard')}
-                // --- [NEW] Pass room name to display in sidebar ---
                 roomName={roomName}
             />
 
+            {/* --- [TASK 13] Access Control Logic --- */}
+            {accessStatus !== 'granted' ? (
+                <main className="flex-grow flex items-center justify-center relative">
+                    {accessStatus === 'checking' && <LoadingSpinner />}
+                    {(accessStatus === 'pending' || accessStatus === 'rejected' || accessStatus === 'denied') && (
+                        <JitAccessModal status={accessStatus} onGoBack={() => navigate('/dashboard')} />
+                    )}
+                </main>
+            ) : (
+            // --- [TASK 13] This is the main content, only shown if access is 'granted' ---
             <div className="flex flex-col flex-grow relative">
                 {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
                 <header className="absolute top-0 right-0 p-4 z-10 flex items-center gap-4">
@@ -487,20 +527,18 @@ function ChatRoomPage() {
                 </header>
                 <div className="flex-grow overflow-y-auto pt-20 pb-40 px-4 sm:px-6 lg:px-8">
                     <div className="max-w-4xl mx-auto space-y-8">
-
                         {messages.map((msg, index) => {
-                             // --- MODIFIED: Added check for 'system' message type during history load ---
                             if (msg.sender === 'system') {
                                 return (
                                     <motion.div
-                                        key={index} // Use index as key for system messages too
+                                        key={index}
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ duration: 0.3 }}
                                         className="flex justify-center items-center my-2"
                                     >
                                         <span className="text-sm text-gray-500 dark:text-gray-400 italic">
-                                            {msg.text} {/* Display loading/error text */}
+                                            {msg.text}
                                         </span>
                                     </motion.div>
                                 );
@@ -510,7 +548,7 @@ function ChatRoomPage() {
 
                             return (
                                 <motion.div
-                                    key={index} // Consider using msg.message_id if available and unique
+                                    key={index}
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.3 }}
@@ -566,7 +604,6 @@ function ChatRoomPage() {
                                         )
                                     )}
                                     {msg.sender === 'ai' && !msg.isLoading && (
-                                        // --- [FIX] Corrected typo 'opacity-1F00' to 'opacity-100' ---
                                         <button onClick={() => handleCopyToClipboard(msg.text)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity pt-3" title="Copy response"> <FiCopy size={16} /> </button>
                                     )}
                                 </motion.div>
@@ -579,14 +616,12 @@ function ChatRoomPage() {
                     <div className="max-w-4xl mx-auto">
                         <form onSubmit={handleSearch} className="flex items-center p-2 bg-white dark:bg-gray-800/70 dark:backdrop-blur-lg rounded-full shadow-2xl border border-gray-200 dark:border-gray-700">
                             
-                            {/* --- [NEW] Hide Upload Button for Users --- */}
-                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner') && (
+                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO') && ( // [TASK 13] Updated role check
                                 <>
                                     <button type="button" onClick={() => fileInputRef.current.click()} className="p-3 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-full"> <FiPaperclip size={22} /> </button>
                                     <input id="file-upload" ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".pdf" />
                                 </>
                             )}
-                            {/* --- [END NEW] --- */}
 
                             <input ref={mainInputRef} type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask VAULT" disabled={isSearching} className="flex-grow px-4 py-2 bg-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none" />
                             {isSearching ? (
@@ -598,6 +633,9 @@ function ChatRoomPage() {
                     </div>
                 </div>
             </div>
+            )}
+            {/* --- [END TASK 13] --- */}
+
             {(isPdfLoading || pdfUrl) && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
                     {isPdfLoading ? (
@@ -611,5 +649,4 @@ function ChatRoomPage() {
     );
 }
 
-// --- [MODIFIED] Renamed component export ---
 export default ChatRoomPage;

@@ -33,21 +33,23 @@ An up-to-date hierarchical view of the repository and a short description of the
 │   │   ├── pyvenv.cfg
 │   │   └── share/
 │   ├── controllers/
-│   │   ├── authController.js     # (modified)
-│   │   ├── chatController.js     # (modified)
+│   │   ├── authController.js      # (modified)
+│   │   ├── chatController.js      # (modified)
 │   │   ├── clientController.js    # (untracked) client-related handlers
-│   │   ├── productController.js   # (untracked) product handlers
-│   │   ├── roomController.js      # (untracked) room handlers
-│   │   └── userController.js      # (untracked) user management
+│   │   ├── productController.js   # (modified) product handlers
+│   │   ├── roomController.js      # (modified) room handlers
+│   │   └── userController.js      # (modified) user management
 │   ├── middleware/
-│   │   └── authMiddleware.js
+│   │   └── authMiddleware.js      # (modified)
 │   ├── routes/
-│   │   ├── authRoutes.js
-│   │   ├── chatRoutes.js         # (modified)
-│   │   ├── clientRoutes.js        # (untracked)
-│   │   ├── productRoutes.js       # (untracked)
-│   │   ├── roomRoutes.js          # (untracked)
-│   │   └── userRoutes.js          # (untracked)
+│   │   ├── authRoutes.js          # (modified)
+│   │   ├── chatRoutes.js          # (modified)
+│   │   ├── clientRoutes.js        # (modified)
+│   │   ├── productRoutes.js       # (modified)
+│   │   ├── roomRoutes.js          # (modified)
+│   │   └── userRoutes.js          # (modified)
+│   ├── services/
+│   │   └── emailService.js        # (untracked) email notification service
 │   ├── storage/                  # uploaded/processed document assets and profile images
 │   │   ├── document-1756615818862-677824898.pdf
 │   │   ├── document-1756908427134-455336609.pdf
@@ -82,7 +84,8 @@ An up-to-date hierarchical view of the repository and a short description of the
 │   │   ├── documents-1757160659716-6141505.pdf
 │   │   ├── profile-pictures/       # directory for user profile pictures (may be empty)
 │   │   ├── profile_images/
-│   │   │   └── user_1.jpg
+│   │   │   ├── user_1.jpg
+│   │   │   └── user_2.jpg         # (untracked)
 │   │   ├── user_1_1757222678691-741393591.pdf
 │   │   ├── user_1_1757225084726-279148904.pdf
 │   │   ├── user_1_1757225262847-581654687.pdf
@@ -169,7 +172,7 @@ An up-to-date hierarchical view of the repository and a short description of the
 │       ├── services/
 │       │   └── api.js              # (modified)
 │       ├── pages/
-│       │   ├── ChatRoomPage.js        # real-time chat room UI (untracked)
+│       │   ├── ChatRoomPage.js        # real-time chat room UI (modified)
 │       │   ├── Dashboard.js           # (modified)
 │       │   ├── LoginPage.js           # (modified)
 │       │   ├── ResetPasswordPage.js
@@ -186,7 +189,11 @@ An up-to-date hierarchical view of the repository and a short description of the
 │       │   ├── SuccessAnimation.js
 │       │   ├── ThemeToggleButton.js
 │       │   ├── ThinkingAnimation.js
-│       │   └── Typewriter.js
+│       │   ├── Typewriter.js         # (modified)
+│       │   └── modals/
+│       │       ├── CreateRoomModal.js      # (untracked) room creation dialog
+│       │       ├── JitRequestModal.js      # (untracked) just-in-time access request
+│       │       └── UserManagementModal.js  # (untracked) user management interface
 │       ├── context/
 │       │   ├── AuthContext.js        # (modified)
 │       │   └── ThemeContext.js

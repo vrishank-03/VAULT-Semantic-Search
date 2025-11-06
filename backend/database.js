@@ -22,8 +22,8 @@ const initializeDatabase = () => {
             db.serialize(() => {
                 console.log('[DB_INIT] Starting table serialization...');
 
-                // --- Users Table ---
-                console.log('[DB_INIT] Attempting to create_users_table...');
+                // --- Users Table [MODIFIED] ---
+                console.log('[DB_INIT] Attempting to create_users_table (with manager_id)...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,9 +38,9 @@ const initializeDatabase = () => {
                         role TEXT NOT NULL DEFAULT 'User',
                         status TEXT NOT NULL DEFAULT 'pending_email_verification',
                         product_id INTEGER,
-                        admin_id INTEGER, -- [NEW] Links a User to their Admin
+                        manager_id INTEGER, -- [MODIFIED] Links user to their manager (User->Admin, Admin->PO, PO->CTO)
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
-                        FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+                        FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL -- [MODIFIED]
                     )
                 `, (err) => {
                     if (err) {
@@ -50,7 +50,7 @@ const initializeDatabase = () => {
                     console.log("[DB_INIT_SUCCESS] 'users' table verified/created.");
                 });
 
-                // --- Products Table ---
+                // --- Products Table [PHASE 1.B MODIFIED] ---
                 console.log('[DB_INIT] Attempting to create_products_table...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS products (
@@ -58,7 +58,7 @@ const initializeDatabase = () => {
                         product_name TEXT NOT NULL UNIQUE,
                         product_owner_name TEXT NOT NULL,
                         product_owner_email TEXT NOT NULL,
-                        status TEXT NOT NULL DEFAULT 'suspended', 
+                        status TEXT NOT NULL DEFAULT 'pending', -- [PHASE 1.B] Changed default from 'suspended' to 'pending'
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 `, (err) => {
@@ -101,20 +101,20 @@ const initializeDatabase = () => {
                 // --- [END REMOVED] ---
 
                 // --- [MODIFIED] Chat Rooms Table ---
-                console.log('[DB_INIT] Attempting to create_chat_rooms_table...');
+                console.log('[DB_INIT] Attempting to create_chat_rooms_table (with creator_id)...');
                 db.run(`
                     CREATE TABLE IF NOT EXISTS chat_rooms (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         product_id INTEGER NOT NULL,
                         client_id INTEGER,
-                        admin_creator_id INTEGER, -- [NEW] Links room to its creator Admin
+                        creator_id INTEGER, -- [MODIFIED] Links room to its creator (Admin, PO, or CTO)
                         name TEXT NOT NULL,
                         color TEXT,
                         password_hash TEXT,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
                         FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
-                        FOREIGN KEY (admin_creator_id) REFERENCES users(id) ON DELETE SET NULL
+                        FOREIGN KEY (creator_id) REFERENCES users(id) ON DELETE SET NULL -- [MODIFIED]
                     )
                 `, (err) => {
                     if (err) {
@@ -125,7 +125,73 @@ const initializeDatabase = () => {
                     }
                 });
                 // --- [END MODIFIED] ---
-                
+
+                // --- [NEW] Room Admin Assignments Table (For PO -> Admin room sharing) ---
+                console.log('[DB_INIT] Attempting to create_room_admin_assignments_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS room_admin_assignments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id INTEGER NOT NULL,
+                        admin_id INTEGER NOT NULL,
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                        FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE,
+                        UNIQUE(room_id, admin_id)
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_room_admin_assignments_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] room_admin_assignments_table verified/created.');
+                });
+                // --- [END NEW] ---
+
+                // --- [NEW] Room PO Assignments Table (For CTO -> PO room sharing) ---
+                console.log('[DB_INIT] Attempting to create_room_po_assignments_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS room_po_assignments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id INTEGER NOT NULL,
+                        po_id INTEGER NOT NULL,
+                        is_unblocked INTEGER NOT NULL DEFAULT 0, -- 0 = blocked, 1 = unblocked
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                        FOREIGN KEY (po_id) REFERENCES users(id) ON DELETE CASCADE,
+                        UNIQUE(room_id, po_id)
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_room_po_assignments_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] room_po_assignments_table verified/created.');
+                });
+                // --- [END NEW] ---
+
+                // --- [NEW] Room Access Requests Table (For Admin/PO JIT Access) ---
+                console.log('[DB_INIT] Attempting to create_room_access_requests_table...');
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS room_access_requests (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id INTEGER NOT NULL,
+                        requester_id INTEGER NOT NULL,
+                        owner_id INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        expires_at DATETIME, -- NULL for no expiration
+                        FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                        FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error('[DB_INIT_ERROR] Failed to create_room_access_requests_table:', err.message);
+                        return reject(err);
+                    }
+                    console.log('[DB_INIT_SUCCESS] room_access_requests_table verified/created.');
+                });
+                // --- [END NEW] ---
+
                 // --- [NEW] Room Session Logs Table ---
                 console.log('[DB_INIT] Attempting to create_room_session_logs_table...');
                 db.run(`
@@ -221,7 +287,7 @@ const initializeDatabase = () => {
                         const hasRole = userColumns.some(col => col.name === 'role');
                         const hasStatus = userColumns.some(col => col.name === 'status');
                         const hasProductId = userColumns.some(col => col.name === 'product_id');
-                        const hasAdminId = userColumns.some(col => col.name === 'admin_id'); // [NEW]
+                        const hasManagerId = userColumns.some(col => col.name === 'manager_id'); // [MODIFIED]
 
                         db.serialize(() => {
                             // --- Users Table Migration ---
@@ -241,7 +307,7 @@ const initializeDatabase = () => {
                                     console.log('[DB_ALTER_SUCCESS] "status" column added.');
                                 });
                             } else {
-                                console.log('[DB_ALTER] "status" column already exists.');
+                                console.log('[DB_ALTER] "status" column already. (Note: New users are `pending_email_verification` or `invited`)');
                             }
                             if (!hasProductId) {
                                 console.log('[DB_ALTER] Adding "product_id" column to "users" table...');
@@ -252,14 +318,14 @@ const initializeDatabase = () => {
                             } else {
                                 console.log('[DB_ALTER] "product_id" column already exists.');
                             }
-                            if (!hasAdminId) { // [NEW]
-                                console.log('[DB_ALTER] Adding "admin_id" column to "users" table...');
-                                db.run('ALTER TABLE users ADD COLUMN admin_id INTEGER', (alterErr) => {
+                            if (!hasManagerId) { // [MODIFIED]
+                                console.log('[DB_ALTER] Adding "manager_id" column to "users" table...');
+                                db.run('ALTER TABLE users ADD COLUMN manager_id INTEGER', (alterErr) => {
                                     if (alterErr) return reject(alterErr);
-                                    console.log('[DB_ALTER_SUCCESS] "admin_id" column added.');
+                                    console.log('[DB_ALTER_SUCCESS] "manager_id" column added.');
                                 });
                             } else {
-                                console.log('[DB_ALTER] "admin_id" column already exists.');
+                                console.log('[DB_ALTER] "manager_id" column already exists.');
                             }
                             
                             // --- Conversations Table Migration ---
@@ -295,11 +361,11 @@ const initializeDatabase = () => {
                             });
 
                             // --- Chat Rooms Table Migration ---
-                            console.log('[DB_ALTER] Checking if "chat_rooms.client_id" and "admin_creator_id" columns exist...');
+                            console.log('[DB_ALTER] Checking if "chat_rooms.client_id" and "creator_id" columns exist...');
                             db.all("PRAGMA table_info(chat_rooms)", (roomPragmaErr, roomColumns) => {
                                 if (roomPragmaErr) return reject(roomPragmaErr);
                                 const hasClientId = roomColumns.some(col => col.name === 'client_id');
-                                const hasAdminCreatorId = roomColumns.some(col => col.name === 'admin_creator_id');
+                                const hasCreatorId = roomColumns.some(col => col.name === 'creator_id'); // [MODIFIED]
                                 
                                 if (!hasClientId) {
                                     console.log('[DB_ALTER] Adding "client_id" column to "chat_rooms" table...');
@@ -310,16 +376,63 @@ const initializeDatabase = () => {
                                 } else {
                                     console.log('[DB_ALTER] "chat_rooms.client_id" column already exists.');
                                 }
-                                if (!hasAdminCreatorId) {
-                                    console.log('[DB_ALTER] Adding "admin_creator_id" column to "chat_rooms" table...');
-                                    db.run('ALTER TABLE chat_rooms ADD COLUMN admin_creator_id INTEGER', (alterErr) => {
+                                if (!hasCreatorId) { // [MODIFIED]
+                                    console.log('[DB_ALTER] Adding "creator_id" column to "chat_rooms" table...');
+                                    db.run('ALTER TABLE chat_rooms ADD COLUMN creator_id INTEGER', (alterErr) => {
                                         if (alterErr) return reject(alterErr);
-                                        console.log('[DB_ALTER_SUCCESS] "admin_creator_id" column added to chat_rooms.');
+                                        console.log('[DB_ALTER_SUCCESS] "creator_id" column added to chat_rooms.');
                                     });
                                 } else {
-                                    console.log('[DB_ALTER] "chat_rooms.admin_creator_id" column already exists.');
+                                    console.log('[DB_ALTER] "chat_rooms.creator_id" column already exists.');
                                 }
                             });
+
+                            // --- [PHASE 1.B] Products Table Migration ---
+                            console.log('[DB_ALTER] Checking if "products.status" column exists and matches new flow...');
+                            db.all("PRAGMA table_info(products)", (prodPragmaErr, prodColumns) => {
+                                if (prodPragmaErr) return reject(prodPragmaErr);
+                                
+                                const hasStatus = prodColumns.some(col => col.name === 'status');
+                                
+                                if (!hasStatus) {
+                                    console.log('[DB_ALTER] [PHASE 1.B] Adding "status" column to "products" table with DEFAULT \'pending\'...');
+                                    db.run('ALTER TABLE products ADD COLUMN status TEXT NOT NULL DEFAULT \'pending\'', (alterErr) => {
+                                        if (alterErr) return reject(alterErr);
+                                        console.log('[DB_ALTER_SUCCESS] [PHASE 1.B] "products.status" column added.');
+                                    });
+                                } else {
+                                    console.log('[DB_ALTER] [PHASE 1.B] "products.status" column already exists.');
+                                    // This is the migration: update old 'suspended' (un-approved) to 'pending' (new un-approved).
+                                    console.log('[DB_ALTER] [PHASE 1.B] Updating old \'suspended\' product statuses to \'pending\' for new CTO approval flow...');
+                                    db.run("UPDATE products SET status = 'pending' WHERE status = 'suspended'", function(updateErr) {
+                                        if (updateErr) return reject(updateErr);
+                                        if (this.changes > 0) {
+                                            console.log(`[DB_ALTER_SUCCESS] [PHASE 1.B] Migrated ${this.changes} 'suspended' products to 'pending'.`);
+                                        } else {
+                                            console.log(`[DB_ALTER_SUCCESS] [PHASE 1.B] No 'suspended' products needed migration.`);
+                                        }
+                                    });
+                                    
+                                    // --- [PHASE 1.E] NEW MIGRATION ---
+                                    // This fixes the causality flaw for existing data
+                                    console.log('[DB_ALTER] [PHASE 1.E] Checking for confirmed products with invited POs...');
+                                    db.run(`
+                                        UPDATE products SET status = 'awaiting_po_activation' 
+                                        WHERE status = 'confirmed' AND id IN (
+                                            SELECT product_id FROM users WHERE role = 'ProductOwner' AND status = 'invited'
+                                        )
+                                    `, function(updateErr) {
+                                        if (updateErr) return reject(updateErr);
+                                        if (this.changes > 0) {
+                                            console.log(`[DB_ALTER_SUCCESS] [PHASE 1.E] Migrated ${this.changes} 'confirmed' products to 'awaiting_po_activation'.`);
+                                        } else {
+                                            console.log(`[DB_ALTER_SUCCESS] [PHASE 1.E] No products needed 'awaiting_po_activation' migration.`);
+                                        }
+                                    });
+                                    // --- [END PHASE 1.E] ---
+                                }
+                            });
+                            // --- [END PHASE 1.B] ---
 
                             // --- Chat History Table Migration (FINAL STEP) ---
                             console.log('[DB_ALTER] Checking if chat_history.results column exists...');
@@ -446,4 +559,3 @@ module.exports = {
     updateConversationTitle,
     chromaClient
 };
-

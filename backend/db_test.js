@@ -114,7 +114,7 @@ const runSetup = async () => {
 
         console.log(`[SETUP_SCRIPT] SUCCESS: Admin user "${adminEmail}" is 'active'.`);
         console.log("================================================================");
-        console.log("🚀 SETUP COMPLETE 🚀");
+        console.log("𝓈ℯ𝓉𝓊𝓅𝓅𝓅𝓅 𝓭𝓸𝓷𝓮 ");
         console.log("You can now log in with:");
         console.log(`   Email: admin@vault.com`);
         console.log(`   Pass:  Password123!`);

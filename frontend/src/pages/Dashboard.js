@@ -1,437 +1,67 @@
-// --- [NEW] This is the new "Purgatory Page" Dashboard ---
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-// --- [MODIFIED] Import ALL new API functions ---
+// --- [PHASE 1.D] Import new API functions ---
 import { 
     getRooms, 
-    createRoom, 
-    getClients, 
-    createClient,
-    getPendingUsers,
-    approveUser,
-    rejectUser // --- [NEW] ---
+    getPendingProducts,
+    approveProduct,
+    rejectProduct,
+    getAllProducts,
+    updateProduct
 } from '../services/api';
 import Sidebar from '../components/Sidebar'; 
 import ThemeToggleButton from '../components/ThemeToggleButton'; 
 import Toast from '../Toast';
-// --- [MODIFIED] Import new icons ---
-import { FiPlus, FiLock, FiEye, FiEdit2, FiUserCheck, FiUsers, FiX, FiTrash2 } from 'react-icons/fi';
+// --- [PHASE 1.D] Import new icons ---
+import { 
+    FiPlus, FiLock, FiEye, FiEdit2, FiUsers, FiBell, 
+    FiCheckCircle, FiXCircle, FiSave, FiX 
+} from 'react-icons/fi';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-// --- [NEW] User Approval Modal Component ---
-const UserApprovalModal = ({ isOpen, onClose, userRole, onUpdate }) => {
-    const [pendingUsers, setPendingUsers] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState(null);
-
-    const fetchPending = async () => {
-        console.log('[USER_APPROVAL_MODAL] Fetching pending users...');
-        setIsLoading(true);
-        setError(null);
-        try {
-            const response = await getPendingUsers();
-            console.log('[USER_APPROVAL_MODAL] Fetched pending users:', response.data);
-            setPendingUsers(response.data);
-        } catch (err) {
-            console.error('[USER_APPROVAL_MODAL] Error fetching users:', err);
-            setError(err.response?.data?.message || 'Failed to load pending users.');
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (isOpen) {
-            fetchPending();
-        }
-    }, [isOpen]);
-
-    const handleApprove = async (userId, email) => {
-        console.log(`[USER_APPROVAL_MODAL] Attempting to approve user ${userId}`);
-        try {
-            await approveUser(userId);
-            console.log(`[USER_APPROVAL_MODAL] Successfully approved user ${userId}`);
-            onUpdate({ message: `User ${email} approved successfully!`, type: 'success' });
-            // Refresh list
-            fetchPending();
-        } catch (err) {
-            console.error(`[USER_APPROVAL_MODAL] Error approving user ${userId}:`, err);
-            onUpdate({ message: err.response?.data?.message || 'Failed to approve user.', type: 'error' });
-        }
-    };
-
-    // --- [NEW] Handler for rejecting a user ---
-    const handleReject = async (userId, email) => {
-        console.log(`[USER_APPROVAL_MODAL] Attempting to REJECT user ${userId}`);
-        // Simple confirmation before deleting
-        if (!window.confirm(`Are you sure you want to reject and delete the user ${email}? This action cannot be undone.`)) {
-            return;
-        }
-        
-        try {
-            await rejectUser(userId);
-            console.log(`[USER_APPROVAL_MODAL] Successfully rejected user ${userId}`);
-            onUpdate({ message: `User ${email} rejected and deleted.`, type: 'success' });
-            // Refresh list
-            fetchPending();
-        } catch (err) {
-            console.error(`[USER_APPROVAL_MODAL] Error rejecting user ${userId}:`, err);
-            onUpdate({ message: err.response?.data?.message || 'Failed to reject user.', type: 'error' });
-        }
-    };
-    // --- [END NEW] ---
-
-    if (!isOpen) return null;
-
-    return (
-        <div 
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
-            onClick={onClose}
-        >
-            <div 
-                className="relative w-full max-w-2xl p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-900"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">
-                    <FiX size={24} />
-                </button>
-                <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Pending User Approvals</h2>
-                
-                {error && <p className="text-center text-red-500">{error}</p>}
-                
-                <div className="max-h-96 overflow-y-auto">
-                    {isLoading ? (
-                        <div className="flex justify-center items-center h-48">
-                            <LoadingSpinner />
-                        </div>
-                    ) : pendingUsers.length === 0 ? (
-                        <p className="text-center text-gray-500 dark:text-gray-400 py-10">There are no users pending approval.</p>
-                    ) : (
-                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                            <thead className="bg-gray-50 dark:bg-gray-800">
-                                <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Role Requested</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                                {pendingUsers.map(user => (
-                                    <tr key={user.id}>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{user.email}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{user.role}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-                                                {user.status.replace('_', ' ')}
-                                            </span>
-                                        </td>
-                                        {/* --- [MODIFIED] Added Reject Button --- */}
-                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-end gap-4">
-                                            <button 
-                                                onClick={() => handleApprove(user.id, user.email)}
-                                                className="flex items-center gap-1 text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300"
-                                            >
-                                                <FiUserCheck size={16} />
-                                                Approve
-                                            </button>
-                                            <button
-                                                onClick={() => handleReject(user.id, user.email)}
-                                                className="flex items-center gap-1 text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
-                                            >
-                                                <FiTrash2 size={16} />
-                                                Reject
-                                            </button>
-                                        </td>
-                                        {/* --- [END MODIFIED] --- */}
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-};
-// --- [END NEW] ---
-
-
-// --- [MODIFIED] CreateRoomModal (now client-aware) ---
-const CreateRoomModal = ({ isOpen, onClose, onSuccess }) => {
-    console.log('[MODAL_RENDER] Rendering Create Room Modal.');
-    
-    // --- State for the form ---
-    const [name, setName] = useState('');
-    const [color, setColor] = useState('#6366F1'); // Default color
-    const [password, setPassword] = useState('');
-    const [isCreating, setIsCreating] = useState(false);
-    const [modalToast, setModalToast] = useState(null); // Modal-specific toast
-
-    // --- [NEW] State for Client Management ---
-    const [clients, setClients] = useState([]);
-    const [selectedClientId, setSelectedClientId] = useState('');
-    const [isClientListLoading, setIsClientListLoading] = useState(true);
-    const [showNewClientForm, setShowNewClientForm] = useState(false);
-    const [newClientName, setNewClientName] = useState('');
-    const [isCreatingClient, setIsCreatingClient] = useState(false);
-    // --- [END NEW] ---
-
-    // --- [NEW] Fetch clients when modal opens ---
-    const fetchClients = async () => {
-        console.log('[MODAL_LOG] Fetching clients for admin...');
-        setIsClientListLoading(true);
-        try {
-            const response = await getClients();
-            console.log(`[MODAL_LOG] Found ${response.data.length} clients.`);
-            setClients(response.data);
-        } catch (error) {
-            console.error('[MODAL_ERROR] Failed to fetch clients:', error);
-            setModalToast({ message: 'Could not load client list.', type: 'error' });
-        } finally {
-            setIsClientListLoading(false);
-        }
-    };
-    
-    useEffect(() => {
-        if (isOpen) {
-            console.log('[MODAL_EFFECT] Modal opened. Fetching clients.');
-            // Reset form
-            setName('');
-            setPassword('');
-            setSelectedClientId('');
-            setNewClientName('');
-            setShowNewClientForm(false);
-            setModalToast(null);
-            // Fetch client list
-            fetchClients();
-        }
-    }, [isOpen]); // Only re-run when modal opens
-    // --- [END NEW] ---
-
-    // --- [NEW] Handler for creating a new client ---
-    const handleCreateClient = async (e) => {
-        e.preventDefault();
-        setModalToast(null);
-        if (!newClientName.trim()) {
-            setModalToast({ message: 'Client name is required.', type: 'error' });
-            return;
-        }
-        console.log(`[MODAL_LOG] Creating new client: ${newClientName}`);
-        setIsCreatingClient(true);
-        try {
-            const response = await createClient({ name: newClientName });
-            console.log('[MODAL_LOG] Client created successfully:', response.data);
-            setModalToast({ message: `Client "${response.data.name}" created!`, type: 'success' });
-            
-            // --- Add new client to list, hide form, and auto-select it ---
-            const newClient = response.data;
-            setClients(prevClients => [...prevClients, newClient]);
-            setSelectedClientId(newClient.id.toString()); // Auto-select the new client (ensure string)
-            setNewClientName('');
-            setShowNewClientForm(false);
-
-        } catch (error) {
-            console.error('[MODAL_ERROR] Failed to create client:', error);
-            setModalToast({ message: error.response?.data?.message || 'Failed to create client.', type: 'error' });
-        } finally {
-            setIsCreatingClient(false);
-        }
-    };
-    // --- [END NEW] ---
-
-    // --- [MODIFIED] Handler for creating the room ---
-    const handleCreateRoom = async (e) => {
-        e.preventDefault();
-        console.log('[MODAL_LOG] Create room form submitted.');
-        setModalToast(null);
-
-        // --- [MODIFIED] Validate both name and client_id ---
-        if (!name) {
-            setModalToast({ message: 'Room name is required.', type: 'error' });
-            return;
-        }
-        if (!selectedClientId) {
-            setModalToast({ message: 'Please select a client for this room.', type: 'error' });
-            return;
-        }
-        // --- [END MODIFIED] ---
-
-        setIsCreating(true);
-        try {
-            // --- [MODIFIED] Payload now includes client_id ---
-            const payload = { 
-                name, 
-                color, 
-                password: password || undefined, 
-                client_id: parseInt(selectedClientId, 10) // Ensure it's a number
-            };
-            console.log('[MODAL_LOG_API] Calling createRoom() with payload:', payload);
-            await createRoom(payload);
-            
-            console.log('[MODAL_LOG_API_SUCCESS] Room created.');
-            onSuccess(); // Call parent's success function (refreshes list, shows main toast)
-            onClose();   // Close modal
-        } catch (error) {
-            console.error('[MODAL_ERROR] Failed to create room:', error);
-            setModalToast({ message: error.response?.data?.message || 'Failed to create room.', type: 'error' });
-        } finally {
-            setIsCreating(false);
-        }
-    };
-
-    if (!isOpen) return null; // Conditional return is now *after* hooks
-
-    return (
-        <div 
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
-            onClick={onClose}
-        >
-            {/* Modal-specific toast container */}
-            <div className="absolute top-0 right-0 p-4">
-                {modalToast && <Toast message={modalToast.message} type={modalToast.type} onClose={() => setModalToast(null)} />}
-            </div>
-
-            <div 
-                className="relative w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-900"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Create New Chat Room</h2>
-                <form className="space-y-4" onSubmit={handleCreateRoom}>
-                    
-                    {/* --- [NEW] Client Dropdown / Creator --- */}
-                    <div>
-                        <label htmlFor="client-select" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Client</label>
-                        <div className="flex gap-2 mt-1">
-                            <select 
-                                id="client-select" 
-                                value={selectedClientId}
-                                onChange={(e) => setSelectedClientId(e.target.value)}
-                                disabled={isClientListLoading || showNewClientForm}
-                                required
-                                className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white disabled:opacity-50"
-                            >
-                                <option value="" disabled>{isClientListLoading ? 'Loading clients...' : 'Select a client...'}</option>
-                                {!isClientListLoading && clients.length === 0 && (
-                                    <option value="" disabled>No clients found. Add one.</option>
-                                )}
-                                {clients.map(client => (
-                                    <option key={client.id} value={client.id}>{client.name}</option>
-                                ))}
-                            </select>
-                            <button
-                                type="button"
-                                title="Add New Client"
-                                onClick={() => setShowNewClientForm(prev => !prev)}
-                                className={`p-3 rounded-md text-white ${showNewClientForm ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
-                            >
-                                {showNewClientForm ? <FiPlus className="transform rotate-45" /> : <FiPlus />}
-                            </button>
-                        </div>
-                    </div>
-
-                    {showNewClientForm && (
-                        <div className="p-4 border border-gray-300 dark:border-gray-700 rounded-md animate-in fade-in duration-300">
-                            <label htmlFor="new-client-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">New Client Name</label>
-                            <div className="flex gap-2 mt-1">
-                                <input 
-                                    id="new-client-name" 
-                                    type="text" 
-                                    value={newClientName}
-                                    onChange={(e) => setNewClientName(e.target.value)}
-                                    className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
-                                    placeholder="e.g., ICICI"
-                                />
-                                <button
-                                    type="button"
-                                    disabled={isCreatingClient || !newClientName.trim()}
-                                    onClick={handleCreateClient}
-                                    className="px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700 disabled:opacity-50"
-                                >
-                                    {isCreatingClient ? 'Adding...' : 'Add'}
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                    {/* --- [END NEW] --- */}
-
-                    <div>
-                        <label htmlFor="room-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Name</label>
-                        <input 
-                            id="room-name" 
-                            type="text" 
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            required 
-                            className="mt-1 relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
-                            placeholder="e.g., Q4 Analysis"
-                        />
-                    </div>
-                    <div>
-                        <label htmlFor="room-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Password (Optional)</label>
-                        <input 
-                            id="room-password" 
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)} 
-                            className="mt-1 relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" 
-                            placeholder="Leave blank for public" 
-                        />
-                    </div>
-                    <div>
-                        <label htmlFor="room-color" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Room Color</label>
-                        <input 
-                            id="room-color" 
-                            type="color"
-                            value={color}
-                            onChange={(e) => setColor(e.target.value)}
-                            className="mt-1 w-full h-10 p-1 border border-gray-300 dark:border-gray-600 rounded-md cursor-pointer"
-                        />
-                    </div>
-                    <div className="flex gap-4 pt-4">
-                        <button 
-                            type="button" 
-                            onClick={onClose}
-                            disabled={isCreating}
-                            className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-gray-700 bg-gray-200 border border-transparent rounded-md group hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500 disabled:opacity-50"
-                        >
-                            Cancel
-                        </button>
-                        <button 
-                            type="submit" 
-                            disabled={isCreating || !selectedClientId} 
-                            className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 disabled:opacity-50"
-                        >
-                            {isCreating ? 'Creating...' : 'Create Room'}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
-// --- [END FIX] ---
+// --- [TASK 15 REFACTOR] Import the new modal components ---
+import UserManagementModal from '../components/modals/UserManagementModal';
+import CreateRoomModal from '../components/modals/CreateRoomModal';
+import JitRequestModal from '../components/modals/JitRequestModal';
+// --- [END REFACTOR] ---
 
 
 // --- Main Dashboard/Purgatory Page Component ---
 function Dashboard() {
     const [rooms, setRooms] = useState([]);
+    const [pendingProducts, setPendingProducts] = useState([]);
+    
+    // --- [PHASE 1.D] State for managing all products ---
+    const [allProducts, setAllProducts] = useState([]);
+    const [editingProductId, setEditingProductId] = useState(null);
+    const [editFormData, setEditFormData] = useState({ productName: '', productOwnerName: '', productOwnerEmail: '' });
+    // --- [END PHASE 1.D] ---
+
     const [isLoading, setIsLoading] = useState(true);
     const [isRoomModalOpen, setIsRoomModalOpen] = useState(false);
-    // --- [NEW] State for Admin Panel ---
-    const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
-    // --- [END NEW] ---
+    const [isUserManagementModalOpen, setIsUserManagementModalOpen] = useState(false);
+    const [isJitModalOpen, setIsJitModalOpen] = useState(false);
     const [toast, setToast] = useState(null);
-    const { user } = useAuth(); // Get user info (including role and productName)
+    const { user } = useAuth();
     const navigate = useNavigate();
 
     console.log('[DASHBOARD_LOG] Page loaded. User:', user);
 
-    // --- [NEW] Fetch rooms on page load ---
+    // --- [PHASE 1.A LOG] ---
+    useEffect(() => {
+        if (user) {
+            const isCto = user.role === 'CTO';
+            console.log(`[DASHBOARD] User role detected: ${user.role}. Quote visibility: ${isCto}`);
+        } else {
+            console.log('[DASHBOARD] User object not yet available for role check.');
+        }
+    }, [user]);
+    // --- [END LOG] ---
+
+    // --- [PHASE 1.C/1.D] Modified data fetching functions ---
     const fetchRooms = async () => {
         console.log('[DASHBOARD_LOG] Fetching rooms...');
-        setIsLoading(true);
         try {
             const response = await getRooms();
             console.log('[DASHBOARD_LOG] getRooms() API success:', response.data);
@@ -439,45 +69,372 @@ function Dashboard() {
         } catch (error) {
             console.error('[DASHBOARD_ERROR] Failed to fetch rooms:', error);
             setToast({ message: 'Could not load chat rooms.', type: 'error' });
-        } finally {
-            setIsLoading(false);
-            console.log('[DASHBOARD_LOG] Finished fetching rooms.');
+            throw error; // Re-throw for Promise.all
         }
     };
 
-    useEffect(() => {
-        fetchRooms();
-    }, []);
+    const fetchPendingProducts = async () => {
+        console.log('[DASHBOARD_LOG] [PHASE 1.C] Fetching pending products...');
+        try {
+            const response = await getPendingProducts();
+            console.log('[DASHBOARD_LOG] [PHASE 1.C] getPendingProducts() API success:', response.data);
+            setPendingProducts(response.data);
+        } catch (error) {
+            console.error('[DASHBOARD_ERROR] [PHASE 1.C] Failed to fetch pending products:', error);
+            setToast({ message: 'Could not load pending products.', type: 'error' });
+            throw error; // Re-throw for Promise.all
+        }
+    };
 
-    // --- [NEW] Handler to join a room ---
+    // [PHASE 1.D] New function to fetch all products
+    const fetchAllProducts = async () => {
+        console.log('[DASHBOARD_LOG] [PHASE 1.D] Fetching all products...');
+        try {
+            const response = await getAllProducts();
+            console.log('[DASHBOARD_LOG] [PHASE 1.D] getAllProducts() API success:', response.data);
+            setAllProducts(response.data);
+        } catch (error) {
+            console.error('[DASHBOARD_ERROR] [PHASE 1.D] Failed to fetch all products:', error);
+            setToast({ message: 'Could not load product list.', type: 'error' });
+            throw error; // Re-throw for Promise.all
+        }
+    };
+
+    // [PHASE 1.D] Load all dashboard data on user load
+    useEffect(() => {
+        const loadDashboardData = async () => {
+            if (!user) {
+                console.log('[DASHBOARD_LOG] User not ready, skipping data load.');
+                return;
+            }
+            
+            console.log('[DASHBOARD_LOG] User loaded. Loading all dashboard data...');
+            setIsLoading(true);
+            
+            const fetchesToRun = [fetchRooms()]; // Always fetch rooms
+
+            if (user.role === 'CTO') {
+                console.log('[DASHBOARD_LOG] [PHASE 1.C] CTO detected, adding pending products to fetch list.');
+                fetchesToRun.push(fetchPendingProducts());
+                
+                // --- [PHASE 1.D] Add fetch for all products ---
+                console.log('[DASHBOARD_LOG] [PHASE 1.D] CTO detected, adding ALL products to fetch list.');
+                fetchesToRun.push(fetchAllProducts());
+                // --- [END PHASE 1.D] ---
+            } else {
+                console.log('[DASHBOARD_LOG] User is not CTO, skipping fetch for product management.');
+            }
+
+            try {
+                await Promise.all(fetchesToRun);
+                console.log('[DASHBOARD_LOG] All dashboard data loaded.');
+            } catch (error) {
+                console.error('[DASHBOARD_ERROR] Error loading one or more dashboard data components:', error);
+            } finally {
+                setIsLoading(false);
+                console.log('[DASHBOARD_LOG] Finished all fetches, setting loading to false.');
+            }
+        };
+        
+        loadDashboardData();
+
+    }, [user]);
+    // --- [END PHASE 1.D] ---
+
+    // --- [PHASE 1.C] Handler to approve a product ---
+    const handleApproveProduct = async (productId, productName) => {
+        console.log(`[DASHBOARD_LOG] [PHASE 1.C] Attempting to approve product ID: ${productId}`);
+        try {
+            await approveProduct(productId);
+            console.log(`[DASHBOARD_LOG] [PHASE 1.C] Product ${productId} approved.`);
+            setToast({ message: `Product "${productName}" approved!`, type: 'success' });
+            // Refresh the list of pending products
+            fetchPendingProducts();
+            fetchAllProducts(); // [PHASE 1.D] Refresh all products list too
+        } catch (error) {
+            console.error(`[DASHBOARD_ERROR] [PHASE 1.C] Failed to approve product ${productId}:`, error);
+            const errorMessage = error.response?.data?.message || 'Failed to approve product.';
+            setToast({ message: errorMessage, type: 'error' });
+        }
+    };
+    // --- [END HANDLER] ---
+
+    // --- [PHASE 1.C] NEW Handler to reject a product ---
+    const handleRejectProduct = async (productId, productName) => {
+        console.log(`[DASHBOARD_LOG] [PHASE 1.C] Attempting to REJECT product ID: ${productId}`);
+        if (!window.confirm(`Are you sure you want to REJECT and DELETE the product "${productName}"? This cannot be undone.`)) {
+            console.log('[DASHBOARD_LOG] [PHASE 1.C] Product rejection cancelled by user.');
+            return;
+        }
+
+        try {
+            await rejectProduct(productId);
+            console.log(`[DASHBOARD_LOG] [PHASE 1.C] Product ${productId} rejected.`);
+            setToast({ message: `Product "${productName}" rejected.`, type: 'success' });
+            // Refresh the list of pending products
+            fetchPendingProducts();
+            fetchAllProducts(); // [PHASE 1.D] Refresh all products list too
+        } catch (error) {
+            console.error(`[DASHBOARD_ERROR] [PHASE 1.C] Failed to reject product ${productId}:`, error);
+            const errorMessage = error.response?.data?.message || 'Failed to reject product.';
+            setToast({ message: errorMessage, type: 'error' });
+        }
+    };
+    // --- [END NEW HANDLER] ---
+
+    // --- [PHASE 1.D] Handlers for editing products ---
+    const handleEditClick = (product) => {
+        console.log(`[DASHBOARD_LOG] [PHASE 1.D] Init edit for product ID: ${product.id}`);
+        setEditingProductId(product.id);
+        setEditFormData({
+            productName: product.product_name,
+            productOwnerName: product.product_owner_name,
+            productOwnerEmail: product.product_owner_email
+        });
+    };
+
+    const handleEditCancel = () => {
+        console.log('[DASHBOARD_LOG] [PHASE 1.D] Cancelled product edit.');
+        setEditingProductId(null);
+        setEditFormData({ productName: '', productOwnerName: '', productOwnerEmail: '' });
+    };
+
+    const handleEditFormChange = (e) => {
+        const { name, value } = e.target;
+        setEditFormData(prevData => ({
+            ...prevData,
+            [name]: value
+        }));
+    };
+
+    const handleEditSave = async (productId) => {
+        console.log(`[DASHBOARD_LOG] [PHASE 1.D] Attempting to SAVE product ID: ${productId}`);
+        if (!editFormData.productName || !editFormData.productOwnerName || !editFormData.productOwnerEmail) {
+            setToast({ message: 'All fields are required.', type: 'error' });
+            return;
+        }
+        try {
+            await updateProduct(productId, {
+                productName: editFormData.productName,
+                productOwnerName: editFormData.productOwnerName,
+                productOwnerEmail: editFormData.productOwnerEmail
+            });
+            console.log(`[DASHBOARD_LOG] [PHASE 1.D] Product ${productId} updated.`);
+            setToast({ message: 'Product updated successfully!', type: 'success' });
+            setEditingProductId(null);
+            
+            // Refresh all product data
+            fetchPendingProducts();
+            fetchAllProducts();
+        } catch (error) {
+            console.error(`[DASHBOARD_ERROR] [PHASE 1.D] Failed to update product ${productId}:`, error);
+            const errorMessage = error.response?.data?.message || 'Failed to update product.';
+            setToast({ message: errorMessage, type: 'error' });
+        }
+    };
+    // --- [END PHASE 1.D] ---
+
     const handleJoinRoom = (room) => {
         console.log(`[DASHBOARD_LOG] Attempting to join room: ${room.name} (ID: ${room.id})`);
         
         if (room.isPasswordProtected) {
             console.log('[DASHBOARD_LOG] Room is password protected.');
-            // TODO: Show password prompt modal
             setToast({ message: 'Password protected rooms are not yet implemented.', type: 'warning' });
         } else {
             console.log(`[DASHBOARD_LOG] Room is public. Navigating to /chat/${room.id}`);
-            // --- [NEW] This will be the route for our new chat page ---
             navigate(`/chat/${room.id}`);
         }
     };
 
-    // --- [NEW] Success handler for modal ---
     const onRoomCreated = () => {
          console.log('[DASHBOARD_LOG] onRoomCreated callback triggered.');
-         fetchRooms(); // Refresh the list
-         setToast({ message: 'Room created successfully!', type: 'success' }); // Show toast on main page
+         fetchRooms();
+         setToast({ message: 'Room created successfully!', type: 'success' });
     }
 
-    // --- [NEW] Handler for user approval success ---
-    const onUserApproved = (toastMessage) => {
-        console.log('[DASHBOARD_LOG] onUserApproved callback triggered.');
-        setToast(toastMessage); // Show the success/error toast on the main dashboard
+    const onUserManagementUpdate = (toastMessage) => {
+        console.log('[DASHBOARD_LOG] onUserManagementUpdate callback triggered.');
+        setToast(toastMessage);
     };
 
-    // --- [NEW] Component: The main page content ---
+    const onJitRequestUpdate = (toastMessage) => {
+        console.log('[DASHBOARD_LOG] onJitRequestUpdate callback triggered.');
+        setToast(toastMessage);
+    };
+
+    // --- [PHASE 1.C] New component to render pending products ---
+    const renderPendingProducts = () => {
+        if (user?.role !== 'CTO') {
+            return null; // Don't render anything if not CTO
+        }
+        if (isLoading) {
+            return null;
+        }
+        if (pendingProducts.length === 0) {
+            console.log('[DASHBOARD_RENDER] [PHASE 1.C] CTO has no pending products to show.');
+            return (
+                <div className="mb-12">
+                    <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">Pending Product Approvals</h2>
+                    <p className="text-gray-500 dark:text-gray-400">There are no products awaiting approval.</p>
+                </div>
+            );
+        }
+
+        console.log('[DASHBOARD_RENDER] [PHASE 1.C] Rendering Pending Products section.');
+        return (
+            <div className="mb-12">
+                <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">Pending Product Approvals</h2>
+                <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+                    <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+                        {pendingProducts.map((product) => (
+                            <li key={product.id} className="p-4 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                                <div>
+                                    <p className="text-lg font-semibold text-gray-900 dark:text-white">{product.product_name}</p>
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                                        <strong>PO:</strong> {product.product_owner_name} ({product.product_owner_email})
+                                    </p>
+                                    <p className="text-xs text-gray-400 dark:text-gray-500">
+                                        Requested: {new Date(product.created_at).toLocaleString()}
+                                    </p>
+                                </div>
+                                <div className="flex-shrink-0 flex gap-2">
+                                    <button
+                                        onClick={() => handleRejectProduct(product.id, product.product_name)}
+                                        className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md shadow-sm hover:bg-red-700"
+                                    >
+                                        <FiXCircle size={16} />
+                                        Reject
+                                    </button>
+                                    <button
+                                        onClick={() => handleApproveProduct(product.id, product.product_name)}
+                                        className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md shadow-sm hover:bg-green-700"
+                                    >
+                                        <FiCheckCircle size={16} />
+                                        Approve
+                                    </button>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+        );
+    };
+    // --- [END NEW COMPONENT] ---
+
+    // --- [PHASE 1.D] New component to render ALL products for management ---
+    const renderManageAllProducts = () => {
+        if (user?.role !== 'CTO') {
+            return null;
+        }
+        if (isLoading) {
+            return null;
+        }
+
+        console.log('[DASHBOARD_RENDER] [PHASE 1.D] Rendering Manage All Products section.');
+
+        return (
+            <div className="mb-12">
+                <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">Manage All Products</h2>
+                <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+                    <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+                        {allProducts.length === 0 && (
+                            <li className="p-4 text-gray-500 dark:text-gray-400">No products found.</li>
+                        )}
+                        {allProducts.map((product) => (
+                            <li key={product.id} className="p-4">
+                                {editingProductId === product.id ? (
+                                    // --- Edit Mode ---
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Product Name</label>
+                                            <input
+                                                type="text"
+                                                name="productName"
+                                                value={editFormData.productName}
+                                                onChange={handleEditFormChange}
+                                                className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Product Owner Name</label>
+                                            <input
+                                                type="text"
+                                                name="productOwnerName"
+                                                value={editFormData.productOwnerName}
+                                                onChange={handleEditFormChange}
+                                                className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Product Owner Email</label>
+                                            <input
+                                                type="email"
+                                                name="productOwnerEmail"
+                                                value={editFormData.productOwnerEmail}
+                                                onChange={handleEditFormChange}
+                                                className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div className="flex gap-2 justify-end">
+                                            <button
+                                                onClick={handleEditCancel}
+                                                className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 border border-transparent rounded-md shadow-sm hover:bg-gray-200 dark:hover:bg-gray-500"
+                                            >
+                                                <FiX size={16} />
+                                                Cancel
+                                            </button>
+                                            <button
+                                                onClick={() => handleEditSave(product.id)}
+                                                className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md shadow-sm hover:bg-blue-700"
+                                            >
+                                                <FiSave size={16} />
+                                                Save
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    // --- Display Mode ---
+                                    <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                                        <div>
+                                            <p className="text-lg font-semibold text-gray-900 dark:text-white">{product.product_name}</p>
+                                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                                <strong>PO:</strong> {product.product_owner_name} ({product.product_owner_email})
+                                            </p>
+                                            <p className="text-sm mt-1">
+                                                {/* --- [FRONTEND_FIX] --- */}
+                                                <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                                    product.status === 'confirmed' ? 'bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-100' : 
+                                                    (product.status === 'pending' || product.status === 'awaiting_po_activation') ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-100' : 'bg-red-100 text-red-800 dark:bg-red-800 dark:text-red-100'
+                                                }`}>
+                                                    {(product.status === 'pending' || product.status === 'awaiting_po_activation') ? 'Pending' : product.status}
+                                                </span>
+                                                {/* --- [END_FRONTEND_FIX] --- */}
+                                            </p>
+                                        </div>
+                                        <div className="flex-shrink-0">
+                                            {/* [CAUSALITY_FIX] Only allow editing of 'confirmed' OR 'awaiting_po_activation' products */}
+                                            {(product.status === 'confirmed' || product.status === 'awaiting_po_activation') && (
+                                                <button
+                                                    onClick={() => handleEditClick(product)}
+                                                    className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 border border-transparent rounded-md shadow-sm hover:bg-gray-200 dark:hover:bg-gray-600"
+                                                >
+                                                    <FiEdit2 size={16} />
+                                                    Edit
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+        );
+    };
+    // --- [END NEW COMPONENT] ---
+
     const renderContent = () => {
         if (isLoading) {
             console.log('[DASHBOARD_RENDER] Showing LoadingSpinner.');
@@ -498,12 +455,12 @@ function Dashboard() {
             );
         }
         
-        if (rooms.length === 0 && (user?.role === 'Administrator' || user?.role === 'ProductOwner')) {
-            console.log('[DASHBOARD_RENDER] No rooms found for Admin/PO.');
+        if (rooms.length === 0 && (user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO')) {
+            console.log('[DASHBOARD_RENDER] No rooms found for Admin/PO/CTO.');
             return (
                 <div className="text-center text-gray-500 dark:text-gray-400">
                     <p>No clients or chat rooms have been created yet.</p>
-                    {user?.role === 'Administrator' && (
+                    {(user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO') && (
                         <p className="mt-2">Click "Create New Room" to get started.</p>
                     )}
                 </div>
@@ -527,8 +484,10 @@ function Dashboard() {
                                 )}
                             </div>
                             
-                            {/* --- [NEW] Show Client/Product context --- */}
                             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                                {user?.role === 'CTO' && (
+                                    <span className="font-medium">{room.product_name} / {room.client_name}</span>
+                                )}
                                 {user?.role === 'ProductOwner' && (
                                     <span className="font-medium">{room.product_name} / {room.client_name}</span>
                                 )}
@@ -536,7 +495,6 @@ function Dashboard() {
                                     <span className="font-medium">Client: {room.client_name}</span>
                                 )}
                             </p>
-                            {/* --- [END NEW] --- */}
 
                             <button 
                                 onClick={() => handleJoinRoom(room)}
@@ -545,7 +503,7 @@ function Dashboard() {
                                 <FiEye />
                                 Join Room
                             </button>
-                            {user?.role === 'Administrator' && (
+                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO') && (
                                 <button 
                                     onClick={() => setToast({ message: 'Editing rooms not yet implemented.', type: 'info' })}
                                     className="w-full flex justify-center items-center gap-2 px-4 py-2 mt-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 border border-transparent rounded-md hover:bg-gray-200 dark:hover:bg-gray-600"
@@ -561,34 +519,35 @@ function Dashboard() {
         );
     };
 
-    // --- [NEW] Main JSX Return ---
     return (
         <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
             
             <Sidebar 
                 handleNewChat={() => {}} 
-                conversations={[]}       
+                conversations={[]}      
                 onSelectConversation={() => {}} 
             />
 
-            {/* Modal for creating a room */}
             <CreateRoomModal 
                 isOpen={isRoomModalOpen}
                 onClose={() => setIsRoomModalOpen(false)}
                 onSuccess={onRoomCreated}
             />
             
-            {/* --- [NEW] Modal for User Approval --- */}
-            <UserApprovalModal
-                isOpen={isAdminPanelOpen}
-                onClose={() => setIsAdminPanelOpen(false)}
+            <UserManagementModal
+                isOpen={isUserManagementModalOpen}
+                onClose={() => setIsUserManagementModalOpen(false)}
                 userRole={user?.role}
-                onUpdate={onUserApproved}
+                onUpdate={onUserManagementUpdate}
             />
-            {/* --- [END NEW] --- */}
+
+            <JitRequestModal
+                isOpen={isJitModalOpen}
+                onClose={() => setIsJitModalOpen(false)}
+                onUpdate={onJitRequestUpdate}
+            />
             
-            {/* Main Content Area */}
             <main className="flex-grow overflow-y-auto p-6 lg:p-12 relative">
                 
                 <header className="absolute top-0 right-0 p-4 z-10">
@@ -596,23 +555,44 @@ function Dashboard() {
                 </header>
                 
                 <div className="max-w-7xl mx-auto pt-10">
-                    {/* Header */}
                     <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
                         <div>
                             <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-                                Chat Rooms
+                                Dashboard
                             </h1>
                             <p className="mt-1 text-md text-gray-600 dark:text-gray-400">
                                 Welcome, <span className="font-semibold">{user?.email}</span>. 
-                                You are a <span className="font-semibold">{user?.role}</span> for <span className="font-semibold">{user?.productName || 'your Product'}</span>.
+                                {user?.role === 'CTO' ? (
+                                    <span className="font-semibold"> You are the CTO.</span>
+                                ) : (
+                                    <span> You are a <span className="font-semibold">{user?.role}</span> for <span className="font-semibold">{user?.productName || 'your Product'}</span>.</span>
+                                )}
                             </p>
+                            
+                            {user?.role === 'CTO' && (
+                                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 font-medium tracking-tight" 
+                                   style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif', letterSpacing: '-0.2px' }}>
+                                    This isn't about power — it's about omniscient accountability.
+                                </p>
+                            )}
+
                         </div>
                         
-                        {/* --- [NEW] Button Container for Admin actions --- */}
                         <div className="flex flex-shrink-0 gap-2">
                             {(user?.role === 'Administrator' || user?.role === 'ProductOwner') && (
                                 <button
-                                    onClick={() => setIsAdminPanelOpen(true)}
+                                    onClick={() => setIsJitModalOpen(true)}
+                                    title="JIT Access Requests"
+                                    className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-white bg-yellow-500 border border-transparent rounded-md shadow-sm hover:bg-yellow-600"
+                                >
+                                    <FiBell size={18} />
+                                    <span className="hidden sm:inline">JIT Requests</span>
+                                </button>
+                            )}
+
+                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO') && (
+                                <button
+                                    onClick={() => setIsUserManagementModalOpen(true)}
                                     title="Manage Users"
                                     className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md shadow-sm hover:bg-green-700"
                                 >
@@ -620,7 +600,7 @@ function Dashboard() {
                                     <span className="hidden sm:inline">Manage Users</span>
                                 </button>
                             )}
-                            {user?.role === 'Administrator' && (
+                            {(user?.role === 'Administrator' || user?.role === 'ProductOwner' || user?.role === 'CTO') && (
                                 <button
                                     onClick={() => setIsRoomModalOpen(true)}
                                     title="Create New Room"
@@ -631,10 +611,21 @@ function Dashboard() {
                                 </button>
                             )}
                         </div>
-                        {/* --- [END NEW] --- */}
                     </div>
                     
-                    {/* Room Grid */}
+                    {/* --- [PHASE 1.C] RENDER PENDING PRODUCTS --- */}
+                    {renderPendingProducts()}
+
+                    {/* --- [PHASE 1.D] RENDER ALL PRODUCTS --- */}
+                    {renderManageAllProducts()}
+
+                    {/* --- [PHASE 1.C] Added header for rooms list --- */}
+                    {!isLoading && (
+                        <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
+                            Chat Rooms
+                        </h2>
+                    )}
+                    
                     {renderContent()}
                 </div>
             </main>
@@ -643,4 +634,3 @@ function Dashboard() {
 }
 
 export default Dashboard;
-

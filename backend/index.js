@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path'); // --- THIS LINE IS NOW FIXED ---
+const path = require('path');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
@@ -11,7 +11,8 @@ const { processDocument } = require('./documentProcessor.js');
 const { performRAG } = require('./searchService.js');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const { protect } = require('./middleware/authMiddleware');
+// --- [TASK 9] Import authorize middleware ---
+const { protect, authorize } = require('./middleware/authMiddleware');
 
 // --- [NEW] IMPORT PRODUCT ROUTES ---
 console.log('[LOG] Loading productRoutes...');
@@ -92,6 +93,8 @@ console.log('[LOG] /api/users routes configured.');
 
 
 // --- MODIFIED /api/user ENDPOINT ---
+// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'
+// as any active user should be able to get their own info.
 app.get('/api/user', protect, (req, res) => {
     console.log(`[LOG] GET /api/user for user ID: ${req.user.id}`);
     const userId = req.user.id;
@@ -135,10 +138,17 @@ app.get('/api/user', protect, (req, res) => {
 
 // --- PROTECTED ROUTES ---
 
-// --- [MODIFIED] Document Upload Route (Admin/PO Only) ---
-app.post('/api/documents/upload/:roomId', protect, upload.array('documents', 10), async (req, res) => {
+// --- [TASK 9] Document Upload Route (NOW USES authorize()) ---
+app.post(
+    '/api/documents/upload/:roomId', 
+    protect, 
+    authorize('Administrator', 'ProductOwner', 'CTO'), // [TASK 9 ATOMIC LOG] Added authorize()
+    upload.array('documents', 10), 
+    async (req, res) => {
+        
     const { roomId } = req.params;
-    console.log(`[LOG] POST /api/documents/upload/${roomId}: Received ${req.files ? req.files.length : 0} files from user ${req.user.id}`);
+    console.log(`[LOG] POST /api/documents/upload/${roomId}: Received ${req.files ? req.files.length : 0} files from user ${req.user.id} (Role: ${req.user.role})`);
+    
     if (!req.files || req.files.length === 0) {
         console.warn('[WARN] POST /api/documents/upload: No files uploaded.');
         return res.status(400).json({ error: 'No files uploaded.' });
@@ -151,59 +161,49 @@ app.post('/api/documents/upload/:roomId', protect, upload.array('documents', 10)
     const userId = req.user.id;
     const db = getDb();
     
-    // --- [NEW] Security Check: Only Admin or PO can upload ---
-    db.get('SELECT role FROM users WHERE id = ?', [userId], async (err, user) => {
-        if (err || !user) {
-            console.error(`[ERROR] Upload Auth: Could not find user ${userId} in DB.`);
-            return res.status(401).json({ error: 'Authentication error.' });
-        }
-        
-        if (user.role === 'User') {
-            console.warn(`[WARN] Upload Auth: User ${userId} (Role: ${user.role}) attempted to upload to room ${roomId}. FORBIDDEN.`);
-            return res.status(403).json({ error: 'You do not have permission to upload documents.' });
-        }
-        
-        console.log(`[LOG] Upload Auth: User ${userId} (Role: ${user.role}) is authorized to upload.`);
-        // --- [END NEW] Security Check ---
+    // --- [TASK 9] DELETED old manual security check ---
+    // The 'authorize()' middleware now handles this.
+    // --- [END TASK 9] ---
     
-        let documentIds = [];
-        try {
-            for (const file of req.files) {
-                console.log(`[LOG] Processing file: ${file.originalname} for user ${userId} in room ${roomId}`);
-                
-                // --- [MODIFIED] Check for duplicates *within the same room* ---
-                const existingDoc = await new Promise((resolve, reject) => {
-                    // --- [MODIFIED] Removed user_id check. Duplicates are per-room, not per-user. ---
-                    db.get('SELECT id FROM documents WHERE name = ? AND room_id = ?', [file.originalname, roomId], (err, row) => {
-                        if (err) reject(err);
-                        resolve(row);
-                    });
+    let documentIds = [];
+    try {
+        for (const file of req.files) {
+            console.log(`[LOG] Processing file: ${file.originalname} for user ${userId} in room ${roomId}`);
+            
+            // Check for duplicates *within the same room*
+            const existingDoc = await new Promise((resolve, reject) => {
+                db.get('SELECT id FROM documents WHERE name = ? AND room_id = ?', [file.originalname, roomId], (err, row) => {
+                    if (err) reject(err);
+                    resolve(row);
                 });
+            });
 
-                if (existingDoc) {
-                    console.warn(`[WARN] Upload stopped: Duplicate file "${file.originalname}" in room ${roomId}.`);
-                    return res.status(409).json({ error: `Duplicate file detected. The document named "${file.originalname}" already exists in this room.` });
-                }
-
-                console.log(`[LOG] No duplicate found for "${file.originalname}". Processing document...`);
-                const chunksWithVectors = await processDocument(file.path);
-                console.log(`[LOG] Document processed. Saving ${chunksWithVectors.length} chunks to DB and Chroma...`);
-                
-                // Pass the roomId to saveDocumentChunks
-                const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors, roomId);
-                documentIds.push(result.documentId);
-                console.log(`[LOG] File "${file.originalname}" saved with Document ID: ${result.documentId} to room ${roomId}`);
+            if (existingDoc) {
+                console.warn(`[WARN] Upload stopped: Duplicate file "${file.originalname}" in room ${roomId}.`);
+                return res.status(409).json({ error: `Duplicate file detected. The document named "${file.originalname}" already exists in this room.` });
             }
-            res.status(201).json({ message: `Success`, documentIds });
-        } catch (error) {
-            console.error(`[ERROR] Error during batch processing for user ${req.user.id}:`, error);
-            res.status(500).json({ error: 'A file could not be processed.', details: error.message });
+
+            console.log(`[LOG] No duplicate found for "${file.originalname}". Processing document...`);
+            const chunksWithVectors = await processDocument(file.path);
+            console.log(`[LOG] Document processed. Saving ${chunksWithVectors.length} chunks to DB and Chroma...`);
+            
+            // Pass the roomId to saveDocumentChunks
+            const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors, roomId);
+            documentIds.push(result.documentId);
+            console.log(`[LOG] File "${file.originalname}" saved with Document ID: ${result.documentId} to room ${roomId}`);
         }
-    });
+        res.status(201).json({ message: `Success`, documentIds });
+    } catch (error) {
+        console.error(`[ERROR] Error during batch processing for user ${req.user.id}:`, error);
+        res.status(500).json({ error: 'A file could not be processed.', details: error.message });
+    }
 });
 // --- [END MODIFIED] ---
 
 // --- [MODIFIED] Search Endpoint (now room-aware) ---
+// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'
+// as any active user (User, Admin, PO, CTO) should be able to search.
+// Access to the *room itself* will be checked later.
 app.post('/api/search/:roomId', protect, async (req, res) => {
     // 1. Get roomId from params
     const { roomId } = req.params;
@@ -232,6 +232,8 @@ app.post('/api/search/:roomId', protect, async (req, res) => {
 // --- [END MODIFIED] ---
 
 // --- [MODIFIED] Get Single Document (for PDF Viewer) ---
+// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'.
+// Any active user who has access to a room (and thus the doc ID) should be able to view it.
 app.get('/api/documents/download/:id', protect, (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
@@ -239,9 +241,6 @@ app.get('/api/documents/download/:id', protect, (req, res) => {
     
     console.log(`[LOG] GET /api/documents/download/${id}: User ${userId} requesting document.`);
 
-    // --- [MODIFIED] Removed user_id check. Any user who can see the room can download. ---
-    // We implicitly trust the user has access to the room if they have the document ID.
-    // A future security enhancement would be to check if user has access to the doc's room_id.
     db.get('SELECT file_path FROM documents WHERE id = ?', [id], (err, row) => {
         if (err || !row) {
             console.warn(`[WARN] GET /api/documents/download/${id}: Document not found for ID ${id}.`);
@@ -255,6 +254,8 @@ app.get('/api/documents/download/:id', protect, (req, res) => {
 // --- [END MODIFIED] ---
 
 // --- [MODIFIED] Get Document List (now room-aware) ---
+// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'.
+// Any active user who has access to a room should be able to list its documents.
 app.get('/api/documents/list/:roomId', protect, (req, res) => {
     const { roomId } = req.params;
     const userId = req.user.id;

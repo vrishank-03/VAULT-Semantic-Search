@@ -1,6 +1,6 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-// 1. --- Import getUserInfo to verify the token ---
-import { loginUser, signupUser, googleLogin, getUserInfo } from '../services/api';
+// [TASK 16] Removed googleLogin from import
+import { loginUser, signupUser, getUserInfo } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -9,8 +9,6 @@ export const AuthProvider = ({ children }) => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    // 2. --- This function is now more robust ---
-    // It will verify the token by fetching user data, ensuring the session is valid.
     const verifyAuth = useCallback(async () => {
         console.log('[AUTH_VERIFY] Checking for existing token...');
         const token = localStorage.getItem('token');
@@ -19,7 +17,6 @@ export const AuthProvider = ({ children }) => {
             try {
                 const userInfo = await getUserInfo();
                 if (userInfo) {
-                    // --- [MODIFIED] userInfo now contains role and productName ---
                     console.log('[AUTH_VERIFY_SUCCESS] User info received:', userInfo);
                     setUser(userInfo); // This object now has { id, email, pictureUrl, role, productName }
                     setIsAuthenticated(true);
@@ -42,7 +39,7 @@ export const AuthProvider = ({ children }) => {
         }
         setIsLoading(false);
         console.log(`[AUTH_VERIFY] Verification complete. Auth: ${isAuthenticated}, Loading: false`);
-    }, []); // --- [MODIFIED] Removed isAuthenticated from dependency array
+    }, []);
 
     useEffect(() => {
         verifyAuth();
@@ -56,7 +53,6 @@ export const AuthProvider = ({ children }) => {
             console.log('[AUTH_LOGIN] Login API successful. Token received.');
             localStorage.setItem('token', data.token);
             
-            // --- [MODIFIED] Fetch full user info *immediately* after login ---
             console.log('[AUTH_LOGIN] Fetching full user info...');
             try {
                 const userInfo = await getUserInfo();
@@ -66,70 +62,26 @@ export const AuthProvider = ({ children }) => {
                     setIsAuthenticated(true);
                     console.log('[AUTH_LOGIN] Auth state updated with full user object.');
                 } else {
-                    // This should not happen if login succeeded, but good to guard
                     throw new Error("Login succeeded but failed to fetch user info.");
                 }
             } catch (fetchErr) {
                 console.error('[AUTH_LOGIN_ERROR] Failed to fetch user info after login:', fetchErr);
-                // Log them out to be safe
                 localStorage.removeItem('token');
                 setUser(null);
                 setIsAuthenticated(false);
                 throw fetchErr; // Re-throw the error to the login page
             }
-            // --- [END MODIFIED] ---
         }
         return response;
     };
 
     const register = async (email, password) => {
-        // --- [MODIFIED] This function is just a proxy, no changes needed to its logic ---
-        // The signupUser service will now be sending { email, password, role, productName }
-        // We'll update the function signature to match the new payload
         console.log('[AUTH_REGISTER] Registering user...');
-        // The actual arguments are passed directly in SignupPage.js, this is just a stub
-        // No, the 'register' function in the value object isn't actually used by SignupPage.js
-        // Let's update it to be correct anyway, in case it's used elsewhere.
-        // Re-reading... no, SignupPage.js imports `signupUser` directly.
-        // This 'register' function seems unused. We'll leave it as is.
         const response = await signupUser({ email, password });
         return response;
     };
 
-    // --- MODIFICATIONS BELOW ---
-
-    const loginWithGoogle = async (credentialResponse, pictureUrl) => { 
-        console.log("[AUTH_GOOGLE_LOGIN] AuthContext: loginWithGoogle triggered.");
-        
-        const response = await googleLogin(credentialResponse.credential, pictureUrl); 
-        
-        console.log("[AUTH_GOOGLE_LOGIN] API call to googleLogin service finished.");
-        
-        const { data } = response;
-        if (data && data.token) {
-            console.log("[AUTH_GOOGLE_LOGIN] Token received. Storing in localStorage.");
-            localStorage.setItem('token', data.token);
-            
-            // --- [MODIFIED] This already follows the correct pattern ---
-            console.log("[AUTH_GOOGLE_LOGIN] Calling getUserInfo() to refresh user state.");
-            const userInfo = await getUserInfo(); // Fetch full user info including picture, role, productName
-            if (userInfo) {
-                console.log("[AUTH_GOOGLE_LOGIN] Full user info received:", userInfo);
-                setUser(userInfo);
-                setIsAuthenticated(true);
-                console.log("[AUTH_GOOGLE_LOGIN] Authentication complete. User is set.");
-            } else {
-                console.error('[AUTH_GOOGLE_LOGIN_ERROR] Failed to fetch user info after Google login.');
-                localStorage.removeItem('token');
-                setUser(null);
-                setIsAuthenticated(false);
-            }
-            // --- [END MODIFIED] ---
-        }
-        return response;
-    };
-
-    // --- END OF MODIFICATIONS ---
+    // --- [TASK 16] REMOVED loginWithGoogle function ---
 
     const logout = () => {
         console.log('[AUTH_LOGOUT] Logging out. Clearing token and user.');
@@ -145,7 +97,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         register,
-        loginWithGoogle, 
+        // --- [TASK 16] REMOVED loginWithGoogle from context value ---
     };
 
     return (
