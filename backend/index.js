@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
+const fs = require('fs'); // [BUG_5_FIX] Import fs for file deletion on error
 require('dotenv').config();
 
 const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js');
@@ -139,6 +140,7 @@ app.get('/api/user', protect, (req, res) => {
 // --- PROTECTED ROUTES ---
 
 // --- [TASK 9] Document Upload Route (NOW USES authorize()) ---
+// --- [BUG_5_FIX] ADDED ROBUST ERROR HANDLING ---
 app.post(
     '/api/documents/upload/:roomId', 
     protect, 
@@ -166,10 +168,11 @@ app.post(
     // --- [END TASK 9] ---
     
     let documentIds = [];
-    try {
-        for (const file of req.files) {
-            console.log(`[LOG] Processing file: ${file.originalname} for user ${userId} in room ${roomId}`);
-            
+    // [BUG_5_FIX] We now handle errors on a per-file basis
+    for (const file of req.files) {
+        console.log(`[LOG] Processing file: ${file.originalname} for user ${userId} in room ${roomId}`);
+        
+        try {
             // Check for duplicates *within the same room*
             const existingDoc = await new Promise((resolve, reject) => {
                 db.get('SELECT id FROM documents WHERE name = ? AND room_id = ?', [file.originalname, roomId], (err, row) => {
@@ -180,25 +183,54 @@ app.post(
 
             if (existingDoc) {
                 console.warn(`[WARN] Upload stopped: Duplicate file "${file.originalname}" in room ${roomId}.`);
-                return res.status(409).json({ error: `Duplicate file detected. The document named "${file.originalname}" already exists in this room.` });
+                // [BUG_5_FIX] Throw an error to be caught by our new handler
+                throw new Error(`DuplicateFileError: ${file.originalname}`);
             }
 
             console.log(`[LOG] No duplicate found for "${file.originalname}". Processing document...`);
+            // [BUG_5_FIX] This await will now throw our custom errors
             const chunksWithVectors = await processDocument(file.path);
+            
             console.log(`[LOG] Document processed. Saving ${chunksWithVectors.length} chunks to DB and Chroma...`);
             
             // Pass the roomId to saveDocumentChunks
             const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors, roomId);
             documentIds.push(result.documentId);
             console.log(`[LOG] File "${file.originalname}" saved with Document ID: ${result.documentId} to room ${roomId}`);
+        
+        } catch (error) {
+            console.error(`[ERROR] [BUG_5_FIX] Failed to process file ${file.originalname} for user ${req.user.id}:`, error.message);
+
+            // [BUG_5_FIX] Clean up the failed upload from the /storage folder
+            try {
+                fs.unlinkSync(file.path);
+                console.log(`[BUG_5_FIX] Cleaned up failed upload: ${file.path}`);
+            } catch (unlinkErr) {
+                console.error(`[ERROR] [BUG_5_FIX] CRITICAL: Failed to clean up file ${file.path}:`, unlinkErr.message);
+            }
+
+            // [BUG_5_FIX] Send specific, user-friendly error messages
+            if (error.message === "PasswordProtectedError") {
+                return res.status(400).json({ message: `Upload failed: "${file.originalname}" is password-protected.` });
+            }
+            if (error.message === "CorruptedFileError") {
+                return res.status(400).json({ message: `Upload failed: "${file.originalname}" is corrupted, empty, or unreadable.` });
+            }
+            if (error.message.startsWith("DuplicateFileError:")) {
+                const filename = error.message.split(': ')[1];
+                return res.status(409).json({ message: `Upload failed: A document named "${filename}" already exists in this room.` });
+            }
+            
+            // Fallback for generic errors
+            return res.status(500).json({ message: `A file could not be processed: ${file.originalname}`, details: error.message });
         }
-        res.status(201).json({ message: `Success`, documentIds });
-    } catch (error) {
-        console.error(`[ERROR] Error during batch processing for user ${req.user.id}:`, error);
-        res.status(500).json({ error: 'A file could not be processed.', details: error.message });
     }
+    
+    // [BUG_5_FIX] If all files processed successfully
+    console.log(`[LOG] [BUG_5_FIX] Batch upload complete. ${documentIds.length} files saved.`);
+    res.status(201).json({ message: `Success`, documentIds });
 });
-// --- [END MODIFIED] ---
+// --- [END BUG_5_FIX] ---
 
 // --- [MODIFIED] Search Endpoint (now room-aware) ---
 // [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'

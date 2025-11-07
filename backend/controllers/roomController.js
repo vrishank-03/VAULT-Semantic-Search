@@ -1,6 +1,14 @@
 const { getDb } = require('../database');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
+const fs = require('fs'); // [BUG_3_FIX] Import file system module
+const path = require('path'); // [BUG_3_FIX] Import path module
+
+// --- [BUG_3_FIX] Import new helper functions (to be created) ---
+const { deleteDocumentFromChroma } = require('../searchService');
+const { deleteDocumentById, getDocumentById } = require('../database');
+// --- [END BUG_3_FIX] ---
+
 
 // --- [TASK 15 REFACTOR] ---
 // Removed all nodemailer setup and sendEmail function
@@ -9,9 +17,9 @@ const { sendEmail } = require('../services/emailService');
 // --- [END REFACTOR] ---
 
 /**
- * @desc    Get chat rooms based on user's role (User, Admin, ProductOwner)
- * @route   GET /api/rooms
- * @access  Private
+ * @desc      Get chat rooms based on user's role (User, Admin, ProductOwner)
+ * @route     GET /api/rooms
+ * @access    Private
  */
 const getRooms = (req, res) => {
     // (This function is unchanged)
@@ -126,9 +134,9 @@ const getRooms = (req, res) => {
 };
 
 /**
- * @desc    Create a new chat room
- * @route   POST /api/rooms
- * @access  Private (Admin, PO, CTO)
+ * @desc      Create a new chat room
+ * @route     POST /api/rooms
+ * @access    Private (Admin, PO, CTO)
  */
 const createRoom = async (req, res) => {
     // (This function is unchanged)
@@ -281,9 +289,9 @@ const createRoom = async (req, res) => {
 };
 
 /**
- * @desc    Logs a user entry into a chat room
- * @route   POST /api/rooms/log-entry/:roomId
- * @access  Private
+ * @desc      Logs a user entry into a chat room
+ * @route     POST /api/rooms/log-entry/:roomId
+ * @access    Private
  */
 const logRoomEntry = (req, res) => {
     // (This function is unchanged)
@@ -312,9 +320,9 @@ const logRoomEntry = (req, res) => {
 };
 
 /**
- * @desc    Unblocks a CTO-assigned room (for POs)
- * @route   PUT /api/rooms/unblock/:roomId
- * @access  Private (ProductOwner only)
+ * @desc      Unblocks a CTO-assigned room (for POs)
+ * @route     PUT /api/rooms/unblock/:roomId
+ * @access    Private (ProductOwner only)
  */
 const unblockRoom = async (req, res) => {
     // (This function is unchanged)
@@ -351,9 +359,9 @@ const unblockRoom = async (req, res) => {
 };
 
 /**
- * @desc    Checks if a user has permission to join a room
- * @route   POST /api/rooms/join/:roomId
- * @access  Private
+ * @desc      Checks if a user has permission to join a room
+ * @route     POST /api/rooms/join/:roomId
+ * @access    Private
  */
 const joinRoom = async (req, res) => {
     // [TASK 15 BUG FIX] This function is now correct
@@ -512,9 +520,9 @@ const joinRoom = async (req, res) => {
 };
 
 /**
- * @desc    Get all pending access requests for the logged-in user
- * @route   GET /api/rooms/requests/pending
- * @access  Private (Admin, PO)
+ * @desc      Get all pending access requests for the logged-in user
+ * @route     GET /api/rooms/requests/pending
+ * @access    Private (Admin, PO)
  */
 const getPendingRequests = async (req, res) => {
     // (This function is unchanged)
@@ -555,9 +563,9 @@ const getPendingRequests = async (req, res) => {
 };
 
 /**
- * @desc    Approve a pending access request
- * @route   PUT /api/rooms/requests/approve/:requestId
- * @access  Private (Admin, PO)
+ * @desc      Approve a pending access request
+ * @route     PUT /api/rooms/requests/approve/:requestId
+ * @access    Private (Admin, PO)
  */
 const approveRequest = async (req, res) => {
     // (This function is unchanged)
@@ -651,9 +659,9 @@ const approveRequest = async (req, res) => {
 };
 
 /**
- * @desc    Reject a pending access request
- * @route   PUT /api/rooms/requests/reject/:requestId
- * @access  Private (Admin, PO)
+ * @desc      Reject a pending access request
+ * @route     PUT /api/rooms/requests/reject/:requestId
+ * @access    Private (Admin, PO)
  */
 const rejectRequest = async (req, res) => {
     // (This function is unchanged)
@@ -730,6 +738,90 @@ const rejectRequest = async (req, res) => {
     });
 };
 
+
+// --- [BUG_3_FIX] NEW FUNCTION ---
+/**
+ * @desc      Deletes a document from a room
+ * @route     DELETE /api/rooms/documents/:docId
+ * @access    Private (Admin, PO, CTO)
+ */
+const deleteDocument = async (req, res) => {
+    const { docId } = req.params;
+    const { id: userId, role: userRole, product_id: userProductId } = req.user;
+    const db = getDb();
+
+    console.log(`[DELETE_DOC] User ${userId} (Role: ${userRole}) attempting to delete document ${docId}.`);
+
+    try {
+        // --- Step 1: Get Doc Info & Verify Permissions ---
+        // We MUST join to get the product_id for permission checking
+        const sqlGetDoc = `
+            SELECT 
+                d.file_path, 
+                d.room_id, 
+                cr.product_id
+            FROM documents d
+            JOIN chat_rooms cr ON d.room_id = cr.id
+            WHERE d.id = ?
+        `;
+        
+        // We must use a promise-based wrapper or db.get to use await
+        const doc = await new Promise((resolve, reject) => {
+            db.get(sqlGetDoc, [docId], (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
+            });
+        });
+
+        if (!doc) {
+            console.warn(`[DELETE_DOC_WARN] Document ${docId} not found.`);
+            return res.status(404).json({ message: 'Document not found.' });
+        }
+
+        // --- Step 2: Permission Check ---
+        // CTOs can delete anything. Admins/POs can only delete within their own product.
+        if (userRole === 'Administrator' || userRole === 'ProductOwner') {
+            if (doc.product_id !== userProductId) {
+                console.warn(`[DELETE_DOC_FAIL] User ${userId} (Product ${userProductId}) FORBIDDEN to delete doc ${docId} (Product ${doc.product_id}).`);
+                return res.status(403).json({ message: 'Forbidden: You do not have permission to delete this document.' });
+            }
+        }
+        console.log(`[DELETE_DOC_PERMITTED] User ${userId} has permission. Proceeding with deletion of doc ${docId}.`);
+
+        // --- Step 3: Delete from ChromaDB ---
+        console.log(`[DELETE_DOC_CHROMA] Deleting vectors for doc ${docId} from Chroma...`);
+        const chromaResult = await deleteDocumentFromChroma(docId);
+        console.log(`[DELETE_DOC_CHROMA_SUCCESS] ${chromaResult.deletedCount} vectors deleted from Chroma.`);
+
+        // --- Step 4: Delete from SQLite ---
+        console.log(`[DELETE_DOC_SQLITE] Deleting metadata for doc ${docId} from SQLite...`);
+        await deleteDocumentById(docId);
+        console.log(`[DELETE_DOC_SQLITE_SUCCESS] Metadata deleted from SQLite.`);
+
+        // --- Step 5: Delete from File System ---
+        const filePath = path.resolve(__dirname, '..', doc.file_path); // e.g., ../storage/doc-123.pdf
+        console.log(`[DELETE_DOC_FS] Deleting file from storage: ${filePath}`);
+        
+        try {
+            await fs.promises.unlink(filePath);
+            console.log(`[DELETE_DOC_FS_SUCCESS] File ${filePath} deleted.`);
+        } catch (fsErr) {
+            // This is a non-critical error. The data is gone, which is most important.
+            // We log a warning but still send success to the user.
+            console.warn(`[DELETE_DOC_FS_WARN] Failed to delete file ${filePath} for doc ${docId}. Data is cleared, but file remains. Error:`, fsErr.message);
+        }
+
+        // --- Step 6: Send Success Response ---
+        res.status(200).json({ message: 'Document deleted successfully.' });
+
+    } catch (err) {
+        console.error(`[DELETE_DOC_ERROR] A critical error occurred while deleting document ${docId}:`, err.message);
+        res.status(500).json({ message: 'An error occurred during document deletion.' });
+    }
+};
+// --- [END BUG_3_FIX] ---
+
+
 module.exports = {
     getRooms,
     createRoom,
@@ -738,5 +830,6 @@ module.exports = {
     joinRoom,
     getPendingRequests,
     approveRequest,
-    rejectRequest
+    rejectRequest,
+    deleteDocument // [BUG_3_FIX] Export new controller function
 };

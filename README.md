@@ -16,15 +16,56 @@ VAULT is a modern web application composed of a React frontend, a Node.js/Expres
 
 ### 2.1. System Components
 
-* **Frontend (React):** A responsive single-page application (SPA) that provides all user-facing interfaces. It handles user login, the "Purgatory Page" (Room Selector), the Admin Panels (User & Client Management), and the core chat/document interface.
-* **Backend (Node/Express):** A secure REST API that orchestrates all business logic. It serves as the single source of truth for authentication, authorization, document ingestion, and RAG orchestration.
-* **Database (SQLite):** The primary persistence layer for all relational data. It manages all entities and their complex relationships.
-    * **Core Tables:** `users`, `products`, `clients`, `chat_rooms`, `documents`, `conversations`, `chat_history`.
-    * **Access Control Columns:** `users.admin_id` (Links a User to their Admin) and `chat_rooms.admin_creator_id` (Links a Room to its creator).
-    * **Audit Log Table:** `room_session_logs` (Tracks user room entry/exit).
-* **Vector Store (ChromaDB):** A high-performance vector database that stores document chunks and their corresponding embeddings for efficient semantic search.
-* **Embedding Runner (Python):** An isolated Python service (`embedder.py`) responsible for creating vector embeddings from text, ensuring consistency and offloading heavy ML tasks from the Node.js API.
-* **LLM Provider (Groq):** A high-speed, third-party LLM API used for all generative tasks.
+* **Frontend (React):** A responsive single-page application (SPA) that provides all user-facing interfaces.
+    * **Authentication:** Handles user login, signup, password reset, and Google OAuth integration.
+    * **Room Management:** "Purgatory Page" (Room Selector), room creation, and access controls.
+    * **Admin Panels:** User & Client Management interfaces with role-based visibility.
+    * **Chat Interface:** Real-time messaging with AI, document viewing, and annotations.
+    * **Theme System:** Configurable light/dark mode with persistent preferences.
+
+* **Backend (Node/Express):** A secure REST API that orchestrates all business logic.
+    * **Authentication System:** JWT-based auth with email verification.
+    * **RBAC System:** Complex role-based access control for all operations.
+    * **File Processing:** PDF parsing, chunking, and metadata extraction.
+    * **RAG Pipeline:** Orchestration of document processing and AI interactions.
+    * **Email Service:** Automated notifications for various system events.
+
+* **Database (SQLite):** The primary persistence layer for all relational data.
+    * **Core Tables:** 
+        * `users`: User accounts with role and status tracking
+        * `products`: Product registrations and their approval status
+        * `clients`: Client organizations linked to products
+        * `chat_rooms`: Chat environments with access controls
+        * `documents`: Document metadata and room associations
+        * `conversations`: Chat message threads
+        * `chat_history`: Individual chat messages
+    * **Access Control Columns:** 
+        * `users.admin_id`: Links Users to their Admin
+        * `chat_rooms.admin_creator_id`: Links Rooms to creators
+        * `chat_rooms.client_id`: Associates rooms with clients
+    * **Audit System:** 
+        * `room_session_logs`: Tracks user room entry/exit
+        * Timestamps on all critical operations
+
+* **Vector Store (ChromaDB):** A high-performance vector database for semantic search.
+    * Stores document chunks and embeddings
+    * Supports metadata-based filtering for room isolation
+    * Enables efficient similarity search with room context
+
+* **ML Service Layer:**
+    * **Embedding Runner (Python):** 
+        * Isolated Python service (`embedder.py`)
+        * Handles vector embedding generation
+        * Runs in dedicated virtual environment
+    * **ML Coordinator (Node.js):**
+        * Manages Python subprocess lifecycle
+        * Handles ML task queuing and results
+        * Ensures resource efficiency
+
+* **External Services:**
+    * **LLM Provider (Groq):** High-speed LLM API for generative tasks
+    * **Email Provider:** Handles all system notifications
+    * **OAuth Providers:** Supports Google login integration
 
 ### 2.2. The RAG Pipeline (Detailed)
 
@@ -192,6 +233,10 @@ You are now logged in as an Administrator for "Main Product" and can begin testi
     * **Tables:** `users`, `products`, `clients`, `chat_rooms`, `documents`, `conversations`, `chat_history`, `room_session_logs`.
     * **Key Columns:** `users.admin_id`, `chat_rooms.admin_creator_id`, `chat_rooms.client_id`, `documents.room_id`.
 * `searchService.js`: The RAG engine. **Crucially, `performRAG` is now room-aware and filters all queries by `roomId`.**
+* `documentProcessor.js`: Handles PDF parsing, text extraction, and chunk generation.
+* `embedder.py`: Python service for generating vector embeddings.
+* `ml_runner.js`: Node.js coordinator for ML operations, manages Python subprocess.
+* `query_chroma.js`: Interface for ChromaDB vector operations.
 * `routes/`:
     * `authRoutes.js`: Handles login, signup, email verification, and password reset.
     * `productRoutes.js`: Handles product registration, listing, and approval.
@@ -204,17 +249,51 @@ You are now logged in as an Administrator for "Main Product" and can begin testi
     * `clientController.js`: Logic for `getClientsForAdmin`, `createClient`.
     * `roomController.js`: **Core RBAC logic.** Contains the complex, role-based `getRooms` function.
     * `userController.js`: Logic for `getPendingUsers`, `approveUser`, `rejectUser`.
-* `storage/`: Contains uploaded user documents and profile pictures.
+* `services/`:
+    * `emailService.js`: Handles all email notifications including verification, password reset, and room access notifications.
+* `middleware/`:
+    * `authMiddleware.js`: Authentication and authorization middleware for protecting routes.
+* `storage/`: 
+    * Contains uploaded user documents and profile pictures
+    * Organizes files by user ID with timestamps
+    * Includes separate directories for profile images and documents
+* `ml_env/`: Python virtual environment for ML operations
+    * Contains all required packages for embedding generation
+    * Isolated from system Python installation
+* `uploads/`: Temporary storage for raw file uploads before processing
 * `vault.db`: The local SQLite database file.
 
 #### `frontend/`
 * `src/App.js`: Main application component, defines routes (`/dashboard`, `/chat/:roomId`).
 * `src/services/api.js`: Centralized `axios` client. Exports functions for *all* API endpoints, including new `client` and `user` functions.
-* `src/context/AuthContext.js`: Global state for authentication, providing the `user` object (with `user.role`) to all components.
+* `src/context/`:
+    * `AuthContext.js`: Global state for authentication, providing the `user` object (with `user.role`) to all components.
+    * `ThemeContext.js`: Manages application-wide theme state (light/dark mode).
 * `src/pages/`:
     * `Dashboard.js`: The "Purgatory Page" / Room Selector. Contains the "Create Room" and "Manage Users" modals.
     * `ChatRoomPage.js`: The chat interface. It is room-aware and calls APIs with the `roomId` from the URL.
     * `LoginPage.js`: Handles local email/password login.
     * `SignupPage.js`: Handles the new, non-blocking signup flow.
+    * `ResetPasswordPage.js`: Handles password reset workflow.
 * `src/components/`:
-    * `Sidebar.js`: A dynamic component that now hides/shows buttons ("New Chat", "Go Back") based on the page. 
+    * Main Components:
+        * `Sidebar.js`: A dynamic component that now hides/shows buttons ("New Chat", "Go Back") based on the page.
+        * `Navbar.js`: Top navigation with user info and theme toggle.
+        * `PdfViewer.js`: PDF document viewer with annotation support.
+        * `AuthLayout.js`: Wrapper component for authentication pages.
+        * `PrivateRoute.js`: Route protection based on authentication state.
+    * UI Components:
+        * `LoadingSpinner.js`: Loading state indicator.
+        * `SuccessAnimation.js`: Success state animations.
+        * `ThinkingAnimation.js`: AI processing indicator.
+        * `ProcessingAnimation.js`: Document processing indicator.
+        * `Typewriter.js`: Animated text display for chat responses.
+        * `ThemeToggleButton.js`: Light/dark mode toggle.
+    * Authentication:
+        * `GoogleLoginButton.js`: Google OAuth integration.
+    * Modals:
+        * `CreateRoomModal.js`: Interface for creating new chat rooms.
+        * `JitRequestModal.js`: Just-in-time access request dialog.
+        * `UserManagementModal.js`: Admin interface for user management.
+* `src/utils/`:
+    * `gravatar.js`: User avatar generation utilities. 

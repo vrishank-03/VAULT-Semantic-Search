@@ -36,6 +36,16 @@ exports.resetPassword = (req, res) => {
             return res.status(400).json({ message: 'Password reset token is invalid or has expired.' });
         }
         
+        // --- [BUG_2_FIX] START ---
+        // Critical check: If the user's account has been deactivated,
+        // their reset/invitation token is void, regardless of its expiry.
+        if (user.status === 'deactivated') {
+            console.warn(`[Auth] [BUG_2_FIX] User ${user.email} (ID: ${user.id}) is 'deactivated'. Rejecting password reset/activation attempt.`);
+            // Return the *same* generic error to prevent account status enumeration.
+            return res.status(400).json({ message: 'Password reset token is invalid or has expired.' });
+        }
+        // --- [BUG_2_FIX] END ---
+
         console.log(`[Auth] Token is valid for user ${user.email}. Hashing new password.`);
         const salt = bcrypt.genSaltSync(10);
         const password_hash = bcrypt.hashSync(password, salt);

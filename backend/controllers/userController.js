@@ -5,9 +5,9 @@ require('dotenv').config();
 const { sendEmail } = require('../services/emailService');
 
 /**
- * @desc    Get all users pending approval for the logged-in manager
- * @route   GET /api/users/pending
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Get all users pending approval for the logged-in manager
+ * @route     GET /api/users/pending
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const getPendingUsers = (req, res) => {
     // [TASK 10 ATOMIC LOG] Get the logged-in manager's ID from req.user
@@ -42,9 +42,9 @@ const getPendingUsers = (req, res) => {
 };
 
 /**
- * @desc    Approve a pending user
- * @route   POST /api/users/approve/:userId
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Approve a pending user
+ * @route     POST /api/users/approve/:userId
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const approveUser = (req, res) => {
     const managerId = req.user.id;
@@ -99,9 +99,9 @@ const approveUser = (req, res) => {
 };
 
 /**
- * @desc    Reject and delete a pending user
- * @route   DELETE /api/users/reject/:userId
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Reject and delete a pending user
+ * @route     DELETE /api/users/reject/:userId
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const rejectUser = (req, res) => {
     const managerId = req.user.id;
@@ -142,9 +142,9 @@ const rejectUser = (req, res) => {
 
 
 /**
- * @desc    Get all active team members for the manager
- * @route   GET /api/users/team
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Get all active team members for the manager
+ * @route     GET /api/users/team
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const getTeam = (req, res) => {
     const managerId = req.user.id;
@@ -174,9 +174,9 @@ const getTeam = (req, res) => {
 };
 
 /**
- * @desc    Get ALL team members (all statuses) for the manager
- * @route   GET /api/users/team/all
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Get ALL team members (all statuses) for the manager
+ * @route     GET /api/users/team/all
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const getAllTeamMembers = (req, res) => {
     const managerId = req.user.id;
@@ -205,50 +205,108 @@ const getAllTeamMembers = (req, res) => {
 };
 
 // --- [TASK 10] NEW Function to Deactivate an active user ---
+// --- [BUG_4_FIX] MODIFIED Function to handle orphan re-assignment ---
 /**
- * @desc    Deactivate an active user
- * @route   POST /api/users/deactivate/:userId
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Deactivate an active user
+ * @route     POST /api/users/deactivate/:userId
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const deactivateUser = (req, res) => {
-    const managerId = req.user.id;
-    const { userId: targetUserId } = req.params;
+    const managerId = req.user.id; // The PO/CTO doing the action
+    const { userId: targetUserId } = req.params; // The Admin/User being deactivated
     console.log(`[USER_CTRL_DEACTIVATE] Manager ${managerId} is attempting to DEACTIVATE user ${targetUserId}`);
 
     const db = getDb();
     
-    // [TASK 10 ATOMIC LOG] New atomic SQL to deactivate.
-    // Sets status to 'deactivated' ONLY if user is their report AND is 'active'.
-    const sql = `
-        UPDATE users 
-        SET status = 'deactivated' 
+    // [BUG_4_FIX] Step 1: Get the user to be deactivated and verify manager.
+    // We need their role to check if they are a manager (Admin) and their manager_id for re-assignment.
+    const findSql = `
+        SELECT role, manager_id 
+        FROM users 
         WHERE id = ? 
-        AND manager_id = ?
+        AND manager_id = ? 
         AND status = 'active'
     `;
-    const params = [targetUserId, managerId];
-            
-    db.run(sql, params, function(updateErr) {
-        if (updateErr) {
-            console.error(`[USER_CTRL_DEACTIVATE_ERROR] Failed to deactivate user ${targetUserId}:`, updateErr.message);
+    db.get(findSql, [targetUserId, managerId], (findErr, userToDeactivate) => {
+        if (findErr) {
+            console.error(`[USER_CTRL_DEACTIVATE_ERROR] [BUG_4_FIX] DB error finding user ${targetUserId}:`, findErr.message);
             return res.status(500).json({ message: "Database error." });
         }
 
-        if (this.changes === 0) {
-            console.warn(`[USER_CTRL_DEACTIVATE_FAIL] Manager ${managerId} failed to deactivate ${targetUserId}. User not found, not their report, or not active.`);
+        if (!userToDeactivate) {
+            console.warn(`[USER_CTRL_DEACTIVATE_FAIL] [BUG_4_FIX] Manager ${managerId} failed to deactivate ${targetUserId}. User not found, not their report, or not active.`);
             return res.status(403).json({ message: "Failed to deactivate user: You may not be this user's manager or the user is not active." });
         }
 
-        console.log(`[USER_CTRL_DEACTIVATE_SUCCESS] User ${targetUserId} is now 'deactivated'.`);
-        res.status(200).json({ message: `User has been deactivated.` });
+        // [BUG_4_FIX] We have a valid user.
+        // userToDeactivate.manager_id is the ID of the PO/CTO (the same as managerId).
+        // This is who the orphans will be re-assigned to.
+        const newManagerIdForOrphans = userToDeactivate.manager_id;
+        console.log(`[USER_CTRL_DEACTIVATE] [BUG_4_FIX] User ${targetUserId} found. Role: ${userToDeactivate.role}. Their manager (new orphan manager) is ${newManagerIdForOrphans}.`);
+
+        // [BUG_4_FIX] Step 2: Start transaction
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+
+            // Step 2a: Deactivate the target user
+            const deactivateSql = `UPDATE users SET status = 'deactivated' WHERE id = ?`;
+            db.run(deactivateSql, [targetUserId], function(deactivateErr) {
+                if (deactivateErr) {
+                    console.error(`[USER_CTRL_DEACTIVATE_ERROR] [BUG_4_FIX] Failed to deactivate user ${targetUserId}:`, deactivateErr.message);
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ message: "Database error." });
+                }
+                console.log(`[USER_CTRL_DEACTIVATE_SUCCESS] [BUG_4_FIX] User ${targetUserId} is now 'deactivated'.`);
+
+                // Step 2b: Check if the deactivated user was an "Administrator" (a manager)
+                if (userToDeactivate.role === 'Administrator') {
+                    console.log(`[ORPHAN_FIX_4] Deactivated user was an Admin. Re-assigning their Users to manager ${newManagerIdForOrphans}...`);
+                    
+                    const reassignSql = `
+                        UPDATE users 
+                        SET manager_id = ? 
+                        WHERE manager_id = ? AND (status = 'active' OR status LIKE 'suspended%')
+                    `;
+                    // Re-assign all users (active or pending) who reported to the deactivated Admin
+                    db.run(reassignSql, [newManagerIdForOrphans, targetUserId], function(reassignErr) {
+                        if (reassignErr) {
+                            console.error(`[ORPHAN_FIX_4_ERROR] Failed to re-assign orphans for ${targetUserId}:`, reassignErr.message);
+                            db.run("ROLLBACK");
+                            return res.status(500).json({ message: "Database error re-assigning users." });
+                        }
+                        console.log(`[ORPHAN_FIX_4_SUCCESS] Re-assigned ${this.changes} orphaned users.`);
+                        
+                        // Commit after re-assignment
+                        commitAndRespond();
+                    });
+
+                } else {
+                    // Deactivated user was a 'User', no orphans to re-assign.
+                    console.log(`[ORPHAN_FIX_4] Deactivated user was a ${userToDeactivate.role}. No re-assignment needed.`);
+                    commitAndRespond();
+                }
+            });
+
+            const commitAndRespond = () => {
+                db.run("COMMIT", (commitErr) => {
+                    if (commitErr) {
+                        console.error(`[USER_CTRL_DEACTIVATE_ERROR] [BUG_4_FIX] Failed to COMMIT transaction:`, commitErr.message);
+                        return res.status(500).json({ message: 'Failed to commit changes.' });
+                    }
+                    console.log(`[USER_CTRL_DEACTIVATE_SUCCESS] [BUG_4_FIX] Transaction complete.`);
+                    res.status(200).json({ message: `User has been deactivated.` });
+                });
+            };
+        });
     });
 };
+// --- [END BUG_4_FIX] ---
 
 // --- [TASK 10] NEW Function to Reactivate a deactivated user ---
 /**
- * @desc    Reactivate a deactivated user
- * @route   POST /api/users/reactivate/:userId
- * @access  Private (Admin, ProductOwner, CTO)
+ * @desc      Reactivate a deactivated user
+ * @route     POST /api/users/reactivate/:userId
+ * @access    Private (Admin, ProductOwner, CTO)
  */
 const reactivateUser = (req, res) => {
     const managerId = req.user.id;
@@ -286,9 +344,9 @@ const reactivateUser = (req, res) => {
 
 // --- [SIGNUP_FIX] NEW FUNCTION ---
 /**
- * @desc    Get all active admins for a specific product
- * @route   GET /api/users/admins-for-product?productName=...
- * @access  Public
+ * @desc      Get all active admins for a specific product
+ * @route     GET /api/users/admins-for-product?productName=...
+ * @access    Public
  */
 const getAdminsForProduct = (req, res) => {
     const { productName } = req.query;
@@ -344,7 +402,7 @@ module.exports = {
     rejectUser,
     getTeam,
     getAllTeamMembers,
-    deactivateUser,     // --- [TASK 10] NEW Export
-    reactivateUser,     // --- [TASK 10] NEW Export
+    deactivateUser,      // --- [TASK 10] NEW Export
+    reactivateUser,      // --- [TASK 10] NEW Export
     getAdminsForProduct // --- [SIGNUP_FIX] NEW Export
 };

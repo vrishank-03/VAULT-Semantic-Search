@@ -551,11 +551,40 @@ const updateConversationTitle = (conversationId, newTitle) => {
     });
 };
 
+// --- [BUG_3_FIX] NEW FUNCTION ---
+/**
+ * @desc      Deletes a document's metadata from SQLite by its ID.
+ * @param     {string|number} docId - The document ID to delete.
+ * @returns   {Promise<{changes: number}>}
+ */
+const deleteDocumentById = (docId) => {
+    return new Promise((resolve, reject) => {
+        console.log(`[DB_DELETE_DOC] Attempting to delete doc ${docId} from SQLite.`);
+        const db = getDb();
+        const sql = `DELETE FROM documents WHERE id = ?`;
+
+        db.run(sql, [docId], function(err) {
+            if (err) {
+                console.error(`[DB_DELETE_DOC_ERROR] Failed to delete doc ${docId} from SQLite:`, err.message);
+                return reject(err);
+            }
+            if (this.changes === 0) {
+                console.warn(`[DB_DELETE_DOC_WARN] No document found with ID ${docId} to delete from SQLite.`);
+            } else {
+                console.log(`[DB_DELETE_DOC_SUCCESS] Successfully deleted doc ${docId} from SQLite. Rows: ${this.changes}`);
+            }
+            resolve({ changes: this.changes });
+        });
+    });
+};
+// --- [END BUG_3_FIX] ---
+
 
 module.exports = {
     initializeDatabase,
     getDb,
     saveDocumentChunks,
     updateConversationTitle,
-    chromaClient
+    chromaClient,
+    deleteDocumentById // [BUG_3_FIX] Export new function
 };
