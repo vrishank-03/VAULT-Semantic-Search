@@ -8,7 +8,8 @@ const {
     joinRoom,
     getPendingRequests,
     approveRequest,
-    rejectRequest
+    rejectRequest,
+    deleteDocument // [BUG_3_FIX] Import new controller function
 } = require('../controllers/roomController');
 // --- [TASK 9] Import authorize middleware ---
 const { protect, authorize } = require('../middleware/authMiddleware');
@@ -63,6 +64,13 @@ router.put('/requests/approve/:requestId', protect, canManageRequests, approveRe
 // @access  Private (Admin, PO)
 router.put('/requests/reject/:requestId', protect, canManageRequests, rejectRequest);
 // --- [END NEW] ---
+
+// --- [BUG_3_FIX] NEW Route for Document Deletion ---
+// @route   DELETE /api/rooms/documents/:docId
+// @desc    Deletes a document from SQLite, Chroma, and the file system
+// @access  Private (Admin, PO, CTO)
+router.delete('/documents/:docId', protect, canManageRooms, deleteDocument);
+// --- [END BUG_3_FIX] ---
 
 console.log('[ROUTES] roomRoutes.js initialized with full CRUD and JIT access routes.');
 

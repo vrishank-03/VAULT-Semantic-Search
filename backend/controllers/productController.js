@@ -12,12 +12,12 @@ const { sendEmail } = require('../services/emailService');
 
 // --- [PHASE 1.E] MODIFIED HELPER FUNCTION: inviteOrPromotePO ---
 /**
- * @desc    Handles the logic for inviting a new user as a PO or promoting an existing user.
- * @param   {object} db - The database connection.
- * @param   {string} poEmail - The email of the PO to invite/promote.
- * @param   {number} productId - The ID of the product they are being assigned to.
- * @param   {string} productName - The name of the product for the email.
- * @returns {Promise<string>} - Resolves with 'promoted' or 'invited'.
+ * @desc      Handles the logic for inviting a new user as a PO or promoting an existing user.
+ * @param     {object} db - The database connection.
+ * @param     {string} poEmail - The email of the PO to invite/promote.
+ * @param     {number} productId - The ID of the product they are being assigned to.
+ * @param     {string} productName - The name of the product for the email.
+ * @returns   {Promise<{action: string, userId: number}>} - Resolves with action and new PO's user ID.
  */
 const inviteOrPromotePO = (db, poEmail, productId, productName) => {
     return new Promise((resolve, reject) => {
@@ -45,7 +45,8 @@ const inviteOrPromotePO = (db, poEmail, productId, productName) => {
                         return reject(new Error('Database error promoting user.'));
                     }
 
-                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] User ${poEmail} promoted.`);
+                    // [ORPHAN_FIX_1] Log the ID of the promoted user
+                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] User ${poEmail} (ID: ${user.id}) promoted.`);
                     
                     // Send "You've been promoted" email
                     const subject = `You are now the Product Owner for "${productName}"`;
@@ -56,7 +57,9 @@ const inviteOrPromotePO = (db, poEmail, productId, productName) => {
                         <p style="font-family: sans-serif;">You can log in with your existing password.</p>
                     `;
                     sendEmail(poEmail, subject, html);
-                    resolve('promoted'); // [CAUSALITY_FIX] Return 'promoted'
+                    
+                    // [ORPHAN_FIX_1] Return object with action and user.id
+                    resolve({ action: 'promoted', userId: user.id }); 
                 });
 
             } else {
@@ -80,8 +83,9 @@ const inviteOrPromotePO = (db, poEmail, productId, productName) => {
                         console.error(`[PO_UPSERT_ERROR] Failed to create invitation for ${poEmail}:`, inviteErr.message);
                         return reject(new Error('Database error creating PO invitation.'));
                     }
-
-                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] Invitation created for ${poEmail}.`);
+                    
+                    const newUserId = this.lastID; // [ORPHAN_FIX_1] Capture new user ID
+                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] Invitation created for ${poEmail} (New ID: ${newUserId}).`);
 
                     // Send "Invitation" email
                     const setupLink = `${process.env.FRONTEND_URL}/reset-password?token=${invitationToken}`;
@@ -93,7 +97,9 @@ const inviteOrPromotePO = (db, poEmail, productId, productName) => {
                         <a href="${setupLink}" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;font-family: sans-serif;">Set Your Password</a>
                     `;
                     sendEmail(poEmail, subject, html);
-                    resolve('invited'); // [CAUSALITY_FIX] Return 'invited'
+                    
+                    // [ORPHAN_FIX_1] Return object with action and new user ID
+                    resolve({ action: 'invited', userId: newUserId }); 
                 });
             }
         });
@@ -103,9 +109,9 @@ const inviteOrPromotePO = (db, poEmail, productId, productName) => {
 
 
 /**
- * @desc    Request the creation of a new product
- * @route   POST /api/products/request-product
- * @access  Public
+ * @desc      Request the creation of a new product
+ * @route     POST /api/products/request-product
+ * @access    Public
  */
 const requestProductCreation = (req, res) => {
     console.log('[PRODUCT_CTRL] Received POST /request-product');
@@ -152,9 +158,9 @@ const requestProductCreation = (req, res) => {
 };
 
 /**
- * @desc    Approve a product, creating/activating the PO
- * @route   POST /api/products/approve/:productId
- * @access  Private (CTO/Admin)
+ * @desc      Approve a product, creating/activating the PO
+ * @route     POST /api/products/approve/:productId
+ * @access    Private (CTO/Admin)
  */
 const approveProduct = (req, res) => {
     const { productId } = req.params;
@@ -186,8 +192,9 @@ const approveProduct = (req, res) => {
             db.run("BEGIN TRANSACTION");
 
             // Step 1: Invite or Promote the PO. This will tell us what to do.
+            // [ORPHAN_FIX_1] This now returns { action, userId }
             inviteOrPromotePO(db, poEmail, product.id, product.product_name)
-                .then((action) => { // action is 'invited' or 'promoted'
+                .then(({ action, userId }) => { // [ORPHAN_FIX_1] Destructure action and userId
                     
                     // Step 2: Set the product status based on the action.
                     const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
@@ -336,9 +343,9 @@ const getAllProducts = (req, res) => {
 };
 
 /**
- * @desc    Update an existing product's details
- * @route   PUT /api/products/:productId
- * @access  Private (CTO Only)
+ * @desc      Update an existing product's details
+ * @route     PUT /api/products/:productId
+ * @access    Private (CTO Only)
  */
 const updateProduct = (req, res) => {
     const { productId } = req.params;
@@ -393,70 +400,118 @@ const updateProduct = (req, res) => {
             return; // Stop execution
         }
 
-        // --- [CAUSALITY_FIX] PO Email *did* change. Run the full transaction. ---
+        // --- [ORPHAN_FIX_1] PO Email *did* change. Run the full re-assignment transaction. ---
         db.serialize(() => {
             db.run("BEGIN TRANSACTION");
 
-            // Step 2a: Deactivate old PO.
-            console.log(`[PRODUCT_CTRL_UPDATE] [PHASE 1.D] PO Email changed. Deactivating old PO: ${oldPoEmail}`);
-            const deactivateSql = `
-                UPDATE users 
-                SET status = 'deactivated', product_id = NULL 
-                WHERE email = ? AND role = 'ProductOwner'
-            `;
-            db.run(deactivateSql, [oldPoEmail], function(deactivateErr) {
-                if (deactivateErr) {
-                    console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to deactivate old PO ${oldPoEmail}:`, deactivateErr.message);
+            // [ORPHAN_FIX_1] Step 1: Get the old PO's ID.
+            // We find them by email and role, as they *must* be a PO to be reassigned from.
+            db.get('SELECT id FROM users WHERE email = ? AND role = ?', [oldPoEmail, 'ProductOwner'], function(findErr, oldPoUser) {
+                if (findErr) {
+                    console.error(`[PRODUCT_CTRL_UPDATE_ERROR] [ORPHAN_FIX_1] Failed to find old PO ${oldPoEmail}:`, findErr.message);
                     db.run("ROLLBACK");
-                    return res.status(500).json({ message: 'Database error deactivating old PO.' });
+                    return res.status(500).json({ message: 'Database error finding old PO.' });
                 }
-                console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Old PO ${oldPoEmail} deactivated (Rows: ${this.changes}).`);
 
-                // Step 2b: Invite or Promote the new PO
-                inviteOrPromotePO(db, newPoEmail, product.id, productName)
-                    .then((action) => { // action is 'invited' or 'promoted'
-                        
-                        // Step 2c: Set the product status based on the action.
-                        const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
-                        console.log(`[PRODUCT_CTRL_UPDATE] [CAUSALITY_FIX] PO action was '${action}'. Setting product status to '${newStatus}'.`);
+                // oldPoId might be null if the original PO was just an email in the product table
+                // but never actually confirmed. This is a valid state.
+                const oldPoId = oldPoUser ? oldPoUser.id : null;
+                console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Found old PO ID: ${oldPoId}`);
 
-                        const updateProductSql = `
-                            UPDATE products SET 
-                                product_name = ?, 
-                                product_owner_name = ?, 
-                                product_owner_email = ?,
-                                status = ?
-                            WHERE id = ?
-                        `;
-                        const productParams = [productName, productOwnerName, newPoEmail, newStatus, productId];
-
-                        db.run(updateProductSql, productParams, function(updateErr) {
-                            if (updateErr) {
-                                console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to update product ${productId}:`, updateErr.message);
-                                db.run("ROLLBACK");
-                                return res.status(500).json({ message: 'Database error updating product.' });
-                            }
-                            console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Product ${productId} details updated.`);
-
-                            // Step 2d: Commit
-                            db.run("COMMIT", (commitErr) => {
-                                if (commitErr) {
-                                    console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to COMMIT transaction:`, commitErr.message);
-                                    return res.status(500).json({ message: 'Failed to commit changes.' });
-                                }
-                                console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Transaction complete.`);
-                                res.status(200).json({ message: `Product updated and PO ${newPoEmail} has been notified.` });
-                            });
-                        });
-                    })
-                    .catch((inviteErr) => {
-                        // Step 2e: Rollback on error
-                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to invite/promote PO, rolling back:`, inviteErr.message);
+                // Step 2a: Deactivate old PO (by email, as this is what we know for sure)
+                console.log(`[PRODUCT_CTRL_UPDATE] [PHASE 1.D] Deactivating old PO: ${oldPoEmail}`);
+                const deactivateSql = `
+                    UPDATE users 
+                    SET status = 'deactivated', product_id = NULL 
+                    WHERE email = ? AND role = 'ProductOwner'
+                `;
+                db.run(deactivateSql, [oldPoEmail], function(deactivateErr) {
+                    if (deactivateErr) {
+                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to deactivate old PO ${oldPoEmail}:`, deactivateErr.message);
                         db.run("ROLLBACK");
-                        return res.status(500).json({ message: inviteErr.message || "Failed to create/promote PO." });
-                    });
+                        return res.status(500).json({ message: 'Database error deactivating old PO.' });
+                    }
+                    console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Old PO ${oldPoEmail} deactivated (Rows: ${this.changes}).`);
+
+                    // Step 2b: Invite or Promote the new PO
+                    // This now returns { action, userId: newPoId }
+                    inviteOrPromotePO(db, newPoEmail, product.id, productName)
+                        .then(({ action, userId: newPoId }) => { 
+                            console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] New PO (${newPoEmail}) has ID: ${newPoId}. Action was '${action}'.`);
+
+                            // This is the helper function that will run the final steps
+                            // We define it here to avoid duplicating it inside the if/else block
+                            const runFinalProductUpdate = () => {
+                                // Step 2d: Set the product status based on the action.
+                                const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
+                                console.log(`[PRODUCT_CTRL_UPDATE] [CAUSALITY_FIX] PO action was '${action}'. Setting product status to '${newStatus}'.`);
+
+                                const updateProductSql = `
+                                    UPDATE products SET 
+                                        product_name = ?, 
+                                        product_owner_name = ?, 
+                                        product_owner_email = ?,
+                                        status = ?
+                                    WHERE id = ?
+                                `;
+                                const productParams = [productName, productOwnerName, newPoEmail, newStatus, productId];
+
+                                db.run(updateProductSql, productParams, function(updateErr) {
+                                    if (updateErr) {
+                                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to update product ${productId}:`, updateErr.message);
+                                        db.run("ROLLBACK");
+                                        return res.status(500).json({ message: 'Database error updating product.' });
+                                    }
+                                    console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Product ${productId} details updated.`);
+
+                                    // Step 2e: Commit
+                                    db.run("COMMIT", (commitErr) => {
+                                        if (commitErr) {
+                                            console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to COMMIT transaction:`, commitErr.message);
+                                            return res.status(500).json({ message: 'Failed to commit changes.' });
+                                        }
+                                        console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Transaction complete.`);
+                                        res.status(200).json({ message: `Product updated and PO ${newPoEmail} has been notified.` });
+                                    });
+                                });
+                            };
+
+                            // [ORPHAN_FIX_1] Step 2c: Re-assign Admins.
+                            // This step is *only* necessary if we had a valid old PO ID.
+                            if (oldPoId) {
+                                console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Re-assigning Admins from old PO (${oldPoId}) to new PO (${newPoId}).`);
+                                const reassignSql = `
+                                    UPDATE users 
+                                    SET manager_id = ? 
+                                    WHERE manager_id = ? AND role = 'Admin' AND (deactivated IS NULL OR deactivated = 0)
+                                `;
+                                db.run(reassignSql, [newPoId, oldPoId], function(reassignErr) {
+                                    if (reassignErr) {
+                                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] [ORPHAN_FIX_1] Failed to reassign Admins:`, reassignErr.message);
+                                        db.run("ROLLBACK");
+                                        return res.status(500).json({ message: 'Database error re-assigning Admins.' });
+                                    }
+                                    console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Successfully re-assigned ${this.changes} Admins.`);
+                                    
+                                    // Now that Admins are re-assigned, run the final product update
+                                    runFinalProductUpdate();
+                                });
+                            } else {
+                                console.log('[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] No old PO ID found, skipping Admin re-assignment.');
+                                // No admins to re-assign, just run the final product update
+                                runFinalProductUpdate();
+                            }
+                        })
+                        .catch((inviteErr) => {
+                            // Step 2f: Rollback on invite/promote error
+                            console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to invite/promote PO, rolling back:`, inviteErr.message);
+                            db.run("ROLLBACK");
+                            return res.status(500).json({ message: inviteErr.message || "Failed to create/promote PO." });
+                        });
+                });
             });
         });
+        // --- [END ORPHAN_FIX_1] ---
     });
 };
 // --- [END NEW FUNCTION] ---

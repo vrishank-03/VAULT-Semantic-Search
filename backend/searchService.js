@@ -275,8 +275,8 @@ AI Response: "${aiMessage.substring(0, 200)}..."`; // Limit AI response length f
                     }
                      // Ensure title isn't empty after cleanup
                     if (generatedTitle.length === 0) {
-                        generatedTitle = "Chat Summary"; // Fallback title
-                        console.warn(`[LOG_WARN] --- Generated title was empty, using fallback.`);
+                         generatedTitle = "Chat Summary"; // Fallback title
+                         console.warn(`[LOG_WARN] --- Generated title was empty, using fallback.`);
                     }
                     console.log(`[LOG] --- 12h. Generated Title: "${generatedTitle}"`);
 
@@ -302,4 +302,48 @@ AI Response: "${aiMessage.substring(0, 200)}..."`; // Limit AI response length f
 }
 
 
-module.exports = { performRAG };
+// --- [BUG_3_FIX] NEW FUNCTION ---
+/**
+ * @desc      Deletes all vectors associated with a documentId from ChromaDB.
+ * @param     {string|number} docId - The document ID (from SQLite).
+ * @returns   {Promise<{success: boolean, deletedCount: number, error?: string}>}
+ */
+const deleteDocumentFromChroma = async (docId) => {
+    console.log(`[DELETE_DOC_CHROMA] Initiating Chroma vector deletion for docId: ${docId}`);
+    try {
+        const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
+
+        // 1. Find all vectors associated with this document ID.
+        // We must query by 'where' and delete by the *unique vector IDs*.
+        console.log(`[DELETE_DOC_CHROMA] Querying for vectors where documentId = ${docId}`);
+        const results = await collection.get({
+            where: { "documentId": Number(docId) },
+            include: ["metadatas"] // We only need the IDs, this is efficient
+        });
+
+        if (!results || results.ids.length === 0) {
+            console.warn(`[DELETE_DOC_CHROMA_WARN] No vectors found in Chroma for docId: ${docId}. Nothing to delete.`);
+            return { success: true, deletedCount: 0 };
+        }
+
+        // 2. Delete the found vectors by their unique IDs.
+        console.log(`[DELETE_DOC_CHROMA] Found ${results.ids.length} vectors. Deleting...`);
+        await collection.delete({
+            ids: results.ids
+        });
+
+        console.log(`[DELETE_DOC_CHROMA_SUCCESS] Successfully deleted ${results.ids.length} vectors for docId: ${docId}.`);
+        return { success: true, deletedCount: results.ids.length };
+
+    } catch (err) {
+        console.error(`[DELETE_DOC_CHROMA_ERROR] Failed to delete vectors for docId ${docId}:`, err.message);
+        return { success: false, deletedCount: 0, error: err.message };
+    }
+};
+// --- [END BUG_3_FIX] ---
+
+
+module.exports = {
+    performRAG,
+    deleteDocumentFromChroma // [BUG_3_FIX] Export new function
+};
