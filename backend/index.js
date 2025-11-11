@@ -1,3 +1,5 @@
+// backend/index.js
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -6,6 +8,11 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const fs = require('fs'); // [BUG_5_FIX] Import fs for file deletion on error
 require('dotenv').config();
+
+// --- [BLOCK 4] NEW IMPORTS ---
+const http = require('http'); // For socket.io
+const { Server } = require("socket.io"); // For socket.io
+// --- [END BLOCK 4] ---
 
 const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js');
 const { processDocument } = require('./documentProcessor.js');
@@ -27,6 +34,12 @@ const roomRoutes = require('./routes/roomRoutes');
 console.log('[LOG] roomRoutes loaded.');
 // --- [END NEW] ---
 
+// --- [JIT_REFACTOR] IMPORT JIT ROUTES ---
+console.log('[LOG] [JIT_REFACTOR] Loading jitRequestRoutes...');
+const jitRequestRoutes = require('./routes/jitRequestRoutes');
+console.log('[LOG] [JIT_REFACTOR] jitRequestRoutes loaded.');
+// --- [END JIT_REFACTOR] ---
+
 // --- [NEW] IMPORT CLIENT ROUTES ---
 console.log('[LOG] Loading clientRoutes...');
 const clientRoutes = require('./routes/clientRoutes');
@@ -42,12 +55,45 @@ console.log('[LOG] userRoutes loaded.');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// --- [BLOCK 4] NEW HTTP SERVER & SOCKET.IO ---
+const server = http.createServer(app); // Create HTTP server from Express app
+const io = new Server(server, {
+    cors: {
+        origin: "http://localhost:3000", // Allow frontend to connect
+        methods: ["GET", "POST"],
+        credentials: true
+    }
+});
+
+console.log('[LOG] [BLOCK_4] Socket.io server initialized.');
+
+// Listen for new connections
+io.on('connection', (socket) => {
+    console.log(`[LOG] [BLOCK_4] Socket.io: User connected with socket ID: ${socket.id}`);
+    
+    socket.on('disconnect', () => {
+        console.log(`[LOG] [BLOCK_4] Socket.io: User disconnected with socket ID: ${socket.id}`);
+    });
+});
+// --- [END BLOCK 4] ---
+
+
 // --- MIDDLEWARE ---
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan('dev'));
+
+// --- [BLOCK 4] NEW MIDDLEWARE to attach IO to requests ---
+// This makes `req.io` available in all controller functions
+app.use((req, res, next) => {
+    req.io = io;
+    next();
+});
+console.log('[LOG] [BLOCK_4] Socket.io instance attached to request middleware.');
+// --- [END BLOCK 4] ---
+
 
 // --- NEW: SERVE STATIC FILES ---
 app.use('/storage', express.static(path.join(__dirname, 'storage')));
@@ -82,6 +128,11 @@ app.use('/api/rooms', roomRoutes);
 console.log('[LOG] /api/rooms routes configured.');
 // --- [END NEW] ---
 
+// --- [JIT_REFACTOR] USE JIT ROUTES ---
+app.use('/api/jit', jitRequestRoutes);
+console.log('[LOG] [JIT_REFACTOR] /api/jit routes configured.');
+// --- [END JIT_REFACTOR] ---
+
 // --- [NEW] USE CLIENT ROUTES ---
 app.use('/api/clients', clientRoutes);
 console.log('[LOG] /api/clients routes configured.');
@@ -101,9 +152,9 @@ app.get('/api/user', protect, (req, res) => {
     const userId = req.user.id;
     const db = getDb();
     
-    // --- [MODIFIED] Get user role and product ID ---
+    // --- [BUG_FIX] Added u.product_id to the SELECT statement ---
     const sql = `
-        SELECT u.id, u.email, u.picture_url, u.role, p.product_name 
+        SELECT u.id, u.email, u.picture_url, u.role, u.product_id, p.product_name 
         FROM users u
         LEFT JOIN products p ON u.product_id = p.id
         WHERE u.id = ?
@@ -130,6 +181,7 @@ app.get('/api/user', protect, (req, res) => {
             email: user.email, 
             pictureUrl: fullPictureUrl, // <-- Send the full, absolute URL
             role: user.role, // <-- [NEW] Send user's role
+            product_id: user.product_id, // <-- [BUG_FIX] Send user's product_id
             productName: user.product_name // <-- [NEW] Send user's product
         });
     });
@@ -317,9 +369,11 @@ console.log('[LOG] Initializing database...');
 initializeDatabase()
     .then(() => {
         console.log('[LOG] Database initialized successfully.');
-        app.listen(PORT, () => {
-            console.log(`Backend server is running on http://localhost:${PORT}`);
+        // --- [BLOCK 4] MODIFIED: Use server.listen instead of app.listen ---
+        server.listen(PORT, () => {
+            console.log(`[LOG] [BLOCK_4] Backend server (with Socket.io) is running on http://localhost:${PORT}`);
         });
+        // --- [END BLOCK 4] ---
     })
     .catch(err => {
         console.error("[FATAL] Failed to initialize database:", err);

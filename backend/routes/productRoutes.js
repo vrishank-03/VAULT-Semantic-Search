@@ -1,3 +1,5 @@
+// backend/routes/productRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const { 
@@ -7,12 +9,17 @@ const {
     getPendingProducts, // [PHASE 1.C] Import new controller
     rejectProduct,      // [PHASE 1.C] Import new reject controller
     getAllProducts,     // [PHASE 1.D] Import new controller
-    updateProduct       // [PHASE 1.D] Import new controller
+    updateProduct,      // [PHASE 1.D] Import new controller
+    deleteProduct       // --- [NEW] Import deleteProduct ---
 } = require('../controllers/productController');
 // --- [TASK 9] Import authorize middleware ---
 const { protect, authorize } = require('../middleware/authMiddleware');
 
 console.log('[ROUTES] Initializing productRoutes.js...');
+
+// --- [NEW] Define reusable role middleware ---
+const isCTO = authorize('CTO');
+const canViewProducts = authorize('CTO', 'ProductOwner', 'Administrator');
 
 // @route   POST /api/products/request-product
 // @desc    Handles the request to create a new product (in a suspended state)
@@ -28,12 +35,12 @@ router.get('/confirmed', getConfirmedProducts);
 
 // --- [PHASE 1.D] NEW ROUTE ---
 // @route   GET /api/products/all
-// @desc    Gets ALL products for CTO management
-// @access  Private (CTO Only)
+// @desc    Gets ALL products for hierarchical dashboard
+// @access  Private (CTO, ProductOwner, Administrator)
 router.get(
     '/all',
     protect,
-    authorize('CTO'),
+    canViewProducts, // --- [BLOCK 6] FIX: Allow PO and Admin to see all products ---
     getAllProducts
 );
 // --- [END NEW ROUTE] ---
@@ -45,7 +52,7 @@ router.get(
 router.get(
     '/pending',
     protect,
-    authorize('CTO'),
+    isCTO,
     getPendingProducts
 );
 // --- [END NEW ROUTE] ---
@@ -57,7 +64,7 @@ router.get(
 router.post(
     '/approve/:productId', 
     protect, 
-    authorize('CTO'), // [TASK 9 ATOMIC LOG] Added authorize('CTO')
+    isCTO, // [TASK 9 ATOMIC LOG] Added authorize('CTO')
     approveProduct
 );
 // --- [END TASK 9] ---
@@ -69,7 +76,7 @@ router.post(
 router.delete(
     '/reject/:productId',
     protect,
-    authorize('CTO'),
+    isCTO,
     rejectProduct
 );
 // --- [END NEW ROUTE] ---
@@ -81,12 +88,24 @@ router.delete(
 router.put(
     '/:productId',
     protect,
-    authorize('CTO'),
+    isCTO,
     updateProduct
 );
 // --- [END NEW ROUTE] ---
 
+// --- [NEW] DELETE PRODUCT ROUTE ---
+// @route   DELETE /api/products/:productId
+// @desc    Deletes an existing product and all associated data (rooms, clients, users)
+// @access  Private (CTO Only)
+router.delete(
+    '/:productId',
+    protect,
+    isCTO,
+    deleteProduct
+);
+// --- [END NEW ROUTE] ---
 
-console.log('[ROUTES] productRoutes.js initialized: POST /request-product, GET /confirmed, GET /all, GET /pending, POST /approve, DELETE /reject, and PUT /:productId configured.');
+
+console.log('[ROUTES] productRoutes.js initialized with all routes.');
 
 module.exports = router;

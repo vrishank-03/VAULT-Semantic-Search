@@ -101,6 +101,14 @@ exports.resetPassword = (req, res) => {
                             return res.status(500).json({ message: 'Error activating product.' });
                         }
                         console.log(`[Auth] [CAUSALITY_FIX] Product ${user.product_id} confirmed (Rows: ${this.changes}).`);
+                        
+                        // --- [BUG_FIX] EMIT SOCKET EVENT ---
+                        if (this.changes > 0) {
+                            console.log(`[Auth] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
+                            req.io.emit('PRODUCT_LIST_UPDATED'); 
+                        }
+                        // --- [END BUG_FIX] ---
+                        
                         commitAndRespond();
                     });
                 } else {
@@ -402,7 +410,7 @@ exports.signupCto = (req, res) => {
     });
 };
 
-// (login function is unchanged from last time)
+// --- [BUG_FIX] MODIFIED login function ---
 exports.login = (req, res) => {
     console.log('[AUTH_LOGIN] POST /login route hit.');
     const errors = validationResult(req);
@@ -413,7 +421,20 @@ exports.login = (req, res) => {
     const { email, password } = req.body;
     const db = getDb();
     console.log(`[AUTH_LOGIN] Attempting login for email: ${email}`);
-    db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
+    
+    // --- [BUG_FIX] Join with products table to get product_id and productName
+    const sql = `
+        SELECT u.*, p.product_name 
+        FROM users u
+        LEFT JOIN products p ON u.product_id = p.id
+        WHERE u.email = ?
+    `;
+    
+    db.get(sql, [email], (err, user) => {
+        if (err) {
+            console.error(`[AUTH_LOGIN_ERROR] DB error finding user ${email}:`, err.message);
+            return res.status(500).json({ message: 'Database error.' });
+        }
         if (!user) {
             console.warn(`[AUTH_LOGIN_WARN] Login failed for ${email}: User not found.`);
             return res.status(401).json({ message: 'Invalid email or password.' });
@@ -450,10 +471,21 @@ exports.login = (req, res) => {
 
         if (bcrypt.compareSync(password, user.password_hash)) {
             console.log(`[AUTH_LOGIN_SUCCESS] User ${email} authenticated successfully (Status: ${user.status}).`);
-            const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+            
+            // --- [BUG_FIX] Add role and product_id to the JWT payload ---
+            const token = jwt.sign({ 
+                id: user.id,
+                role: user.role,
+                product_id: user.product_id
+            }, process.env.JWT_SECRET, { expiresIn: '30d' });
+            
+            // --- [BUG_FIX] Send all necessary info in the login response ---
             res.json({
                 id: user.id,
                 email: user.email,
+                role: user.role,
+                product_id: user.product_id,
+                productName: user.product_name,
                 token: token
             });
         } else {
@@ -462,6 +494,7 @@ exports.login = (req, res) => {
         }
     });
 };
+// --- [END BUG_FIX] ---
 
 // (forgotPassword function is unchanged from last time)
 exports.forgotPassword = (req, res) => {
