@@ -1,3 +1,5 @@
+// backend/routes/userRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const {
@@ -6,9 +8,11 @@ const {
     rejectUser,
     getTeam,
     getAllTeamMembers,
-    deactivateUser,     // --- [TASK 10] NEW: Import
-    reactivateUser,     // --- [TASK 10] NEW: Import
-    getAdminsForProduct // --- [SIGNUP_FIX] NEW: Import
+    getUsersForAdmin, 
+    deactivateUser,     
+    reactivateUser,     
+    getAdminsForProduct, 
+    getAllUsersForCto // --- [BUG_FIX] NEW: Import
 } = require('../controllers/userController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -51,6 +55,21 @@ router.get('/team', protect, managerRoles, getTeam);
 // @desc    Get *all* team members (all statuses) for the manager
 // @access  Private
 router.get('/team/all', protect, managerRoles, getAllTeamMembers);
+
+// --- [BUG_FIX] NEW: CTO-only route ---
+// @route   GET /api/users/all-company
+// @desc    Get *ALL* users in the company
+// @access  Private (CTO Only)
+router.get('/all-company', protect, authorize('CTO'), getAllUsersForCto);
+// --- [END BUG_FIX] ---
+
+// --- [BLOCK 2] NEW: Admin-specific route ---
+// @route   GET /api/users/admin-users
+// @desc    Get *all* active Users reporting to the logged-in Admin
+// @access  Private (Administrator Only)
+router.get('/admin-users', protect, authorize('Administrator'), getUsersForAdmin);
+// --- [END BLOCK 2] ---
+
 
 // --- [TASK 10] NEW: Deactivate/Reactivate Routes ---
 

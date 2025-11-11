@@ -1,3 +1,5 @@
+// frontend/src/pages/LoginPage.js
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -143,11 +145,17 @@ function LoginPage() {
             const response = await requestProductCreation(payload);
             
             console.log('[SET_PRODUCT_API_SUCCESS] API call successful:', response);
+            
+            // --- [BUG_FIX] ---
+            // Only set the success message. Do NOT reset the form fields here.
+            // Resetting fields here causes multiple re-renders that interrupt the animation.
+            // The fields will be reset in `closeProductModal` when the user clicks "Close".
             setProductSuccessMessage('Product request sent! The CTO has been notified for approval.');
             
-            setProductName('');
-            setProductOwnerName('');
-            setProductOwnerEmail('');
+            // setProductName(''); // <-- REMOVED
+            // setProductOwnerName(''); // <-- REMOVED
+            // setProductOwnerEmail(''); // <-- REMOVED
+            // --- [END BUG_FIX] ---
 
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Failed to send product request.';
@@ -162,6 +170,7 @@ function LoginPage() {
     const closeProductModal = () => {
         console.log('[SET_PRODUCT] Closing product modal.');
         setIsSetProductModalOpen(false);
+        // This is the correct place to reset the form state
         setProductName('');
         setProductOwnerName('');
         setProductOwnerEmail('');

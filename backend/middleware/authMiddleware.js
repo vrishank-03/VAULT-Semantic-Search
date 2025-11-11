@@ -1,3 +1,5 @@
+// backend/middleware/authMiddleware.js
+
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../database');
 
@@ -16,7 +18,13 @@ const protect = (req, res, next) => {
             // 4. Find the user from the database
             // [TASK 8 ATOMIC LOG] Modified SQL to select role and status for RBAC
             const db = getDb();
-            db.get('SELECT id, email, role, status FROM users WHERE id = ?', [decoded.id], (err, user) => {
+
+            // --- [BUG_FIX] Added product_id to the SELECT statement ---
+            const sql = 'SELECT id, email, role, status, product_id FROM users WHERE id = ?';
+            
+            db.get(sql, [decoded.id], (err, user) => {
+            // --- [END BUG_FIX] ---
+
                 if (err || !user) {
                     return res.status(401).json({ message: 'Not authorized, user not found.' });
                 }
@@ -29,6 +37,7 @@ const protect = (req, res, next) => {
                 }
                 
                 // 5. Attach the full user object to the request
+                // This object will now correctly include 'product_id'
                 req.user = user;
                 next(); // Success, Proceed to the protected route.
             });
@@ -47,9 +56,9 @@ const protect = (req, res, next) => {
 
 // --- [TASK 8] NEW: Role-Based Access Control Middleware ---
 /**
- * @desc    Middleware to authorize users based on their role.
- * @param   {...string} roles - An array of roles (e.g., 'Administrator', 'ProductOwner', 'CTO')
- * @example router.get('/admin-only', protect, authorize('Administrator', 'CTO'), ...)
+ * @desc      Middleware to authorize users based on their role.
+ * @param     {...string} roles - An array of roles (e.g., 'Administrator', 'ProductOwner', 'CTO')
+ * @example   router.get('/admin-only', protect, authorize('Administrator', 'CTO'), ...)
  */
 const authorize = (...roles) => {
     return (req, res, next) => {
