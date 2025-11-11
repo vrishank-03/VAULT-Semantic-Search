@@ -209,31 +209,12 @@ You will need **four separate terminals** open and running simultaneously.
   cd backend
   chroma run --path ./chroma_db
   ```
-# VAULT - Enterprise RAG & Knowledge Platform
-
-**Built for Secure, Multi-Tenant Document Intelligence**
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Installation](#installation)
-4. [Running the Application](#running-the-application)
-5. [File-by-File Map](#file-by-file-map)
-6. [API Reference](#api-reference)
-7. [Environment Variables](#environment-variables)
-8. [Troubleshooting](#troubleshooting)
-9. [Security Features](#security-features)
-10. [Contributing](#contributing)
-
-## Overview
-
-VAULT is an enterprise-grade RAG (Retrieval-Augmented Generation) knowledge platform with hierarchical RBAC and JIT access controls. It enables secure, multi-tenant document intelligence with room-level isolation and manager-approved access.
-
+  
 ### Key Features
 - **Hierarchical RBAC**: CTO → PO → Admin → User permission model
 - **JIT Access**: Room-level and peer-to-peer just-in-time access requests
 - **RAG Search**: ChromaDB + Groq LLM for intelligent document retrieval
-- **Real-time Chat**: Socket.io-powered messaging with document context
+- **Real-time Chat [to be implemented...]**: Socket.io-powered messaging with document context
 - **Multi-tenant Isolation**: Product → Client → Room data segregation
 - **Manager Approval**: All accounts and access require approval
 
