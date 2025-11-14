@@ -1,5 +1,14 @@
 // backend/index.js
 
+// --- [NETWORK_FIX] IMPORT DNS ---
+const dns = require('dns');
+// --- [NETWORK_FIX] Force IPv4 DNS resolution first ---
+// This prevents 'getaddrinfo ENOTFOUND' errors on systems
+// that default to IPv6 but have issues with Node.js networking.
+dns.setDefaultResultOrder('ipv4first');
+console.log('[LOG] [NETWORK_FIX] Set DNS default result order to "ipv4first".');
+// --- [END NETWORK_FIX] ---
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -167,7 +176,7 @@ app.get('/api/user', protect, (req, res) => {
         }
         if (!user) {
             console.warn(`[WARN] GET /api/user: User not found for ID ${userId}.`);
-            return res.status(404).json({ message: "User not found." });
+            return res.status(44).json({ message: "User not found." });
         }
 
         // --- MODIFICATION: Construct Full Picture URL ---

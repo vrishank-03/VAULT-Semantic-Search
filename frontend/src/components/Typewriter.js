@@ -1,3 +1,6 @@
+// frontend/src/components/Typewriter.js
+// Updated File
+
 import React, { useState, useEffect, useMemo } from 'react';
 
 const Typewriter = ({ initialSentence }) => {
@@ -6,27 +9,21 @@ const Typewriter = ({ initialSentence }) => {
   const [loopNum, setLoopNum] = useState(0);
   const [typingSpeed, setTypingSpeed] = useState(150);
 
-  // Memoize the list of phrases and colors to avoid re-creating them on every render.
+  // --- [MODIFIED] Slogans are now professional and benefit-driven ---
   const phrases = useMemo(() => [
     initialSentence,
-    "नमस्ते", // Hindi
-    "Bienvenue", // French
-    "أهلاً و سهلاً", // Arabic
-    "Vítejte", // Czech
-    "Добро пожаловать", // Russian
-    "Hoşgeldiniz", // Turkish
-    "Welcome to VAULT 1.0" // English
+    "it's simple with vault.",
   ], [initialSentence]);
 
+  // --- [MODIFIED] Colors are now a clean, modern tech palette ---
   const colors = useMemo(() => [
     'inherit', // Default color for the initial sentence
-    '#FF9933', // Saffron for Hindi
-    '#0055A4', // Blue for French
-    '#008000', // Green for Arabic
-    '#D7141A', // Red for Czech
-    '#D52B1E', // Red for Russian
-    '#E30A17', // Red for Turkish
-    '#34D399'  // Green for English
+    '#3B82F6', // Brand Blue (blue-500)
+    '#10B981', // Success Green (emerald-500)
+    '#6366F1', // AI Indigo (indigo-500)
+    '#3B82F6', // Brand Blue
+    '#10B981', // Success Green
+    '#6366F1'  // AI Indigo
   ], []);
 
   useEffect(() => {
@@ -37,6 +34,7 @@ const Typewriter = ({ initialSentence }) => {
       const fullText = phrases[i];
       const currentColor = colors[i];
       
+      // Set CSS variable for color
       document.documentElement.style.setProperty('--typewriter-color', currentColor);
 
       setText(
@@ -48,7 +46,7 @@ const Typewriter = ({ initialSentence }) => {
       setTypingSpeed(isDeleting ? 40 : 150);
 
       if (!isDeleting && text === fullText) {
-        ticker = setTimeout(() => setIsDeleting(true), 2000);
+        ticker = setTimeout(() => setIsDeleting(true), 2000); // Pause on full text
       } else if (isDeleting && text === '') {
         setIsDeleting(false);
         setLoopNum(loopNum + 1);
@@ -61,7 +59,8 @@ const Typewriter = ({ initialSentence }) => {
 
   return (
     <h1 
-      className="text-3xl md:text-4xl text-center typewriter-font h-16 md:h-20 flex items-center justify-center"
+      // --- [MODIFIED] Using new font-inter and adjusted sizing/weight ---
+      className="text-3xl md:text-4xl text-center font-inter font-semibold h-16 md:h-20 flex items-center justify-center"
     >
       <span className="typing-effect">{text}</span>
       <span className="cursor-blink">|</span>

@@ -1,22 +1,21 @@
 // frontend/src/pages/Dashboard.js
+// Corrected Refactor
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { motion, AnimatePresence } from 'framer-motion'; 
+import { motion, AnimatePresence } from 'framer-motion';
 import {
     approveRoomRequest,
     rejectRoomRequest,
     revokeRequest,
     requestAccess,
     editRequest,
-    rejectProduct, 
+    rejectProduct,
     deleteProduct,
     getIncomingPeerRequests,
     getOutgoingPeerRequests,
     respondToPeerRequest
 } from '../services/api';
-import Sidebar from '../components/Sidebar'; 
-import ThemeToggleButton from '../components/ThemeToggleButton'; 
 import Toast from '../Toast';
 import LoadingSpinner from '../components/LoadingSpinner';
 
@@ -24,28 +23,26 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useDashboardData } from '../components/dashboard/hooks/useDashboardData';
 import { useProductManagement } from '../components/dashboard/hooks/useProductManagement';
 import DashboardHeader from '../components/dashboard/DashboardHeader';
-import DashboardTabs from '../components/dashboard/DashboardTabs';
+import DashboardTabs from '../components/dashboard/DashboardTabs'; // We will use this again
 import PendingProductsSection from '../components/dashboard/sections/PendingProductsSection';
 import ManageProductsSection from '../components/dashboard/sections/ManageProductsSection';
-
-// --- [BLOCK 6] Import new hierarchical components ---
 import ProductCardsSection from '../components/dashboard/sections/ProductCardsSection';
 import ClientCardsSection from '../components/dashboard/sections/ClientCardsSection';
 import RoomCardsSection from '../components/dashboard/sections/RoomCardsSection';
-
-// --- [BUG_FIX] Clarified ALL imports ---
-import OutgoingRequestsSection from '../components/dashboard/sections/OutgoingRequestsSection'; // For Rooms
-import OutgoingPeerRequestsSection from '../components/dashboard/sections/OutgoingPeerRequestsSection'; // For Products/Clients
+import OutgoingRequestsSection from '../components/dashboard/sections/OutgoingRequestsSection';
+import OutgoingPeerRequestsSection from '../components/dashboard/sections/OutgoingPeerRequestsSection';
 
 // Modals
 import UserManagementModal from '../components/modals/UserManagementModal';
 import CreateRoomModal from '../components/modals/CreateRoomModal';
-import IncomingJitModal from '../components/modals/IncomingJitModal'; // For Rooms
-import IncomingPeerJitModal from '../components/modals/IncomingPeerJitModal'; // For Products/Clients
+import IncomingJitModal from '../components/modals/IncomingJitModal';
+import IncomingPeerJitModal from '../components/modals/IncomingPeerJitModal';
 import RequestAccessModal from '../components/modals/RequestAccessModal';
 import ConfirmModal from '../components/modals/ConfirmModal';
-// --- [END BUG_FIX] ---
 
+// --- [NEW] Import layout context and icons for *correct* sidebar ---
+import { useLayout } from '../context/LayoutContext';
+import { FiUsers, FiPlusSquare, FiPenTool, FiBell, FiShare2 } from 'react-icons/fi'; // Corrected Icons
 
 // Animation Variants
 const modalBackdropVariants = {
@@ -69,24 +66,23 @@ const tabContentVariants = {
 function Dashboard() {
     const { user } = useAuth();
     const [toast, setToast] = useState(null);
-    
     const [currentTab, setCurrentTab] = useState('browse');
 
-    // Modal States
+    // --- [NEW] Get setSidebarContent from useLayout ---
+    const { setSidebarContent } = useLayout();
+
+    // --- [All states unchanged] ---
     const [isRoomModalOpen, setIsRoomModalOpen] = useState(false);
     const [isUserManagementModalOpen, setIsUserManagementModalOpen] = useState(false);
     const [isRequestAccessModalOpen, setIsRequestAccessModalOpen] = useState(false);
     const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
     const [isConfirmingAction, setIsConfirmingAction] = useState(false);
-    const [confirmationState, setConfirmationState] = useState(null); 
-    
+    const [confirmationState, setConfirmationState] = useState(null);
     const [isIncomingRoomJitModalOpen, setIsIncomingRoomJitModalOpen] = useState(false);
     const [isIncomingPeerJitModalOpen, setIsIncomingPeerJitModalOpen] = useState(false);
-
-
-    // --- [BLOCK 6] New state for hierarchical view ---
+    
     const getInitialView = () => {
-        if (!user) return { level: 'loading' }; // Handle initial load
+        if (!user) return { level: 'loading' };
         if (user.role === 'CTO' || user.role === 'ProductOwner') {
             return { level: 'products', product: null, client: null };
         }
@@ -96,23 +92,20 @@ function Dashboard() {
         return { level: 'rooms', product: null, client: null };
     };
     const [viewState, setViewState] = useState(getInitialView());
-    // --- [END BLOCK 6] ---
 
-    // Custom Hooks
+    // --- [Custom Hooks unchanged] ---
     const {
         isLoading,
         products,
         pendingProducts,
-        // --- [BADGE_FIX] Use new state names ---
         incomingRoomRequests,
         outgoingRoomRequests,
         pendingUsers,
         incomingPeerRequests,
         outgoingPeerRequests,
-        // --- [END BADGE_FIX] ---
         refreshData
     } = useDashboardData(setToast);
-    
+
     const {
         editingProductId,
         editFormData,
@@ -123,8 +116,90 @@ function Dashboard() {
         handleEditSave
     } = useProductManagement(setToast, refreshData);
 
+    // --- [Badge Counts - unchanged] ---
+    const incomingRoomRequestsCount = incomingRoomRequests.filter(r => r.status === 'pending').length;
+    const incomingPeerRequestsCount = (incomingPeerRequests.productRequests?.length || 0) + (incomingPeerRequests.clientRequests?.length || 0);
+    const outgoingRoomRequestsCount = outgoingRoomRequests.filter(r => r.status === 'pending').length;
+    const outgoingPeerRequestsCount = outgoingPeerRequests.filter(r => r.status === 'pending').length;
+
+    // --- [MODIFIED] useEffect to set the CORRECT sidebar content (Action Buttons) ---
+    useEffect(() => {
+        const linkClass = "flex items-center w-full px-3 py-3 text-sm font-medium text-left text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-md transition-colors duration-150";
+        
+        // This content is the action buttons, as you wanted.
+        setSidebarContent(
+            <div className="flex flex-col space-y-2">
+                {/* --- User-specific button --- */}
+                {user?.role === 'User' && (
+                    <button onClick={() => setIsRequestAccessModalOpen(true)} className={linkClass}>
+                        <FiPenTool className="mr-3 flex-shrink-0" size={18} />
+                        <span className="truncate">Request Room Access</span>
+                    </button>
+                )}
+
+                {/* --- Admin / Owner / CTO buttons --- */}
+                {user?.role !== 'User' && (
+                    <button onClick={() => setIsRoomModalOpen(true)} className={linkClass}>
+                        <FiPlusSquare className="mr-3 flex-shrink-0" size={18} />
+                        <span className="truncate">Create Room</span>
+                    </button>
+                )}
+
+                {(user?.role === 'CTO' || user?.role === 'Administrator' || user?.role === 'ProductOwner') && (
+                    <>
+                        <button onClick={() => setIsUserManagementModalOpen(true)} className={linkClass}>
+                            <FiUsers className="mr-3 flex-shrink-0" size={18} />
+                            <span className="truncate">Manage Users</span>
+                            {pendingUsers.length > 0 && (
+                                <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                    {pendingUsers.length}
+                                </span>
+                            )}
+                        </button>
+                        
+                        <button onClick={() => setIsIncomingRoomJitModalOpen(true)} className={linkClass}>
+                            <FiBell className="mr-3 flex-shrink-0" size={18} /> {/* Corrected Icon */}
+                            <span className="truncate">Room JIT</span>
+                            {incomingRoomRequestsCount > 0 && (
+                                <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                    {incomingRoomRequestsCount}
+                                </span>
+                            )}
+                        </button>
+                    </>
+                )}
+
+                {(user?.role === 'ProductOwner' || user?.role === 'Administrator') && (
+                    <button onClick={() => setIsIncomingPeerJitModalOpen(true)} className={linkClass}>
+                        <FiShare2 className="mr-3 flex-shrink-0" size={18} /> {/* Corrected Icon */}
+                        <span className="truncate">Peer JIT</span>
+                        {incomingPeerRequestsCount > 0 && (
+                            <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                {incomingPeerRequestsCount}
+                            </span>
+                        )}
+                    </button>
+                )}
+            </div>
+        );
+        // Clean up sidebar content when component unmounts
+        return () => setSidebarContent(null);
+    }, [
+        setSidebarContent, 
+        user, 
+        pendingUsers.length, 
+        incomingRoomRequestsCount, 
+        incomingPeerRequestsCount,
+        setIsRoomModalOpen,
+        setIsRequestAccessModalOpen,
+        setIsUserManagementModalOpen,
+        setIsIncomingRoomJitModalOpen,
+        setIsIncomingPeerJitModalOpen
+    ]);
+
+
+    // --- [All handler functions unchanged] ---
     const handleRejectProduct = (productId, productName) => {
-        console.log(`[DASHBOARD_LOG] [BLOCK_4] Staging REJECT_PRODUCT action for product ${productId}`);
         setConfirmationState({
             action: 'rejectProduct',
             product: { id: productId, name: productName },
@@ -135,9 +210,7 @@ function Dashboard() {
         });
         setIsConfirmModalOpen(true);
     };
-
     const handleDeleteProduct = (productId, productName) => {
-        console.log(`[DASHBOARD_LOG] Staging DELETE_PRODUCT action for product ${productId}`);
         setConfirmationState({
             action: 'deleteProduct',
             product: { id: productId, name: productName },
@@ -148,185 +221,140 @@ function Dashboard() {
         });
         setIsConfirmModalOpen(true);
     };
-
     const onConfirmAction = async () => {
         if (!confirmationState) return;
         const { action, product } = confirmationState;
         const { id, name } = product;
 
         setIsConfirmingAction(true);
-        console.log(`[DASHBOARD_LOG] Executing confirmed action '${action}' for product ${id}`);
-
         try {
             if (action === 'rejectProduct') {
                 await rejectProduct(id);
                 setToast({ message: `Product "${name}" rejected and deleted.`, type: 'success' });
-                refreshData(); 
+                refreshData();
             } else if (action === 'deleteProduct') {
                 await deleteProduct(id);
                 setToast({ message: `Product "${name}" has been permanently deleted.`, type: 'success' });
-                refreshData(); 
+                refreshData();
             }
-
             handleCloseConfirmModal();
         } catch (err) {
-            console.error(`[DASHBOARD_LOG] Error during confirmed action '${action}' for product ${id}:`, err);
             setToast({ message: err.response?.data?.message || `Failed to ${action} product.`, type: 'error' });
         } finally {
-            setIsConfirmingAction(false); 
+            setIsConfirmingAction(false);
         }
     };
-
     const handleCloseConfirmModal = () => {
-        console.log('[DASHBOARD_LOG] [BLOCK_4] Closing confirmation modal.');
         setIsConfirmModalOpen(false);
-        setTimeout(() => {
-            setConfirmationState(null);
-        }, 300);
+        setTimeout(() => setConfirmationState(null), 300);
     };
-
-    // --- [BLOCK 6] New Handlers for view navigation ---
     const handleProductSelect = (product) => {
-        console.log(`[Dashboard] Product selected:`, product.product_name);
         setViewState({ level: 'clients', product: product, client: null });
     };
-    
     const handleClientSelect = (client) => {
-        console.log(`[Dashboard] Client selected:`, client.name);
         setViewState({ level: 'rooms', product: viewState.product, client: client });
     };
-
     const handleGoBack = () => {
         if (viewState.level === 'rooms') {
-            console.log(`[Dashboard] Going back to clients`);
             setViewState({ level: 'clients', product: viewState.product, client: null });
         } else if (viewState.level === 'clients' && (user.role === 'CTO' || user.role === 'ProductOwner')) {
-            console.log(`[Dashboard] Going back to products`);
             setViewState({ level: 'products', product: null, client: null });
         }
     };
-    // --- [END BLOCK 6] ---
-
-    // Callbacks for Modals
     const onRoomCreated = () => {
-         console.log('[DASHBOARD_LOG] onRoomCreated callback triggered.');
-         refreshData(); 
-         setViewState(getInitialView());
-         setToast({ message: 'Room created successfully!', type: 'success' });
-    }
-
+        refreshData();
+        setViewState(getInitialView());
+        setToast({ message: 'Room created successfully!', type: 'success' });
+    };
     const onUserManagementUpdate = (toastMessage) => {
-         console.log('[DASHBOARD_LOG] onUserManagementUpdate callback triggered.');
-         setToast(toastMessage);
+        setToast(toastMessage);
     };
-
     const onIncomingRequestUpdate = (toastMessage) => {
-        console.log('[DASHBOARD_LOG] [JIT_FIX] onIncomingRequestUpdate callback triggered.');
         setToast(toastMessage);
-        refreshData(); 
+        refreshData();
     };
-
     const onRequestAccessUpdate = (toastMessage) => {
-        console.log('[DASHBOARD_LOG] [JIT_FIX] onRequestAccessUpdate callback triggered.');
         setToast(toastMessage);
-        refreshData(); 
+        refreshData();
     };
-    
     const onPeerRequestUpdate = (toastMessage) => {
-        console.log('[DASHBOARD_LOG] [BLOCK_6] onPeerRequestUpdate callback triggered.');
         setToast(toastMessage);
         refreshData();
     };
 
-    // --- [BLOCK 6] New render function for browse content ---
+    // --- [renderBrowseContent function unchanged] ---
     const renderBrowseContent = () => {
-        if (!user) return <LoadingSpinner />; // Guard against user being null on init
-        
+        if (!user) return <LoadingSpinner />;
         const { role } = user;
-        
-        // --- USERS ---
         if (role === 'User') {
-            return <RoomCardsSection 
-                        user={user} 
-                        setToast={setToast} 
-                        refreshData={refreshData} 
-                    />;
+            return <RoomCardsSection
+                user={user}
+                setToast={setToast}
+                refreshData={refreshData}
+            />;
         }
-
-        // --- ADMINS ---
         if (role === 'Administrator') {
             if (viewState.level === 'clients') {
-                return <ClientCardsSection 
-                            product={viewState.product}
-                            onClientSelect={handleClientSelect}
-                            user={user}
-                            setToast={setToast}
-                        />;
+                return <ClientCardsSection
+                    product={viewState.product}
+                    onClientSelect={handleClientSelect}
+                    user={user}
+                    setToast={setToast}
+                />;
             }
             if (viewState.level === 'rooms') {
-                return <RoomCardsSection 
-                            client={viewState.client}
-                            onBack={handleGoBack}
-                            user={user} 
-                            setToast={setToast} 
-                            refreshData={refreshData}
-                        />;
+                return <RoomCardsSection
+                    client={viewState.client}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                    refreshData={refreshData}
+                />;
             }
         }
-
-        // --- CTO & POs ---
         if (role === 'CTO' || role === 'ProductOwner') {
             if (viewState.level === 'products') {
-                return <ProductCardsSection 
-                            products={products} 
-                            onProductSelect={handleProductSelect} 
-                            user={user} 
-                            setToast={setToast} 
-                        />;
+                return <ProductCardsSection
+                    products={products}
+                    onProductSelect={handleProductSelect}
+                    user={user}
+                    setToast={setToast}
+                />;
             }
             if (viewState.level === 'clients') {
-                return <ClientCardsSection 
-                            product={viewState.product}
-                            onClientSelect={handleClientSelect}
-                            onBack={handleGoBack}
-                            user={user}
-                            setToast={setToast}
-                        />;
+                return <ClientCardsSection
+                    product={viewState.product}
+                    onClientSelect={handleClientSelect}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                />;
             }
             if (viewState.level === 'rooms') {
-                return <RoomCardsSection 
-                            client={viewState.client}
-                            onBack={handleGoBack}
-                            user={user} 
-                            setToast={setToast} 
-                            refreshData={refreshData}
-                        />;
+                return <RoomCardsSection
+                    client={viewState.client}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                    refreshData={refreshData}
+                />;
             }
         }
         return <LoadingSpinner />;
     };
 
-    // --- [BADGE_FIX] 2. Calculate all counts ---
-    const incomingRoomRequestsCount = incomingRoomRequests.filter(r => r.status === 'pending').length;
-    const incomingPeerRequestsCount = (incomingPeerRequests.productRequests?.length || 0) + (incomingPeerRequests.clientRequests?.length || 0);
-    const outgoingRoomRequestsCount = outgoingRoomRequests.filter(r => r.status === 'pending').length;
-    const outgoingPeerRequestsCount = outgoingPeerRequests.filter(r => r.status === 'pending').length;
-    // --- [END BADGE_FIX] ---
-
     return (
-        <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
+        // --- [MODIFIED] Added padding to main div ---
+        // `pl-16` provides space for the hamburger button on mobile
+        // `pr-4 sm:pr-6 lg:pr-8` is standard padding for the right
+        // `pt-4 sm:pt-6 lg:pt-8` is standard padding for the top
+        <div className="p-4 sm:p-6 lg:p-8 pl-16"> 
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
             
-            <Sidebar 
-                handleNewChat={() => {}} 
-                conversations={[]}       
-                onSelectConversation={() => {}} 
-            />
-
-            {/* --- Modals --- */}
+            {/* --- [Modals - unchanged] --- */}
             <AnimatePresence>
                 {isRoomModalOpen && (
-                    <CreateRoomModal 
+                    <CreateRoomModal
                         isOpen={isRoomModalOpen}
                         onClose={() => setIsRoomModalOpen(false)}
                         onSuccess={onRoomCreated}
@@ -349,7 +377,7 @@ function Dashboard() {
                         isOpen={isIncomingRoomJitModalOpen}
                         onClose={() => setIsIncomingRoomJitModalOpen(false)}
                         onUpdate={onIncomingRequestUpdate}
-                        requests={incomingRoomRequests} // --- [BADGE_FIX] Use correct state
+                        requests={incomingRoomRequests}
                         refreshRequests={refreshData}
                         api={{ approveRoomRequest, rejectRoomRequest, revokeRequest }}
                         backdropVariants={modalBackdropVariants}
@@ -373,7 +401,7 @@ function Dashboard() {
                         isOpen={isRequestAccessModalOpen}
                         onClose={() => setIsRequestAccessModalOpen(false)}
                         onSuccess={onRequestAccessUpdate}
-                        api={{ requestAccess, editRequest }} 
+                        api={{ requestAccess, editRequest }}
                         backdropVariants={modalBackdropVariants}
                         modalVariants={modalContentVariants}
                     />
@@ -393,90 +421,75 @@ function Dashboard() {
                 )}
             </AnimatePresence>
             
-            <main className="flex-grow overflow-y-auto p-6 lg:p-12 relative">
+            <div className="max-w-7xl mx-auto">
                 
-                <header className="absolute top-0 right-0 p-4 z-10">
-                    <ThemeToggleButton />
-                </header>
+                {/* --- [MODIFIED] DashboardHeader no longer gets ANY button props --- */}
+                {/* This requires you to have updated DashboardHeader.js */}
+                <DashboardHeader
+                    user={user}
+                />
                 
-                <div className="max-w-7xl mx-auto pt-10">
-                    
-                    {/* --- [BADGE_FIX] 3. Pass all new counts to header --- */}
-                    <DashboardHeader
-                        user={user}
-                        incomingRequestsCount={incomingRoomRequestsCount}
-                        pendingUsersCount={pendingUsers.length}
-                        incomingPeerRequestsCount={incomingPeerRequestsCount}
-                        onRequestAccessModalOpen={() => setIsRequestAccessModalOpen(true)}
-                        onIncomingJitModalOpen={() => setIsIncomingRoomJitModalOpen(true)}
-                        onUserManagementModalOpen={() => setIsUserManagementModalOpen(true)}
-                        onCreateRoomModalOpen={() => setIsRoomModalOpen(true)}
-                        onIncomingPeerJitModalOpen={() => setIsIncomingPeerJitModalOpen(true)}
-                    />
-                    
-                    {/* Render CTO-only sections */}
-                    {!isLoading && user?.role === 'CTO' && (
-                        <>
-                            <PendingProductsSection
-                                pendingProducts={pendingProducts}
-                                onApprove={handleApproveProduct}
-                                onReject={handleRejectProduct}
-                            />
-                            <ManageProductsSection
-                                allProducts={products} 
-                                editingProductId={editingProductId}
-                                editFormData={editFormData}
-                                onEditClick={handleEditClick}
-                                onEditCancel={handleEditCancel}
-                                onEditChange={handleEditFormChange}
-                                onEditSave={handleEditSave}
-                                onDeleteProduct={handleDeleteProduct}
-                            />
-                        </>
-                    )}
-                    
-                    {/* Tabs for Room and Request lists */}
-                    {!isLoading && user && ( 
-                        <DashboardTabs
-                            currentTab={currentTab}
-                            setCurrentTab={setCurrentTab}
-                            browseTabName={user.role === 'User' ? 'My Rooms' : 'Browse'}
-                            // --- [BADGE_FIX] 4. Pass correct counts to tabs ---
-                            outgoingRoomRequestCount={outgoingRoomRequestsCount}
-                            outgoingPeerRequestCount={outgoingPeerRequestsCount}
-                            showPeerJitTab={user.role === 'ProductOwner' || user.role === 'Administrator'}
-                            userRole={user.role}
+                {/* --- [CTO sections - unchanged] --- */}
+                {!isLoading && user?.role === 'CTO' && (
+                    <>
+                        <PendingProductsSection
+                            pendingProducts={pendingProducts}
+                            onApprove={handleApproveProduct}
+                            onReject={handleRejectProduct}
                         />
+                        <ManageProductsSection
+                            allProducts={products}
+                            editingProductId={editingProductId}
+                            editFormData={editFormData}
+                            onEditClick={handleEditClick}
+                            onEditCancel={handleEditCancel}
+                            onEditChange={handleEditFormChange}
+                            onEditSave={handleEditSave}
+                            onDeleteProduct={handleDeleteProduct}
+                        />
+                    </>
+                )}
+                
+                {/* --- [RESTORED] Tabs are back in the main content area --- */}
+                {!isLoading && user && (
+                    <DashboardTabs
+                        currentTab={currentTab}
+                        setCurrentTab={setCurrentTab}
+                        browseTabName={user.role === 'User' ? 'My Rooms' : 'Browse'}
+                        outgoingRoomRequestCount={outgoingRoomRequestsCount}
+                        outgoingPeerRequestCount={outgoingPeerRequestsCount}
+                        showPeerJitTab={user.role === 'ProductOwner' || user.role === 'Administrator'}
+                        userRole={user.role}
+                    />
+                )}
+                
+                {/* --- [Tab Content - unchanged] --- */}
+                <AnimatePresence mode='wait'>
+                    {isLoading ? (
+                        <motion.div
+                            key="loader"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex justify-center items-center h-64"
+                        >
+                            <LoadingSpinner />
+                        </motion.div>
+                    ) : (
+                        <motion.div
+                            key={`${currentTab}-${viewState.level}-${viewState.product?.id}-${viewState.client?.id}`}
+                            variants={tabContentVariants}
+                            initial="hidden"
+                            animate="visible"
+                            exit="exit"
+                        >
+                            {currentTab === 'browse' && renderBrowseContent()}
+                            {currentTab === 'outgoing_room' && <OutgoingRequestsSection outgoingRequests={outgoingRoomRequests} setToast={setToast} />}
+                            {currentTab === 'outgoing_peer' && <OutgoingPeerRequestsSection outgoingRequests={outgoingPeerRequests} userRole={user.role} setToast={setToast} api={{ getOutgoingPeerRequests }} />}
+                        </motion.div>
                     )}
-                    
-                    <AnimatePresence mode='wait'>
-                        {isLoading ? (
-                            <motion.div
-                                key="loader"
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0 }}
-                                className="flex justify-center items-center h-64"
-                            >
-                                <LoadingSpinner />
-                            </motion.div>
-                        ) : (
-                            <motion.div
-                                key={`${currentTab}-${viewState.level}-${viewState.product?.id}-${viewState.client?.id}`} 
-                                variants={tabContentVariants}
-                                initial="hidden"
-                                animate="visible"
-                                exit="exit"
-                            >
-                                {currentTab === 'browse' && renderBrowseContent()}
-                                {/* --- [BADGE_FIX] 5. Pass correct data to components --- */}
-                                {currentTab === 'outgoing_room' && <OutgoingRequestsSection outgoingRequests={outgoingRoomRequests} setToast={setToast} />}
-                                {currentTab === 'outgoing_peer' && <OutgoingPeerRequestsSection outgoingRequests={outgoingPeerRequests} userRole={user.role} setToast={setToast} api={{ getOutgoingPeerRequests }} />}
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-            </main>
+                </AnimatePresence>
+            </div>
         </div>
     );
 }

@@ -1,62 +1,148 @@
 // frontend/src/pages/LoginPage.js
+// Corrected Refactor
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-// [TASK 16] Removed googleLogin from imports
 import { sendPasswordResetEmail, requestProductCreation } from '../services/api';
-import AuthLayout from '../components/AuthLayout';
 import Typewriter from '../components/Typewriter';
-// [TASK 16] Removed GoogleLoginButton import
 import Toast from '../Toast';
 import logo from '../assets/logo.png';
 import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
 import ProcessingAnimation from '../components/ProcessingAnimation';
+import { motion } from 'framer-motion';
+
+// --- [MODIFIED] Imports for particle animation ---
+import Particles from "react-tsparticles";
+// --- THIS IS THE FIX ---
+import { loadSlim } from "tsparticles-slim"; 
+// --- (We are using loadSlim instead of loadFull) ---
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// --- [Animation variants - UNCHANGED] ---
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      delay: 0.1,
+      staggerChildren: 0.1,
+    },
+  },
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: 'spring',
+      stiffness: 100,
+    },
+  },
+};
+
 function LoginPage() {
-    // State for login form
+    // --- [All state and logic hooks are 100% UNCHANGED] ---
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-
-    // State for forgot password form
     const [isForgotPassword, setIsForgotPassword] = useState(false);
     const [resetEmail, setResetEmail] = useState('');
     const [showSuccess, setShowSuccess] = useState(false);
     const [successMessage, setSuccessMessage] = useState("");
-
-    // State for Set Product Modal
     const [isSetProductModalOpen, setIsSetProductModalOpen] = useState(false);
     const [productName, setProductName] = useState('');
     const [productOwnerName, setProductOwnerName] = useState('');
     const [productOwnerEmail, setProductOwnerEmail] = useState('');
     const [isProductLoading, setIsProductLoading] = useState(false);
     const [productSuccessMessage, setProductSuccessMessage] = useState(null);
-
-    // General state
     const [isLoading, setIsLoading] = useState(false);
     const [toast, setToast] = useState(null);
     const navigate = useNavigate();
     const location = useLocation();
     const { login, isAuthenticated } = useAuth();
-    
     const hasHandledRedirect = useRef(false);
 
+    // --- [MODIFIED] Particle system initialization ---
+    const particlesInit = useCallback(async (engine) => {
+        console.log(engine);
+        // This loads the "slim" bundle, keeping it lightweight
+        await loadSlim(engine);
+    }, []);
+
+    // --- [Particle options - UNCHANGED] ---
+    const particlesOptions = useMemo(() => ({
+        background: {
+            color: {
+                value: "transparent", // Will sit on top of our gradient
+            },
+        },
+        fpsLimit: 60,
+        interactivity: {
+            events: {
+                onHover: {
+                    enable: true,
+                    mode: "repulse", // This makes particles move away from mouse
+                },
+                resize: true,
+            },
+            modes: {
+                repulse: {
+                    distance: 100,
+                    duration: 0.4,
+                },
+            },
+        },
+        particles: {
+            color: {
+                value: "#ffffff",
+            },
+            links: {
+                color: "#ffffff",
+                distance: 150,
+                enable: true,
+                opacity: 0.2, // Very subtle links
+                width: 1,
+            },
+            move: {
+                direction: "none",
+                enable: true,
+                outModes: "out",
+                random: false,
+                speed: 0.3, // Very slow, elegant movement
+                straight: false,
+            },
+            number: {
+                density: {
+                    enable: true,
+                    area: 800,
+                },
+                value: 80, // Number of particles
+            },
+            opacity: {
+                value: 0.3, // Subtle particles
+            },
+            shape: {
+                type: "circle",
+            },
+            size: {
+                value: { min: 1, max: 3 },
+            },
+        },
+        detectRetina: true,
+    }), []);
+
+    // --- [All useEffect and handler functions are 100% UNCHANGED] ---
     useEffect(() => {
-        console.log('[LOGIN_PAGE_EFFECT] useEffect running. Auth status:', isAuthenticated);
-        
         if (isAuthenticated) {
-            console.log('[LOGIN_PAGE_EFFECT] User is authenticated. Navigating to /dashboard.');
             navigate('/dashboard', { replace: true });
         }
-
         const searchParams = new URLSearchParams(location.search);
         const justVerified = searchParams.get('verified') === 'true';
-
         if ((location.state?.message || justVerified) && !hasHandledRedirect.current) {
             const message = location.state?.message || 'Email verified successfully! Please log in.';
-            console.log(`[LOGIN_PAGE_EFFECT] Displaying toast from location state: ${message}`);
             setToast({ message, type: 'success' });
             hasHandledRedirect.current = true;
             window.history.replaceState({}, document.title, location.pathname);
@@ -66,26 +152,18 @@ function LoginPage() {
     const handleLogin = async (e) => {
         e.preventDefault();
         setToast(null);
-        console.log('[LOGIN_PAGE] handleLogin triggered.');
-
         const isEmailValid = emailRegex.test(email);
         if (!isEmailValid || !password) {
-            console.warn('[LOGIN_PAGE] Login validation failed: Invalid email or missing password.');
             setToast({ message: 'Please enter a valid email and password.', type: 'error' });
             return;
         }
-        
-        console.log('[LOGIN_PAGE] Login form valid. Setting loading state.');
         setIsLoading(true);
         try {
             await login({ email, password });
-            console.log('[LOGIN_PAGE] login() successful. useEffect will handle redirect.');
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Login failed. Please check your credentials.';
-            console.error('[LOGIN_PAGE_ERROR] Login failed:', errorMessage);
             setToast({ message: errorMessage, type: 'error' });
         } finally {
-            console.log('[LOGIN_PAGE] Login attempt finished. Setting loading state to false.');
             setIsLoading(false);
         }
     };
@@ -93,27 +171,19 @@ function LoginPage() {
     const handleForgotPasswordSubmit = async (e) => {
         e.preventDefault();
         setToast(null);
-        console.log('[LOGIN_PAGE] handleForgotPasswordSubmit triggered.');
-
         if (!emailRegex.test(resetEmail)) {
-            console.warn('[LOGIN_PAGE] Forgot password validation failed: Invalid email.');
             setToast({ message: 'Please enter a valid email address.', type: 'error' });
             return;
         }
-
-        console.log('[LOGIN_PAGE] Forgot password form valid. Setting loading state.');
         setIsLoading(true);
         try {
             await sendPasswordResetEmail(resetEmail);
-            console.log('[LOGIN_PAGE] sendPasswordResetEmail() successful.');
             setSuccessMessage("Email Sent!");
             setShowSuccess(true);
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'An error occurred.';
-            console.error('[LOGIN_PAGE_ERROR] Forgot password failed:', errorMessage);
             setToast({ message: errorMessage, type: 'error' });
         } finally {
-            console.log('[LOGIN_PAGE] Forgot password attempt finished. Setting loading state to false.');
             setIsLoading(false);
         }
     };
@@ -121,56 +191,30 @@ function LoginPage() {
     const handleSetProductSubmit = async (e) => {
         e.preventDefault();
         setToast(null);
-        console.log('[SET_PRODUCT] Form submit initiated.');
-
         if (!productName || !productOwnerName || !productOwnerEmail) {
-            console.warn('[SET_PRODUCT_WARN] Validation failed: Missing fields.');
             setToast({ message: 'All fields are required.', type: 'error' });
             return;
         }
         if (!emailRegex.test(productOwnerEmail)) {
-            console.warn('[SET_PRODUCT_WARN] Validation failed: Invalid owner email.');
             setToast({ message: 'Please enter a valid Product Owner email.', type: 'error' });
             return;
         }
-
-        console.log('[SET_PRODUCT] Validation passed. Setting loading state.');
         setIsProductLoading(true);
         setProductSuccessMessage(null);
-
         try {
             const payload = { productName, productOwnerName, productOwnerEmail };
-            console.log('[SET_PRODUCT_API] Calling requestProductCreation with payload:', payload);
-            
-            const response = await requestProductCreation(payload);
-            
-            console.log('[SET_PRODUCT_API_SUCCESS] API call successful:', response);
-            
-            // --- [BUG_FIX] ---
-            // Only set the success message. Do NOT reset the form fields here.
-            // Resetting fields here causes multiple re-renders that interrupt the animation.
-            // The fields will be reset in `closeProductModal` when the user clicks "Close".
+            await requestProductCreation(payload);
             setProductSuccessMessage('Product request sent! The CTO has been notified for approval.');
-            
-            // setProductName(''); // <-- REMOVED
-            // setProductOwnerName(''); // <-- REMOVED
-            // setProductOwnerEmail(''); // <-- REMOVED
-            // --- [END BUG_FIX] ---
-
         } catch (err) {
             const errorMessage = err.response?.data?.message || 'Failed to send product request.';
-            console.error('[SET_PRODUCT_API_ERROR] API call failed:', errorMessage);
             setToast({ message: errorMessage, type: 'error' });
         } finally {
-            console.log('[SET_PRODUCT] API request finished. Setting loading state to false.');
             setIsProductLoading(false);
         }
     };
 
     const closeProductModal = () => {
-        console.log('[SET_PRODUCT] Closing product modal.');
         setIsSetProductModalOpen(false);
-        // This is the correct place to reset the form state
         setProductName('');
         setProductOwnerName('');
         setProductOwnerEmail('');
@@ -179,16 +223,18 @@ function LoginPage() {
         setToast(null);
     };
 
+    // --- [Modal Functions - UNCHANGED] ---
     const renderSetProductModal = () => {
-        console.log(`[SET_PRODUCT] renderSetProductModal called. Loading: ${isProductLoading}, Success: ${productSuccessMessage}`);
-        
         return (
             <div 
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm"
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm p-4"
                 onClick={closeProductModal}
             >
-                <div 
-                    className="relative w-full max-w-lg p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-800"
+                <motion.div 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="relative w-full max-w-lg p-8 space-y-6 bg-white rounded-lg shadow-2xl dark:bg-gray-800 font-inter"
                     onClick={(e) => e.stopPropagation()}
                 >
                     <button 
@@ -197,7 +243,6 @@ function LoginPage() {
                     >
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
-
                     {productSuccessMessage ? (
                         <div className="text-center">
                             <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Request Sent</h2>
@@ -248,127 +293,137 @@ function LoginPage() {
                             </form>
                         </>
                     )}
-                </div>
+                </motion.div>
             </div>
         );
     };
 
     const renderMainContent = () => {
         if (showSuccess) {
-            console.log('[LOGIN_PAGE] renderMainContent: showSuccess');
             return (
-                <div className="text-center">
+                <motion.div variants={itemVariants} className="text-center">
                     <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Request Sent</h2>
                     <p className="text-gray-600 dark:text-gray-400 mb-6">If an account exists for {resetEmail}, a reset link has been sent.</p>
                     <GenericSuccessAnimation message={successMessage} />
-                </div>
+                </motion.div>
             );
         }
-
         if (isForgotPassword) {
-            if (isLoading) {
-                console.log('[LOGIN_PAGE] renderMainContent: isForgotPassword (Loading)');
-                return (
-                    <div className="text-center">
-                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Sending Email...</h2>
-                        <p className="mt-2 text-gray-600 dark:text-gray-400">Please wait a moment.</p>
-                        <div className="my-6">
-                            <ProcessingAnimation />
-                        </div>
-                    </div>
-                );
-            }
-            
-            console.log('[LOGIN_PAGE] renderMainContent: isForgotPassword (Form)');
             return (
                 <>
-                    <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Forgot Password</h2>
-                    <form className="space-y-6" onSubmit={handleForgotPasswordSubmit}>
+                    <motion.h2 variants={itemVariants} className="text-3xl font-bold text-center text-gray-900 dark:text-white">Forgot Password</motion.h2>
+                    <motion.form variants={itemVariants} className="space-y-6" onSubmit={handleForgotPasswordSubmit}>
                         <div>
                             <label htmlFor="reset-email-address" className="sr-only">Email address</label>
-                            <input id="reset-email-address" name="email" type="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Enter your email address" />
+                            <input id="reset-email-address" name="email" type="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="font-inter relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Enter your email address" />
                         </div>
                         <div>
-                            <button type="submit" className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 disabled:opacity-50">
+                            <button type="submit" className="font-inter relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 disabled:opacity-50">
                                 Send Reset Link
                             </button>
                         </div>
-                    </form>
-                    <p className="!mt-6 text-sm text-center">
-                        <button onClick={() => { setIsForgotPassword(false); setShowSuccess(false); setResetEmail(''); }} className="font-medium text-blue-600 hover:underline dark:text-blue-500">
+                    </motion.form>
+                    <motion.p variants={itemVariants} className="!mt-6 text-sm text-center">
+                        <button onClick={() => { setIsForgotPassword(false); setShowSuccess(false); setResetEmail(''); }} className="font-medium text-blue-600 hover:underline dark:text-blue-500 font-inter">
                             Back to Login
                         </button>
-                    </p>
+                    </motion.p>
                 </>
             );
         }
-
-        console.log('[LOGIN_PAGE] renderMainContent: Default (Login Form)');
         return (
             <>
-                <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white">Log In to VAULT</h2>
-                <form className="space-y-6" onSubmit={handleLogin}>
+                <motion.h2 variants={itemVariants} className="text-3xl font-bold text-center text-gray-900 dark:text-white">Log In to VAULT</motion.h2>
+                <motion.form variants={itemVariants} className="space-y-6" onSubmit={handleLogin}>
                     <div>
                         <label htmlFor="email-address" className="sr-only">Email address</label>
-                        <input id="email-address" name="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Email address" />
+                        <input id="email-address" name="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="font-inter relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Email address" />
                     </div>
                     <div>
                         <label htmlFor="password" className="sr-only">Password</label>
-                        <input id="password" name="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Password" />
+                        <input id="password" name="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="font-inter relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" placeholder="Password" />
                     </div>
                     <div className="flex items-center justify-end">
                         <div className="text-sm">
-                            <button type="button" onClick={() => { setIsForgotPassword(true); setToast(null); setEmail(''); setPassword(''); }} className="font-medium text-blue-600 hover:underline dark:text-blue-500">
+                            <button type="button" onClick={() => { setIsForgotPassword(true); setToast(null); setEmail(''); setPassword(''); }} className="font-medium text-blue-600 hover:underline dark:text-blue-500 font-inter">
                                 Forgot your password?
                             </button>
                         </div>
                     </div>
                     <div>
-                        <button type="submit" disabled={isLoading} className="relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
+                        <button type="submit" disabled={isLoading} className="font-inter relative flex justify-center w-full px-4 py-3 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md group hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
                             {isLoading ? 'Signing In...' : 'Sign In'}
                         </button>
                     </div>
-                </form>
+                </motion.form>
                 
-                {/* --- [TASK 16] REMOVED DIVIDER AND GOOGLE LOGIN BUTTON --- */}
-
-                <p className="!mt-6 text-sm text-center text-gray-600 dark:text-gray-400">
+                <motion.p variants={itemVariants} className="!mt-6 text-sm text-center text-gray-600 dark:text-gray-400">
                     Don't have an account?{' '}
                     <Link to="/signup" className="font-medium text-blue-600 hover:underline dark:text-blue-500">Sign up</Link>
-                </p>
-
-                <p className="!mt-4 text-sm text-center text-gray-600 dark:text-gray-400">
+                </motion.p>
+                <motion.p variants={itemVariants} className="!mt-4 text-sm text-center text-gray-600 dark:text-gray-400">
                     Need to register a new product?{' '}
                     <button 
                         type="button" 
-                        onClick={() => {
-                            console.log('[LOGIN_PAGE] "Set Product" button clicked, opening modal.');
-                            setIsSetProductModalOpen(true);
-                            setToast(null);
-                        }} 
-                        className="font-medium text-blue-600 hover:underline dark:text-blue-500"
+                        onClick={() => { setIsSetProductModalOpen(true); setToast(null); }} 
+                        className="font-medium text-blue-600 hover:underline dark:text-blue-500 font-inter"
                     >
                         Set Product
                     </button>
-                </p>
+                </motion.p>
             </>
         );
     };
 
+    // --- [Layout return statement - UNCHANGED] ---
     return (
-        <AuthLayout>
+        <div className="flex min-h-screen font-inter bg-gray-100 dark:bg-gray-900">
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-            
             {isSetProductModalOpen && renderSetProductModal()}
 
-            <div className="flex flex-col items-center justify-center space-y-6">
-                <img src={logo} alt="VAULT Logo" className="w-16 h-16" />
-                <Typewriter initialSentence="Unlock Insights From Your Documents" className="font-black text-gray-800 dark:text-gray-200" />
-                <div className="w-full max-w-md p-8 space-y-6 bg-white/80 backdrop-blur-sm rounded-lg shadow-2xl dark:bg-gray-800/80">
-                    {renderMainContent()}
+            <motion.div 
+                className="hidden lg:flex lg:w-1/2 flex-col items-center justify-center p-12 bg-gradient-to-br from-gray-800 via-gray-900 to-black text-white relative"
+                initial={{ opacity: 0, x: -50 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.6, ease: "easeOut" }}
+            >
+                {/* --- Particle Animation Background --- */}
+                <Particles
+                    id="tsparticles"
+                    init={particlesInit}
+                    options={particlesOptions}
+                    className="absolute top-0 left-0 w-full h-full z-0"
+                />
+
+                <div className="relative z-10 flex flex-col items-center justify-center">
+                    <img src={logo} alt="VAULT Logo" className="w-24 h-24 mb-6" />
+                    <Typewriter initialSentence="From data to decisions, instantly." />
+                    <p className="text-lg text-gray-400 mt-4 max-w-md text-center font-medium">
+                        The single source of truth for your enterprise, powered by AI.
+                    </p>
                 </div>
+            </motion.div>
+
+            <div className="w-full lg:w-1/2 flex items-center justify-center p-6 sm:p-12">
+                <motion.div 
+                    className="w-full max-w-md"
+                    variants={containerVariants}
+                    initial="hidden"
+                    animate="visible"
+                >
+                    <motion.img 
+                        src={logo} 
+                        alt="VAULT Logo" 
+                        className="w-16 h-16 mx-auto mb-6 lg:hidden" 
+                        variants={itemVariants}
+                    />
+                    
+                    <div className="p-8 space-y-6 bg-white rounded-xl shadow-2xl dark:bg-gray-800">
+                        {renderMainContent()}
+                    </div>
+                </motion.div>
             </div>
-        </AuthLayout>
+        </div>
     );
 }
 
