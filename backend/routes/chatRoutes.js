@@ -1,8 +1,23 @@
+// backend/routes/chatRoutes.js
+// Updated File
+
 const express = require('express');
 const router = express.Router();
-// --- MODIFIED LINE: Added getConversations and getConversationHistory ---
-const { createConversation, getConversations, getConversationHistory } = require('../controllers/chatController');
-const { protect } = require('../middleware/authMiddleware'); // Assuming the middleware function is 'protect'
+// --- MODIFIED LINE: Import all handlers including handleChatMessage ---
+const {
+    createConversation,
+    getConversations,
+    getConversationHistory,
+    handleChatMessage
+} = require('../controllers/chatController');
+const { protect } = require('../middleware/authMiddleware');
+
+// --- NEW ROUTE START ---
+// @route   POST /api/chat/message
+// @desc    Send a message to a conversation and get a RAG response
+// @access  Private
+router.post('/message', protect, handleChatMessage);
+// --- NEW ROUTE END ---
 
 // --- [MODIFIED] Route now includes :roomId ---
 // @route   POST /api/chat/new/:roomId
@@ -15,13 +30,10 @@ router.post('/new/:roomId', protect, createConversation);
 // @desc    Get all conversations for a specific room
 // @access  Private
 router.get('/conversations/:roomId', protect, getConversations);
-// --- [END MODIFIED] ---
 
-// --- NEW ROUTE START ---
 // @route   GET /api/chat/history/:conversationId
 // @desc    Get message history for a specific conversation
 // @access  Private
 router.get('/history/:conversationId', protect, getConversationHistory);
-// --- NEW ROUTE END ---
 
 module.exports = router;

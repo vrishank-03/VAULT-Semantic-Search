@@ -1,34 +1,28 @@
+// frontend/src/App.js
+// Refactored
+
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Outlet, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeProvider } from './context/ThemeContext'; // Make sure ThemeProvider is included
+import { ThemeProvider } from './context/ThemeContext';
 
 // Pages
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import Dashboard from './pages/Dashboard';
 import ResetPasswordPage from './pages/ResetPasswordPage';
-// --- [NEW] Import the new ChatRoomPage ---
 import ChatRoomPage from './pages/ChatRoomPage';
 
 // Components
 import PrivateRoute from './components/PrivateRoute';
-import Navbar from './components/Navbar';
+// --- [NEW] Import the new layout ---
+import AppLayout from './AppLayout'; 
+// --- [REMOVED] Navbar is no longer used in this core routing ---
+// import Navbar from './components/Navbar'; 
 
-// This layout component may be used for OTHER authenticated pages
-// that might need a standard top navigation bar in the future.
-const AppLayout = () => (
-    <>
-        <Navbar />
-        <main>
-            <Outlet />
-        </main>
-    </>
-);
 
 function App() {
     return (
-        // Both Auth and Theme providers are necessary for the whole app to function
         <AuthProvider>
             <ThemeProvider>
                 <Router>
@@ -39,14 +33,10 @@ function App() {
     );
 }
 
-// This component contains the core routing logic
 const AppContent = () => {
     const { isLoading, isAuthenticated } = useAuth();
-    console.log(`[APP_CONTENT] App loading. Auth Status: ${isAuthenticated}, Loading: ${isLoading}`);
 
-    // Display a loading screen while the authentication status is being checked
     if (isLoading) {
-        console.log('[APP_CONTENT] Auth is loading, showing splash screen...');
         return (
             <div className="flex items-center justify-center h-screen bg-gray-100 dark:bg-gray-900">
                 <div className="text-xl font-medium text-gray-700 dark:text-gray-200">Loading VAULT...</div>
@@ -54,7 +44,6 @@ const AppContent = () => {
         );
     }
 
-    console.log('[APP_CONTENT] Auth loaded. Rendering routes.');
     return (
         <Routes>
             {/* Public Routes */}
@@ -64,22 +53,14 @@ const AppContent = () => {
 
             {/* Private Routes */}
             <Route element={<PrivateRoute />}>
-                {/* The Dashboard (Purgatory Page) */}
-                <Route path="/dashboard" element={<Dashboard />} />
-                
-                {/* --- [NEW] The actual Chat Room Page --- */}
-                <Route path="/chat/:roomId" element={<ChatRoomPage />} />
-
-                {/* You can still use AppLayout for other future pages like this: */}
-                {/*
+                {/* --- [MODIFIED] All auth'd routes now render inside AppLayout --- */}
                 <Route element={<AppLayout />}>
-                    <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/chat/:roomId" element={<ChatRoomPage />} />
                 </Route>
-                */}
             </Route>
 
             {/* Root Path Handler */}
-            {/* This redirects users to the correct page based on their login status */}
             <Route
                 path="/"
                 element={
@@ -93,7 +74,6 @@ const AppContent = () => {
 
             {/* Fallback for any unmatched routes */}
             <Route path="*" element={<Navigate to="/" replace />} />
-
         </Routes>
     );
 }
