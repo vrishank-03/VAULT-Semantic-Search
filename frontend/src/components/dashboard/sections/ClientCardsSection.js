@@ -1,16 +1,16 @@
 // frontend/src/components/dashboard/sections/ClientCardsSection.js
 
 import React, { useState, useEffect, useCallback } from 'react';
-// --- [LINT_FIX] Removed unused useAuth import ---
+// [FIX 1] Import 'isConnected' from the useSocket hook
 import { useSocket } from '../../../context/SocketContext';
 import { getClientsForProduct } from '../../../services/api';
 import { FiLock, FiChevronRight, FiAlertTriangle, FiArrowLeft, FiClock } from 'react-icons/fi';
 import LoadingSpinner from '../../LoadingSpinner';
 
-// --- [BLOCK 6] Import the new modal ---
+// Import the new modal
 import PeerRequestModal from '../../modals/PeerRequestModal'; 
 
-// --- [BLOCK 6] Copied helper function for JIT timer ---
+// Copied helper function for JIT timer
 const calculateTimeLeft = (expiresAt) => {
     const now = new Date();
     const expiry = new Date(expiresAt);
@@ -33,19 +33,18 @@ const calculateTimeLeft = (expiresAt) => {
     }
     return { text, expired: false };
 };
-// --- [END BLOCK 6] ---
 
 
 const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast }) => {
-    const socket = useSocket();
+    // [FIX 1] Destructure 'socket' AND 'isConnected'
+    const { socket, isConnected } = useSocket();
     const [clients, setClients] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
     const [jitTimes, setJitTimes] = useState({});
 
-    // --- [BLOCK 6] State for Peer JIT Modal ---
     const [isPeerModalOpen, setIsPeerModalOpen] = useState(false);
-    const [selectedPeerResource, setSelectedPeerResource] = useState(null); // { type: 'client', resource: client }
+    const [selectedPeerResource, setSelectedPeerResource] = useState(null); 
 
     const fetchClients = useCallback(async () => {
             if (!user || !product?.id) return;
@@ -55,7 +54,6 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
             setError(null);
     
             try {
-                // This API call now returns clients with `accessLevel` and `expires_at`
                 const response = await getClientsForProduct(product.id);
                 console.log('[ClientCardsSection] Clients processed with access levels:', response.data);
                 setClients(response.data);
@@ -67,7 +65,6 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
             } finally {
                 setIsLoading(false);
             }
-        // --- [LINT_FIX] Removed getClientsForProduct from dependency array ---
         // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [user, product, setToast]); 
 
@@ -78,7 +75,8 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
 
     // Socket.io listener
     useEffect(() => {
-        if (socket) {
+        // [FIX 2] Add 'isConnected' to the guard clause
+        if (socket && isConnected) {
             const handleRefresh = (data) => {
                 console.log("[ClientCardsSection] [SOCKET] Received HIERARCHY_UPDATED or CLIENT_LIST_UPDATED. Refreshing clients.");
                 fetchClients();
@@ -92,7 +90,8 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
                 socket.off('CLIENT_LIST_UPDATED', handleRefresh);
             };
         }
-    }, [socket, fetchClients]);
+    // [FIX 3] Add 'isConnected' to the dependency array
+    }, [socket, isConnected, fetchClients]);
 
     // JIT Timer Effect
     useEffect(() => {
@@ -124,12 +123,9 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
         if (client.accessLevel === 'full') {
             onClientSelect(client);
         } else {
-            // --- [BLOCK 6] This is a locked card. Open the Peer JIT modal. ---
             console.log(`[ClientCardsSection] Opening Peer JIT modal for client:`, client.name);
             setSelectedPeerResource({ type: 'client', resource: client });
             setIsPeerModalOpen(true);
-            
-            // --- [BLOCK 6] Removed placeholder toast ---
         }
     };
     
@@ -152,7 +148,6 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
 
     return (
         <>
-            {/* --- [BLOCK 6] Navigation Header --- */}
             <div className="flex items-center mb-6">
                 {onBack && (
                     <button
@@ -167,11 +162,10 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
             <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
                 Clients for <span className="text-blue-600 dark:text-blue-400">{product.product_name}</span>
             </h2>
-            {/* --- [END BLOCK 6] --- */}
 
             {clients.length === 0 ? (
                  <div className="text-center text-gray-500 dark:text-gray-400 mt-10">
-                    <p>No clients have been created for this product yet.</p>
+                     <p>No clients have been created for this product yet.</p>
                  </div>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -184,7 +178,7 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
                                 transition-all duration-300 ease-in-out group
                                 ${client.accessLevel === 'full' 
                                     ? 'hover:scale-[1.03] hover:shadow-2xl cursor-pointer' 
-                                    : 'opacity-60' // Allow clicking locked card
+                                    : 'opacity-60 cursor-pointer' // Allow clicking locked card
                                 }
                             `}
                         >
@@ -242,7 +236,6 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
                 </div>
             )}
 
-            {/* --- [BLOCK 6] Render the Peer JIT modal --- */}
             {selectedPeerResource && (
                 <PeerRequestModal
                     isOpen={isPeerModalOpen}
@@ -252,7 +245,6 @@ const ClientCardsSection = ({ product, onClientSelect, onBack, user, setToast })
                     setToast={setToast}
                 />
             )}
-            {/* --- [END BLOCK 6] --- */}
         </>
     );
 };

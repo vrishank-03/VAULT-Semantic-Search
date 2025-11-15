@@ -3,8 +3,6 @@
 // --- [NETWORK_FIX] IMPORT DNS ---
 const dns = require('dns');
 // --- [NETWORK_FIX] Force IPv4 DNS resolution first ---
-// This prevents 'getaddrinfo ENOTFOUND' errors on systems
-// that default to IPv6 but have issues with Node.js networking.
 dns.setDefaultResultOrder('ipv4first');
 console.log('[LOG] [NETWORK_FIX] Set DNS default result order to "ipv4first".');
 // --- [END NETWORK_FIX] ---
@@ -15,20 +13,23 @@ const multer = require('multer');
 const path = require('path');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
-const fs = require('fs'); // [BUG_5_FIX] Import fs for file deletion on error
+const fs = require('fs');
 require('dotenv').config();
 
 // --- [BLOCK 4] NEW IMPORTS ---
 const http = require('http'); // For socket.io
 const { Server } = require("socket.io"); // For socket.io
-// --- [END BLOCK 4] ---
+
+// --- [CASING_FIX] Import the file with the correct lowercase 'q' ---
+const QueueService = require('./services/QueueService.js');
+const logger = require('./utils/logger'); // Import logger
 
 const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js');
-const { processDocument } = require('./documentProcessor.js');
+// [WORKER_QUEUE_FIX] processDocument is no longer called by index.js
+// const { processDocument } = require('./documentProcessor.js'); 
 const { performRAG } = require('./searchService.js');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-// --- [TASK 9] Import authorize middleware ---
 const { protect, authorize } = require('./middleware/authMiddleware');
 
 // --- [NEW] IMPORT PRODUCT ROUTES ---
@@ -65,16 +66,21 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // --- [BLOCK 4] NEW HTTP SERVER & SOCKET.IO ---
-const server = http.createServer(app); // Create HTTP server from Express app
+const server = http.createServer(app); 
 const io = new Server(server, {
     cors: {
-        origin: "http://localhost:3000", // Allow frontend to connect
+        origin: "http://localhost:3000", 
         methods: ["GET", "POST"],
         credentials: true
     }
 });
 
 console.log('[LOG] [BLOCK_4] Socket.io server initialized.');
+
+// --- [WORKER_QUEUE_FIX] Give the io instance to the QueueService ---
+QueueService.init(io); 
+// --- [END WORKER_QUEUE_FIX] ---
+
 
 // Listen for new connections
 io.on('connection', (socket) => {
@@ -94,14 +100,11 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan('dev'));
 
-// --- [BLOCK 4] NEW MIDDLEWARE to attach IO to requests ---
-// This makes `req.io` available in all controller functions
 app.use((req, res, next) => {
     req.io = io;
     next();
 });
 console.log('[LOG] [BLOCK_4] Socket.io instance attached to request middleware.');
-// --- [END BLOCK 4] ---
 
 
 // --- NEW: SERVE STATIC FILES ---
@@ -114,8 +117,7 @@ console.log(`[LOG] Serving static files from public path '/storage' mapped to: $
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'storage/'),
     filename: (req, file, cb) => {
-        // --- [FIX] Safely access req.user.id ---
-        const userId = req.user?.id || 'unknown'; // Use optional chaining
+        const userId = req.user?.id || 'unknown'; 
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         cb(null, `user_${userId}_${uniqueSuffix}${path.extname(file.originalname)}`);
     }
@@ -126,42 +128,24 @@ const upload = multer({ storage });
 console.log('[LOG] Configuring API routes...');
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
-
-// --- [NEW] USE PRODUCT ROUTES ---
 app.use('/api/products', productRoutes);
 console.log('[LOG] /api/products routes configured.');
-// --- [END NEW] ---
-
-// --- [NEW] USE ROOM ROUTES ---
 app.use('/api/rooms', roomRoutes);
 console.log('[LOG] /api/rooms routes configured.');
-// --- [END NEW] ---
-
-// --- [JIT_REFACTOR] USE JIT ROUTES ---
 app.use('/api/jit', jitRequestRoutes);
 console.log('[LOG] [JIT_REFACTOR] /api/jit routes configured.');
-// --- [END JIT_REFACTOR] ---
-
-// --- [NEW] USE CLIENT ROUTES ---
 app.use('/api/clients', clientRoutes);
 console.log('[LOG] /api/clients routes configured.');
-// --- [END NEW] ---
-
-// --- [NEW] USE USER ROUTES ---
 app.use('/api/users', userRoutes);
 console.log('[LOG] /api/users routes configured.');
-// --- [END NEW] ---
 
 
 // --- MODIFIED /api/user ENDPOINT ---
-// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'
-// as any active user should be able to get their own info.
 app.get('/api/user', protect, (req, res) => {
     console.log(`[LOG] GET /api/user for user ID: ${req.user.id}`);
     const userId = req.user.id;
     const db = getDb();
     
-    // --- [BUG_FIX] Added u.product_id to the SELECT statement ---
     const sql = `
         SELECT u.id, u.email, u.picture_url, u.role, u.product_id, p.product_name 
         FROM users u
@@ -176,22 +160,20 @@ app.get('/api/user', protect, (req, res) => {
         }
         if (!user) {
             console.warn(`[WARN] GET /api/user: User not found for ID ${userId}.`);
-            return res.status(44).json({ message: "User not found." });
+            return res.status(404).json({ message: "User not found." });
         }
 
-        // --- MODIFICATION: Construct Full Picture URL ---
         const baseUrl = process.env.API_URL ? process.env.API_URL.replace('/api', '') : `http://localhost:${PORT}`;
         const fullPictureUrl = user.picture_url ? `${baseUrl}${user.picture_url}` : null;
         console.log(`[LOG] GET /api/user: Sending user data (Role: ${user.role}, Product: ${user.product_name})`);
-        // --- END MODIFICATION ---
 
         res.json({ 
             id: user.id, 
             email: user.email, 
-            pictureUrl: fullPictureUrl, // <-- Send the full, absolute URL
-            role: user.role, // <-- [NEW] Send user's role
-            product_id: user.product_id, // <-- [BUG_FIX] Send user's product_id
-            productName: user.product_name // <-- [NEW] Send user's product
+            pictureUrl: fullPictureUrl,
+            role: user.role, 
+            product_id: user.product_id, 
+            productName: user.product_name 
         });
     });
 });
@@ -200,121 +182,94 @@ app.get('/api/user', protect, (req, res) => {
 
 // --- PROTECTED ROUTES ---
 
-// --- [TASK 9] Document Upload Route (NOW USES authorize()) ---
-// --- [BUG_5_FIX] ADDED ROBUST ERROR HANDLING ---
+// --- [WORKER_QUEUE_FIX] Document Upload Route ---
 app.post(
     '/api/documents/upload/:roomId', 
     protect, 
-    authorize('Administrator', 'ProductOwner', 'CTO'), // [TASK 9 ATOMIC LOG] Added authorize()
+    authorize('Administrator', 'ProductOwner', 'CTO'),
     upload.array('documents', 10), 
     async (req, res) => {
         
-    const { roomId } = req.params;
-    console.log(`[LOG] POST /api/documents/upload/${roomId}: Received ${req.files ? req.files.length : 0} files from user ${req.user.id} (Role: ${req.user.role})`);
-    
-    if (!req.files || req.files.length === 0) {
-        console.warn('[WARN] POST /api/documents/upload: No files uploaded.');
-        return res.status(400).json({ error: 'No files uploaded.' });
-    }
-    if (!roomId) {
-        console.warn('[WARN] POST /api/documents/upload: No room ID provided.');
-        return res.status(400).json({ error: 'Room ID is required.' });
-    }
-    
-    const userId = req.user.id;
-    const db = getDb();
-    
-    // --- [TASK 9] DELETED old manual security check ---
-    // The 'authorize()' middleware now handles this.
-    // --- [END TASK 9] ---
-    
-    let documentIds = [];
-    // [BUG_5_FIX] We now handle errors on a per-file basis
-    for (const file of req.files) {
-        console.log(`[LOG] Processing file: ${file.originalname} for user ${userId} in room ${roomId}`);
+        const { roomId } = req.params;
+        const userId = req.user.id;
+        const { socketId } = req.body; 
+
+        // [CASING_FIX] Use logger (assuming it's available) or console.log
+        const log = logger || console;
         
-        try {
-            // Check for duplicates *within the same room*
-            const existingDoc = await new Promise((resolve, reject) => {
-                db.get('SELECT id FROM documents WHERE name = ? AND room_id = ?', [file.originalname, roomId], (err, row) => {
-                    if (err) reject(err);
-                    resolve(row);
-                });
-            });
-
-            if (existingDoc) {
-                console.warn(`[WARN] Upload stopped: Duplicate file "${file.originalname}" in room ${roomId}.`);
-                // [BUG_5_FIX] Throw an error to be caught by our new handler
-                throw new Error(`DuplicateFileError: ${file.originalname}`);
-            }
-
-            console.log(`[LOG] No duplicate found for "${file.originalname}". Processing document...`);
-            // [BUG_5_FIX] This await will now throw our custom errors
-            const chunksWithVectors = await processDocument(file.path);
-            
-            console.log(`[LOG] Document processed. Saving ${chunksWithVectors.length} chunks to DB and Chroma...`);
-            
-            // Pass the roomId to saveDocumentChunks
-            const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors, roomId);
-            documentIds.push(result.documentId);
-            console.log(`[LOG] File "${file.originalname}" saved with Document ID: ${result.documentId} to room ${roomId}`);
+        log.info(`[UPLOAD_ROUTE] POST /api/documents/upload/${roomId}: Received ${req.files ? req.files.length : 0} files from user ${userId}. Socket: ${socketId}`);
         
-        } catch (error) {
-            console.error(`[ERROR] [BUG_5_FIX] Failed to process file ${file.originalname} for user ${req.user.id}:`, error.message);
-
-            // [BUG_5_FIX] Clean up the failed upload from the /storage folder
-            try {
-                fs.unlinkSync(file.path);
-                console.log(`[BUG_5_FIX] Cleaned up failed upload: ${file.path}`);
-            } catch (unlinkErr) {
-                console.error(`[ERROR] [BUG_5_FIX] CRITICAL: Failed to clean up file ${file.path}:`, unlinkErr.message);
-            }
-
-            // [BUG_5_FIX] Send specific, user-friendly error messages
-            if (error.message === "PasswordProtectedError") {
-                return res.status(400).json({ message: `Upload failed: "${file.originalname}" is password-protected.` });
-            }
-            if (error.message === "CorruptedFileError") {
-                return res.status(400).json({ message: `Upload failed: "${file.originalname}" is corrupted, empty, or unreadable.` });
-            }
-            if (error.message.startsWith("DuplicateFileError:")) {
-                const filename = error.message.split(': ')[1];
-                return res.status(409).json({ message: `Upload failed: A document named "${filename}" already exists in this room.` });
-            }
-            
-            // Fallback for generic errors
-            return res.status(500).json({ message: `A file could not be processed: ${file.originalname}`, details: error.message });
+        if (!req.files || req.files.length === 0) {
+            log.warn('[UPLOAD_ROUTE] No files uploaded.');
+            return res.status(400).json({ error: 'No files uploaded.' });
         }
-    }
-    
-    // [BUG_5_FIX] If all files processed successfully
-    console.log(`[LOG] [BUG_5_FIX] Batch upload complete. ${documentIds.length} files saved.`);
-    res.status(201).json({ message: `Success`, documentIds });
-});
-// --- [END BUG_5_FIX] ---
+        if (!roomId) {
+            log.warn('[UPLOAD_ROUTE] No room ID provided.');
+            return res.status(400).json({ error: 'Room ID is required.' });
+        }
+        if (!socketId) {
+            log.warn('[UPLOAD_ROUTE] No socketId provided.');
+            return res.status(400).json({ error: 'Socket ID is required for progress updates.' });
+        }
+        
+        const db = getDb();
+        const jobsAdded = [];
 
-// --- [MODIFIED] Search Endpoint (now room-aware) ---
-// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'
-// as any active user (User, Admin, PO, CTO) should be able to search.
-// Access to the *room itself* will be checked later.
+        for (const file of req.files) {
+            log.debug(`[UPLOAD_ROUTE] Checking duplicate for: ${file.originalname}`);
+            try {
+                const existingDoc = await new Promise((resolve, reject) => {
+                    db.get('SELECT id FROM documents WHERE name = ? AND room_id = ?', [file.originalname, roomId], (err, row) => {
+                        if (err) reject(err);
+                        resolve(row);
+                    });
+                });
+
+                if (existingDoc) {
+                    log.warn(`[UPLOAD_ROUTE] Duplicate file "${file.originalname}" in room ${roomId}. Skipping.`);
+                    fs.unlinkSync(file.path);
+                } else {
+                    const jobData = {
+                        filePath: file.path,
+                        originalName: file.originalname,
+                        userId: userId,
+                        roomId: roomId,
+                        socketId: socketId
+                    };
+                    await QueueService.addDocumentJob(jobData);
+                    jobsAdded.push(jobData);
+                    log.info(`[UPLOAD_ROUTE] Queued job for: ${file.originalname}`);
+                }
+
+            } catch (error) {
+                log.error(`[UPLOAD_ROUTE] Error checking duplicate for ${file.originalname}:`, error);
+                fs.unlinkSync(file.path);
+            }
+        }
+        
+        log.info(`[UPLOAD_ROUTE] Batch upload complete. ${jobsAdded.length} new jobs queued.`);
+        
+        res.status(202).json({ 
+            message: `Upload received. ${jobsAdded.length} new documents are being processed in the background.`,
+            jobsQueued: jobsAdded.length
+        });
+    }
+);
+// --- [END WORKER_QUEUE_FIX] ---
+
+
+// --- [MODIFIED] Search Endpoint (unchanged from your file) ---
 app.post('/api/search/:roomId', protect, async (req, res) => {
-    // 1. Get roomId from params
     const { roomId } = req.params;
     if (!roomId) {
         return res.status(400).json({ error: 'Room ID is required.' });
     }
-
-    // 2. Destructure conversationId from the request body
     const { query, history, conversationId } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required.' });
 
-    // 3. Added log
     console.log(`[LOG] POST /api/search/${roomId}: Received search for Convo ID: ${conversationId || 'new'} by user ${req.user.id}`);
 
-    // TODO: Add validation here to ensure user (req.user.id) has access to this roomId
-
     try {
-        // 4. Pass conversationId AND roomId to performRAG
         const ragResult = await performRAG(req.user.id, query, history, conversationId, roomId);
         res.status(200).json(ragResult);
     } catch (error) {
@@ -324,9 +279,7 @@ app.post('/api/search/:roomId', protect, async (req, res) => {
 });
 // --- [END MODIFIED] ---
 
-// --- [MODIFIED] Get Single Document (for PDF Viewer) ---
-// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'.
-// Any active user who has access to a room (and thus the doc ID) should be able to view it.
+// --- [MODIFIED] Get Single Document (unchanged from your file) ---
 app.get('/api/documents/download/:id', protect, (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
@@ -346,18 +299,13 @@ app.get('/api/documents/download/:id', protect, (req, res) => {
 });
 // --- [END MODIFIED] ---
 
-// --- [MODIFIED] Get Document List (now room-aware) ---
-// [TASK 9 ATOMIC LOG] This endpoint is fine with just 'protect'.
-// Any active user who has access to a room should be able to list its documents.
+// --- [MODIFIED] Get Document List (unchanged from your file) ---
 app.get('/api/documents/list/:roomId', protect, (req, res) => {
     const { roomId } = req.params;
     const userId = req.user.id;
     const db = getDb();
     console.log(`[LOG] GET /api/documents/list/${roomId}: Fetching document list for user ${userId} in room ${roomId}`);
 
-    // TODO: Add validation to ensure user has access to this room
-
-    // --- [MODIFIED] SQL query is now room-specific, *not* user-specific ---
     const sql = `SELECT id, name FROM documents WHERE room_id = ? ORDER BY uploaded_at DESC`;
     const params = [roomId];
 
@@ -378,11 +326,9 @@ console.log('[LOG] Initializing database...');
 initializeDatabase()
     .then(() => {
         console.log('[LOG] Database initialized successfully.');
-        // --- [BLOCK 4] MODIFIED: Use server.listen instead of app.listen ---
         server.listen(PORT, () => {
             console.log(`[LOG] [BLOCK_4] Backend server (with Socket.io) is running on http://localhost:${PORT}`);
         });
-        // --- [END BLOCK 4] ---
     })
     .catch(err => {
         console.error("[FATAL] Failed to initialize database:", err);

@@ -4,29 +4,30 @@ import { useState, useEffect, useCallback } from 'react'; // Import useCallback
 import {
     getPendingProducts,
     getAllProducts,
-    getIncomingRequests,     // Renamed to incomingRoomRequests
-    getOutgoingRequests,     // Renamed to outgoingRoomRequests
+    getIncomingRequests, 
+    getOutgoingRequests, 
     getPendingUsers,
     getIncomingPeerRequests,
-    getOutgoingPeerRequests  // --- [BADGE_FIX] 1. Import outgoing peer requests ---
+    getOutgoingPeerRequests 
 } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
+// [FIX 1] Import both 'socket' and 'isConnected' from the context
 import { useSocket } from '../../../context/SocketContext';
 
 export const useDashboardData = (setToast) => {
     const { user } = useAuth();
-    const socket = useSocket(); 
+    // [FIX 1] Destructure 'socket' and 'isConnected'
+    const { socket, isConnected } = useSocket(); 
     
     const [isLoading, setIsLoading] = useState(true);
     const [products, setProducts] = useState([]);
     const [pendingProducts, setPendingProducts] = useState([]);
     const [pendingUsers, setPendingUsers] = useState([]);
     
-    // --- [BADGE_FIX] 2. Rename JIT states for clarity ---
     const [incomingRoomRequests, setIncomingRoomRequests] = useState([]);
     const [outgoingRoomRequests, setOutgoingRoomRequests] = useState([]);
     const [incomingPeerRequests, setIncomingPeerRequests] = useState({ productRequests: [], clientRequests: [] });
-    const [outgoingPeerRequests, setOutgoingPeerRequests] = useState([]); // --- [BADGE_FIX] 3. Add new state ---
+    const [outgoingPeerRequests, setOutgoingPeerRequests] = useState([]); 
 
 
     const loadDashboardData = useCallback(async () => {
@@ -42,7 +43,6 @@ export const useDashboardData = (setToast) => {
         const isPeerManager = user.role === 'ProductOwner' || user.role === 'Administrator';
 
         const fetchesToRun = {
-            // --- [BADGE_FIX] 4. Update fetch list with new names and new fetch ---
             outgoingRoomRequests: getOutgoingRequests(),
             pendingProducts: user.role === 'CTO' ? getPendingProducts() : Promise.resolve(null),
             products: getAllProducts(), 
@@ -54,7 +54,6 @@ export const useDashboardData = (setToast) => {
 
         try {
             const results = await Promise.all(Object.values(fetchesToRun));
-            // --- [BADGE_FIX] 5. Update destructuring ---
             const [
                 outgoingRoomReqData,
                 pendingProdData,
@@ -65,7 +64,6 @@ export const useDashboardData = (setToast) => {
                 outgoingPeerReqData 
             ] = results;
 
-            // --- [BADGE_FIX] 6. Update state setters ---
             if (outgoingRoomReqData) setOutgoingRoomRequests(outgoingRoomReqData.data);
             if (pendingProdData) setPendingProducts(pendingProdData.data);
             if (productsData) setProducts(productsData.data); 
@@ -83,7 +81,7 @@ export const useDashboardData = (setToast) => {
             setIsLoading(false);
             console.log('[useDashboardData] Finished all fetches, setting loading to false.');
         }
-    }, [user, setToast]); // Add dependencies here
+    }, [user, setToast]); 
 
     useEffect(() => {
         loadDashboardData();
@@ -95,7 +93,9 @@ export const useDashboardData = (setToast) => {
     }, [loadDashboardData]);
 
     useEffect(() => {
-        if (socket) {
+        // [FIX 2] Use the 'isConnected' flag as the guard.
+        // This ensures the socket is fully connected and has '.on'
+        if (socket && isConnected) {
             console.log('[useDashboardData] [SOCKET] Setting up socket listeners...');
             
             const handleDataUpdate = (eventType) => {
@@ -105,7 +105,6 @@ export const useDashboardData = (setToast) => {
 
             const handleProductUpdate = () => handleDataUpdate('PRODUCT_LIST_UPDATED');
             const handleUserUpdate = () => handleDataUpdate('USER_LIST_UPDATED');
-            // --- [BADGE_FIX] 7. Rename socket handler for clarity ---
             const handleRoomJitUpdate = () => handleDataUpdate('JIT_REQUEST_UPDATED');
             const handleRoomUpdate = () => handleDataUpdate('ROOM_LIST_UPDATED');
             const handleHierarchyUpdate = () => handleDataUpdate('HIERARCHY_UPDATED');
@@ -133,19 +132,18 @@ export const useDashboardData = (setToast) => {
         } else {
             console.log('[useDashboardData] [SOCKET] Socket not ready, skipping listener setup.');
         }
-    }, [socket, refreshData]);
-    // --- [END BLOCK 4] ---
+    // [FIX 3] Add 'isConnected' to the dependency array
+    }, [socket, isConnected, refreshData]);
 
     return {
         isLoading,
         products, 
         pendingProducts,
-        // --- [BADGE_FIX] 8. Return all new states with clear names ---
-        incomingRoomRequests,   // Formerly incomingRequests
-        outgoingRoomRequests,   // Formerly outgoingRequests
+        incomingRoomRequests, 
+        outgoingRoomRequests, 
         pendingUsers, 
         incomingPeerRequests,
-        outgoingPeerRequests,   // New
+        outgoingPeerRequests, 
         refreshData 
     };
 };

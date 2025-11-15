@@ -5,27 +5,22 @@ import { useNavigate } from 'react-router-dom';
 import { FiLock, FiEye, FiEdit2, FiSend, FiClock, FiAlertTriangle, FiArrowLeft } from 'react-icons/fi'; 
 import SendDownstreamModal from '../../modals/SendDownstreamModal';
 import EditRoomModal from '../../modals/EditRoomModal'; 
-// --- [BLOCK 6] Import new API functions ---
 import { 
     getTeam, 
     sendDownstream, 
     getUsersForAdmin, 
     editRoomPassword, 
-    getRoomsForClient, // <-- Fetches rooms for a client
-    getRooms, // <-- Fallback for 'User' role
-    requestAccess, // <-- For locked rooms
+    getRoomsForClient, 
+    getRooms, 
+    requestAccess, 
     editRequest
 } from '../../../services/api'; 
+// [FIX 1] Import 'isConnected' from the useSocket hook
 import { useSocket } from '../../../context/SocketContext';
 import LoadingSpinner from '../../LoadingSpinner';
-import RequestAccessModal from '../../modals/RequestAccessModal'; // For locked rooms
-import RoomPasswordModal from '../../modals/RoomPasswordModal'; // --- [NEW] Import password modal ---
+import RequestAccessModal from '../../modals/RequestAccessModal'; 
+import RoomPasswordModal from '../../modals/RoomPasswordModal'; 
 
-/**
- * Calculates the time left until an expiry date.
- * @param {string} expiresAt - The ISO string of the expiry date.
- * @returns {{text: string, expired: boolean}}
- */
 const calculateTimeLeft = (expiresAt) => {
     const now = new Date();
     const expiry = new Date(expiresAt);
@@ -51,24 +46,22 @@ const calculateTimeLeft = (expiresAt) => {
 };
 
 
-// --- [BLOCK 6] Overhauled to fetch its own data ---
 const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => { 
-    const socket = useSocket();
+    // [FIX 1] Destructure 'socket' AND 'isConnected'
+    const { socket, isConnected } = useSocket();
     const navigate = useNavigate();
     
-    // --- [BUG_FIX] State is now internal to this component ---
     const [rooms, setRooms] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
 
     const [isDownstreamModalOpen, setIsDownstreamModalOpen] = useState(false);
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-    const [isRequestAccessModalOpen, setIsRequestAccessModalOpen] = useState(false); // For room JIT
-    const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false); // --- [NEW] State for password modal ---
+    const [isRequestAccessModalOpen, setIsRequestAccessModalOpen] = useState(false);
+    const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState(null);
     const [jitTimes, setJitTimes] = useState({});
     
-    // --- [BUG_FIX] Fetches its own room data ---
     const fetchRooms = useCallback(async () => {
         if (!user) return;
         
@@ -79,17 +72,14 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         try {
             let response;
             if (user.role === 'User') {
-                // Users get their flat list of rooms
                 console.log(`[RoomCardsSection] User role detected. Calling getRooms().`);
                 response = await getRooms();
             } else if (client?.id) {
-                // Admins, POs, and CTOs get rooms for a specific client
                 console.log(`[RoomCardsSection] Client prop found. Calling getRoomsForClient(${client.id}).`);
                 response = await getRoomsForClient(client.id);
             } else if (user.role === 'Administrator' && !client?.id) {
-                // Admin's initial view (no client selected yet)
                 console.log(`[RoomCardsSection] Admin role with no client. Waiting for client selection.`);
-                setRooms([]); // Show no rooms until a client is clicked
+                setRooms([]); 
                 setIsLoading(false);
                 return;
             } else {
@@ -109,7 +99,7 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         } finally {
             setIsLoading(false);
         }
-    }, [user, client, setToast]); // 'client' is now a dependency
+    }, [user, client, setToast]); 
 
     // Initial data fetch
     useEffect(() => {
@@ -118,7 +108,8 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
 
     // Socket.io listener
     useEffect(() => {
-        if (socket) {
+        // [FIX 2] Add 'isConnected' to the guard clause
+        if (socket && isConnected) {
             const handleRefresh = () => {
                 console.log("[RoomCardsSection] [SOCKET] Received update. Refreshing rooms.");
                 fetchRooms();
@@ -126,7 +117,7 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
             
             socket.on('HIERARCHY_UPDATED', handleRefresh);
             socket.on('ROOM_LIST_UPDATED', handleRefresh);
-            socket.on('JIT_REQUEST_UPDATED', handleRefresh); // For room JIT updates
+            socket.on('JIT_REQUEST_UPDATED', handleRefresh); 
 
             return () => {
                 socket.off('HIERARCHY_UPDATED', handleRefresh);
@@ -134,7 +125,8 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
                 socket.off('JIT_REQUEST_UPDATED', handleRefresh);
             };
         }
-    }, [socket, fetchRooms]);
+    // [FIX 3] Add 'isConnected' to the dependency array
+    }, [socket, isConnected, fetchRooms]);
     
     // JIT Timer Effect
     useEffect(() => {
@@ -164,7 +156,7 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         }, 1000); 
 
         return () => clearInterval(timer);
-    }, [rooms, fetchRooms]); // Use fetchRooms as the stable refresh function
+    }, [rooms, fetchRooms]);
 
 
     const handleJoinRoom = (room) => {
@@ -173,11 +165,9 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         const hasJitAccess = !!(room.expires_at || room.jit_expires_at);
 
         if (room.isPasswordProtected && !hasJitAccess) { 
-            // --- [NEW] Open elegant password modal ---
             console.log('[RoomCardsSection] Room is password protected. Opening password modal.');
             setSelectedRoom(room);
             setIsPasswordModalOpen(true);
-            // --- [END NEW] ---
         } else {
             if (hasJitAccess) {
                 console.log(`[RoomCardsSection] [BLOCK_3] Joining room via JIT access.`);
@@ -188,7 +178,6 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         }
     };
 
-    // --- [NEW] Handler for the password modal ---
     const handlePasswordSubmit = (password) => {
         console.log(`[RoomCardsSection] Password submitted. Navigating to /chat/${selectedRoom.id} with password in state.`);
         navigate(`/chat/${selectedRoom.id}`, { state: { password: password } });
@@ -196,7 +185,6 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
         setSelectedRoom(null);
     };
 
-    // --- [BLOCK 6] New handler for locked rooms ---
     const handleRequestAccess = (room) => {
         console.log(`[RoomCardsSection] [BLOCK_6] Opening Room JIT modal for room:`, room.name);
         setSelectedRoom(room);
@@ -234,7 +222,6 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
 
     return (
         <>
-            {/* --- [BLOCK 6] Navigation Header --- */}
             <div className="flex items-center mb-6">
                 {onBack && (
                     <button
@@ -251,7 +238,6 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
                     Rooms for <span className="text-blue-600 dark:text-blue-400">{client.name}</span>
                 </h2>
             )}
-            {/* --- [END BLOCK 6] --- */}
 
             {rooms.length === 0 ? (
                 <div className="text-center text-gray-500 dark:text-gray-400 mt-10">
@@ -378,7 +364,6 @@ const RoomCardsSection = ({ client, onBack, user, setToast, refreshData }) => {
                         api={{ requestAccess, editRequest }}
                         initialRoomCode={selectedRoom.room_code}
                     />
-                    {/* --- [NEW] Render the password modal --- */}
                     <RoomPasswordModal
                         isOpen={isPasswordModalOpen}
                         onClose={() => {

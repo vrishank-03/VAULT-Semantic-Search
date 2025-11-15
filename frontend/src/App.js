@@ -3,33 +3,31 @@
 
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Outlet, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeProvider } from './context/ThemeContext';
+// [FIX] AuthProvider is no longer needed here
+import { useAuth } from './context/AuthContext';
+// [FIX] ThemeProvider is no longer needed here
 
 // Pages
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import Dashboard from './pages/Dashboard';
 import ResetPasswordPage from './pages/ResetPasswordPage';
-import ChatRoomPage from './pages/ChatRoomPage';
+// [FIX] Use the new ChatRoomPage index file
+import ChatRoomPage from './pages/ChatRoomPage'; 
 
 // Components
 import PrivateRoute from './components/PrivateRoute';
-// --- [NEW] Import the new layout ---
 import AppLayout from './AppLayout'; 
-// --- [REMOVED] Navbar is no longer used in this core routing ---
-// import Navbar from './components/Navbar'; 
 
 
 function App() {
     return (
-        <AuthProvider>
-            <ThemeProvider>
-                <Router>
-                    <AppContent />
-                </Router>
-            </ThemeProvider>
-        </AuthProvider>
+        /* [FIX] Removed redundant AuthProvider and ThemeProvider.
+          They are now correctly placed in index.js.
+        */
+        <Router>
+            <AppContent />
+        </Router>
     );
 }
 
@@ -53,9 +51,9 @@ const AppContent = () => {
 
             {/* Private Routes */}
             <Route element={<PrivateRoute />}>
-                {/* --- [MODIFIED] All auth'd routes now render inside AppLayout --- */}
                 <Route element={<AppLayout />}>
                     <Route path="/dashboard" element={<Dashboard />} />
+                    {/* [FIX] Ensure this path points to your new component index */}
                     <Route path="/chat/:roomId" element={<ChatRoomPage />} />
                 </Route>
             </Route>
