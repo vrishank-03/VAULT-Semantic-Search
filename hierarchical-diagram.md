@@ -32,6 +32,44 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │   ├── uploads/                                # temporary raw file uploads (empty)
 │   ├── ml_env/                                 # Python virtual environment for ML (not tracked in repo)
 │   │   ├── pyvenv.cfg
+## VAULT-Semantic-Search — Hierarchical Diagram (LATEST - November 15, 2025)
+
+This is a completely accurate and up-to-date hierarchical view of the repository including ALL tracked, modified, and untracked files as of the current `feat/ragRefactor_phase2` branch.
+
+**Legend:**
+- **(M)** = Modified file (unstaged or changed)
+- **(N)** = New / Untracked file
+- **(D)** = Deleted file (removed in working tree)
+- **[Branch]** = feat/ragRefactor_phase2
+
+. (project root)
+├── LICENSE
+├── README.md
+├── .gitignore
+├── hierarchical-diagram.md                     # (M) this file (updated)
+├── backend/
+│   ├── .env                                    # local env file
+│   ├── check_models.js                         # model-check helper script
+│   ├── clear_chroma_collection.js              # ChromaDB collection cleanup
+│   ├── credentials.js                          # credentials/secrets management
+│   ├── database.js                             # (M) manages sqlite connection & schema
+│   ├── db_test.js                              # database tests
+│   ├── documentProcessor.js                    # (M) PDF parsing & chunking utility
+│   ├── embedder.py                             # (M) Python embedding service
+│   ├── index.js                                # (M) Express app / server entry point
+│   ├── ml_runner.js                            # (M) spawns/coordinates ML workers
+│   ├── package.json                            # (M) backend dependencies & scripts
+│   ├── package-lock.json                       # (M) locked dependency versions
+│   ├── parser.py                               # (N) new parser utility (untracked)
+│   ├── pipeline_test.py                        # ML pipeline tests
+│   ├── query_chroma.js                         # ChromaDB query interface
+│   ├── searchService.js                        # semantic search orchestration
+│   ├── vault.db                                # SQLite database (metadata)
+│   ├── vault.db-shm                            # (N) SQLite ephemeral file
+│   ├── vault.db-wal                            # (N) SQLite ephemeral file
+│   ├── uploads/                                # temporary raw file uploads
+│   ├── ml_env/                                 # Python virtual environment for ML (not tracked)
+│   │   ├── pyvenv.cfg
 │   │   ├── .gitignore
 │   │   ├── Include/
 │   │   ├── Lib/
@@ -65,18 +103,19 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │   │   └── userRoutes.js                       # user routes
 │   ├── services/
 │   │   ├── accessService.js                    # access control service
-│   │   ├── ChatHistoryService.js               # (N) chat history management
+│   │   ├── ChatHistoryService.js               # chat history management
 │   │   ├── emailService.js                     # email notification service
-│   │   ├── FormattingService.js                # (N) text formatting utilities for RAG
-│   │   ├── GenerationService.js                # (N) response generation service
+│   │   ├── FormattingService.js                # (M) text formatting utilities
+│   │   ├── GenerationService.js                # (M) response generation service
 │   │   ├── logService.js                       # logging service
-│   │   ├── RAGPipelineService.js               # (N) RAG pipeline orchestration
-│   │   ├── RetrievalService.js                 # (N) document retrieval service
+│   │   ├── QueueService.js                     # (N) queue helper (untracked)
+│   │   ├── RAGPipelineService.js               # (M) RAG pipeline orchestration
+│   │   ├── RetrievalService.js                 # document retrieval service
 │   │   ├── roomService.js                      # room management service
-│   │   └── VectorDBService.js                  # (N) vector database abstraction layer
+│   │   └── VectorDBService.js                  # (M) vector database abstraction layer
 │   ├── utils/
-│   │   ├── logger.js                           # (N) centralized logging utility
-│   │   ├── promptTemplates.js                  # (N) prompt templates for LLM
+│   │   ├── logger.js                           # centralized logging utility
+│   │   ├── promptTemplates.js                  # (M) prompt templates for LLM
 │   │   └── roomUtils.js                        # room utility functions (code generation, etc)
 │   ├── storage/
 │   │   ├── profile_images/
@@ -117,7 +156,7 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │   │   ├── user_1_1757222678691-741393591.pdf
 │   │   ├── user_1_1757225084726-279148904.pdf
 │   │   ├── user_1_1757225262847-581654687.pdf
-│   │   ├── user_1_1757227257268-730333.pdf
+│   │   ├── user_1_1757227257268-730703333.pdf
 │   │   ├── user_1_1757227374056-655745571.pdf
 │   │   ├── user_1_1757235456375-237158943.pdf
 │   │   ├── user_1_1757235803329-367064309.pdf
@@ -136,25 +175,29 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │   │   ├── user_1_1759658838303-81585284.pdf
 │   │   ├── user_1_1759658865806-141835340.pdf
 │   │   ├── user_1_1759658881924-162893665.pdf
-│   │   ├── user_1_1759658898940-340893.pdf
+│   │   ├── user_1_1759658898940-340093893.pdf
 │   │   ├── user_1_1759658965942-330856224.pdf
 │   │   ├── user_1_1759834833881-489334665.pdf
 │   │   ├── user_1_1761039607798-788269509.pdf
 │   │   ├── user_1_1761124820117-836203239.pdf
-│   │   ├── user_1_1761124855952-217824.pdf
+│   │   ├── user_1_1761124855952-217298884.pdf
 │   │   ├── user_1_1761640797545-985320182.pdf
 │   │   ├── user_1_1761663670574-223601038.pdf
+│   │   ├── user_1_1763181679935-372960162.pdf    # (N) new upload
+│   │   ├── user_1_1763183700897-822228621.pdf    # (N) new upload
+│   │   ├── user_1_1763183726367-83432470.pdf     # (N) new upload
+│   │   ├── user_1_1763183770189-370856357.pdf    # (N) new upload
 │   │   ├── user_2_1757405936549-603113401.pdf
 │   │   ├── user_2_1757405969856-136517443.pdf
-│   │   ├── user_2_1757409904439-209828.pdf
+│   │   ├── user_2_1757409904439-209980828.pdf
 │   │   ├── user_2_1757410942276-475222890.pdf
-│   │   ├── user_2_1757411708436-641028.pdf
+│   │   ├── user_2_1757411708436-641166028.pdf
 │   │   ├── user_2_1757413014131-14257980.pdf
 │   │   ├── user_2_1757413370042-304516305.pdf
-│   │   ├── user_2_1757516273015-499381.pdf
+│   │   ├── user_2_1757516273015-499186381.pdf
 │   │   ├── user_2_1757516373951-562132871.pdf
-│   │   ├── user_3_1762858345720-308380231.pdf           # (N) new user_3 document
-│   │   ├── user_3_1762864639733-118183903.pdf           # (N) new user_3 document
+│   │   ├── user_3_1762858345720-308380231.pdf
+│   │   ├── user_3_1762864639733-118183903.pdf
 │   │   ├── user_5_1757247452803-960173528.pdf
 │   │   ├── user_5_1757247554335-582342896.pdf
 │   │   ├── user_5_1757247554337-105336842.pdf
@@ -166,46 +209,29 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │   ├── .gitignore
 │   ├── package.json                            # frontend dependencies & build scripts
 │   ├── package-lock.json                       # locked dependency versions
-│   ├── postcss.config.js                       # PostCSS configuration
++│   ├── postcss.config.js                       # PostCSS configuration
 │   ├── tailwind.config.js                      # Tailwind CSS configuration
 │   ├── README.md                               # frontend readme
 │   ├── public/
-│   │   ├── index.html                          # main HTML entry point
-│   │   ├── manifest.json                       # PWA manifest
-│   │   ├── pdf.worker.min.js                   # PDF.js worker script
-│   │   ├── robots.txt                          # SEO robots file
-│   │   ├── site.webmanifest                    # web app manifest
 │   │   ├── android-chrome-192x192.png
 │   │   ├── android-chrome-512x512.png
 │   │   ├── apple-touch-icon.png
 │   │   ├── favicon-16x16.png
 │   │   ├── favicon-32x32.png
+│   │   ├── index.html                          # main HTML entry point
 │   │   ├── logo192.png
-│   │   └── logo512.png
+│   │   ├── logo512.png
+│   │   ├── manifest.json                       # PWA manifest
+│   │   ├── pdf.worker.min.js                   # PDF.js worker script
+│   │   ├── robots.txt                          # SEO robots file
+│   │   └── site.webmanifest                    # web app manifest
 │   └── src/
 │       ├── App.css                             # main app styles
 │       ├── App.js                              # (M) main React component
 │       ├── App.test.js                         # app tests
-│       ├── AppLayout.js                        # (N) app layout wrapper component
-│       ├── Toast.css                           # toast notification styles
-│       ├── Toast.js                            # toast notification component
-│       ├── index.css                           # global styles
-│       ├── index.js                            # (M) React app entry point
-│       ├── PdfViewer.js                        # PDF viewer component
-│       ├── ProtectedRoute.js                   # route protection wrapper
-│       ├── reportWebVitals.js                  # performance metrics
-│       ├── setupTests.js                       # test configuration
-│       ├── logo.svg                            # logo asset
+│       ├── AppLayout.js                        # app layout wrapper component
 │       ├── assets/
 │       │   └── logo.png                        # logo image
-│       ├── services/
-│       │   └── api.js                          # central axios API client with all endpoints
-│       ├── pages/
-│       │   ├── ChatRoomPage.js                 # (M) chat room UI page
-│       │   ├── Dashboard.js                    # (M) main dashboard page
-│       │   ├── LoginPage.js                    # login/authentication page
-│       │   ├── ResetPasswordPage.js            # password reset page
-│       │   └── SignupPage.js                   # user signup page
 │       ├── components/
 │       │   ├── AuthLayout.js                   # authentication layout wrapper
 │       │   ├── GenericSuccessAnimation.js      # success animation component
@@ -219,7 +245,7 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │       │   ├── ThemeToggleButton.js            # dark/light theme toggle
 │       │   ├── ThinkingAnimation.js            # AI thinking animation
 │       │   ├── Typewriter.js                   # typewriter text effect
-│       │   ├── UserSettingsMenu.js             # (N) user settings dropdown menu
+│       │   ├── UserSettingsMenu.js             # user settings dropdown menu
 │       │   ├── modals/
 │       │   │   ├── AssignClientModal.js        # client assignment modal
 │       │   │   ├── ConfirmModal.js             # reusable confirmation modal
@@ -236,59 +262,110 @@ This is a completely accurate and up-to-date hierarchical view of the repository
 │       │       ├── DashboardHeader.js          # (M) dashboard header with action buttons
 │       │       ├── DashboardTabs.js            # dashboard tab navigation
 │       │       ├── hooks/
-│       │       │   ├── useDashboardData.js     # custom hook for dashboard data fetching
-│       │       │   ├── useOnClickOutside.js    # (N) custom hook for click-outside detection
+│       │       │   ├── useDashboardData.js     # (M) custom hook for dashboard data fetching
+│       │       │   ├── useOnClickOutside.js    # custom hook for click-outside detection
 │       │       │   └── useProductManagement.js # custom hook for product management
 │       │       └── sections/
-│       │           ├── ClientCardsSection.js   # client cards display section
+│       │           ├── ClientCardsSection.js   # (M) client cards display section
 │       │           ├── ManageProductsSection.js # product management section
 │       │           ├── OutgoingPeerRequestsSection.js # outgoing peer requests section
 │       │           ├── OutgoingRequestsSection.js # outgoing room requests section
 │       │           ├── PendingProductsSection.js # pending product approvals section
 │       │           ├── ProductCardsSection.js  # product cards display section
-│       │           └── RoomCardsSection.js     # room cards display section
+│       │           └── RoomCardsSection.js     # (M) room cards display section
 │       ├── context/
 │       │   ├── AuthContext.js                  # authentication context & state
-│       │   ├── LayoutContext.js                # (N) layout/UI state context
-│       │   ├── SocketContext.js                # Socket.io context provider
+│       │   ├── LayoutContext.js                # layout/UI state context
+│       │   ├── SocketContext.js                # (M) Socket.io context provider
 │       │   └── ThemeContext.js                 # theme context & dark/light mode
+│       ├── index.css                           # global styles
+│       ├── index.js                            # (M) React app entry point
+│       ├── pages/
+│       │   ├── ChatRoomPage/                   # (N) replaced ChatRoomPage.js with directory (untracked)
+│       │   │   ├── index.js
+│       │   │   ├── components/
+│       │   │   │   ├── ChatHeader/index.js
+│       │   │   │   ├── ChatInput/index.js
+│       │   │   │   ├── DocumentLibraryModal/index.js
+│       │   │   │   ├── MessageBubble/index.js
+│       │   │   │   └── MessageList/index.js
+│       │   │   ├── hooks/
+│       │   │   │   ├── useChatStream.js
+│       │   │   │   ├── useConversations.js
+│       │   │   │   ├── useDocuments.js
+│       │   │   │   ├── useFileUpload.js
+│       │   │   │   └── useRoomAccess.js
+│       │   │   └── utils/
+│       │   │       ├── messageUtils.js
+│       │   │       └── socketEvents.js
+│       │   ├── Dashboard.js                    # (M) main dashboard page
+│       │   ├── LoginPage.js                    # login/authentication page
+│       │   ├── ResetPasswordPage.js            # password reset page
+│       │   └── SignupPage.js                   # user signup page
+│       ├── PdfViewer.js                        # PDF viewer component
+│       ├── ProtectedRoute.js                   # route protection wrapper
+│       ├── reportWebVitals.js                  # performance metrics
+│       ├── services/
+│       │   └── api.js                          # (M) central axios API client with all endpoints
+│       ├── setupTests.js                       # test configuration
 │       └── utils/
 │           └── gravatar.js                     # gravatar URL generation utility
 
 ---
 
-## Summary of Changes (feat/ragRefactor branch)
+## Summary of Changes (feat/ragRefactor_phase2 branch)
 
 ### Modified Files (M):
-- `hierarchical-diagram.md` - This file
-- `backend/controllers/chatController.js` - Chat handler updates
-- `backend/routes/chatRoutes.js` - Chat routing updates
-- `backend/searchService.js` - Search service refactoring
-- `frontend/src/App.js` - App component updates
-- `frontend/src/components/Sidebar.js` - Sidebar refactoring
-- `frontend/src/components/dashboard/DashboardHeader.js` - Dashboard header updates
-- `frontend/src/pages/ChatRoomPage.js` - Chat room page updates
-- `frontend/src/pages/Dashboard.js` - Dashboard page updates
+- `backend/controllers/chatController.js`
+- `backend/database.js`
+- `backend/documentProcessor.js`
+- `backend/embedder.py`
+- `backend/index.js`
+- `backend/ml_runner.js`
+- `backend/package.json`
+- `backend/package-lock.json`
+- `backend/routes/chatRoutes.js`
+- `backend/services/FormattingService.js`
+- `backend/services/GenerationService.js`
+- `backend/services/RAGPipelineService.js`
+- `backend/services/VectorDBService.js`
+- `backend/utils/promptTemplates.js`
+- `frontend/src/App.js`
+- `frontend/src/components/dashboard/hooks/useDashboardData.js`
+- `frontend/src/components/dashboard/sections/ClientCardsSection.js`
+- `frontend/src/components/dashboard/sections/RoomCardsSection.js`
+- `frontend/src/context/SocketContext.js`
+- `frontend/src/index.js`
+- `frontend/src/services/api.js`
 
-### New/Untracked Files (N):
-**Backend Services (RAG Pipeline):**
-- `backend/services/ChatHistoryService.js` - Chat history management
-- `backend/services/FormattingService.js` - Text formatting utilities
-- `backend/services/GenerationService.js` - Response generation
-- `backend/services/RAGPipelineService.js` - RAG orchestration
-- `backend/services/RetrievalService.js` - Document retrieval
-- `backend/services/VectorDBService.js` - Vector DB abstraction
+### Deleted / Replaced:
+- `frontend/src/pages/ChatRoomPage.js` -> replaced by `frontend/src/pages/ChatRoomPage/` directory (new modular implementation)
 
-**Backend Utilities:**
-- `backend/utils/logger.js` - Centralized logging
-- `backend/utils/promptTemplates.js` - LLM prompt templates
+### New / Untracked Files (N):
+- `backend/parser.py`
+- `backend/services/QueueService.js`
+- `backend/vault.db-shm` (SQLite ephemeral)
+- `backend/vault.db-wal` (SQLite ephemeral)
+- `backend/storage/user_1_1763181679935-372960162.pdf`
+- `backend/storage/user_1_1763183700897-822228621.pdf`
+- `backend/storage/user_1_1763183726367-83432470.pdf`
+- `backend/storage/user_1_1763183770189-370856357.pdf`
+- `frontend/src/pages/ChatRoomPage/` (directory with components, hooks, utils)
 
-**Backend Storage:**
-- `backend/storage/user_3_1762858345720-308380231.pdf` - New document
-- `backend/storage/user_3_1762864639733-118183903.pdf` - New document
+---
 
-**Frontend Components:**
-- `frontend/src/AppLayout.js` - App layout wrapper
-- `frontend/src/components/UserSettingsMenu.js` - User settings menu
-- `frontend/src/components/dashboard/hooks/useOnClickOutside.js` - Click-outside hook
+**Branch:** feat/ragRefactor_phase2
+**Last Updated:** November 15, 2025
+**Notes:**
+- The diagram was generated by scanning the repo and `git status`. It excludes `node_modules`, `.git`, and the Python `ml_env` site-packages from listing.
+- The Chat UI was modularized: `ChatRoomPage.js` was removed and replaced with a `ChatRoomPage/` directory (index + multiple components/hooks). Git shows the directory as untracked; include it for completeness.
+- Several large PDF uploads are present in `backend/storage/` — I listed them explicitly, including the newly added `user_1_176318*` files.
+- If you want I can also:
+	- Stage and commit a cleaned diagram file,
+	- Produce a summarized CSV/JSON inventory of files,
+	- Or generate a visualization (graph) of the directory tree.
+
+**Total files listed above:** 200+ (includes many user document PDFs; excludes node_modules, .git, ml_env)
+
+If you want any different formatting (JSON, CSV, or a compact tree), tell me which format and I'll generate it next.
 - `frontend/src/context/LayoutContext.js` - Layout context provider

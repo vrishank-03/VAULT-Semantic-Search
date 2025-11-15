@@ -1,73 +1,75 @@
 // frontend/src/context/SocketContext.js
 
-import React, { createContext, useContext, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import io from 'socket.io-client';
+import { useAuth } from './AuthContext';
 
-// The URL of our backend server
-const SOCKET_URL = 'http://localhost:5000';
+// [CONFIG] Set your backend URL
+const BACKEND_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-// Create the context
-const SocketContext = createContext(null);
+const SocketContext = createContext();
 
-/**
- * Custom hook to access the socket instance.
- * @returns {import('socket.io-client').Socket} The socket instance.
- */
 export const useSocket = () => {
     return useContext(SocketContext);
 };
 
-/**
- * Provider component that establishes and manages the socket.io connection.
- * @param {object} props
- * @param {React.ReactNode} props.children - The child components to render.
- */
 export const SocketProvider = ({ children }) => {
-    console.log('[SocketContext] SocketProvider rendered.');
+    const { user } = useAuth();
+    const [socket, setSocket] = useState(null);
+    const [isConnected, setIsConnected] = useState(false);
+    const [socketId, setSocketId] = useState(null);
 
-    // useMemo ensures the socket instance is only created once.
-    const socket = useMemo(() => {
-        console.log('[SocketContext] Creating new socket.io-client instance...');
-        return io(SOCKET_URL, {
-            // We don't need withCredentials: true for socket.io if CORS is set up,
-            // but it's good practice if we ever add auth to sockets.
-            // withCredentials: true 
-        });
-    }, []);
-
+    // [FIX] This useEffect now *only* depends on 'user'
+    // This stops the infinite re-render loop.
     useEffect(() => {
-        // Set up listeners for connection and disconnection
-        const handleConnect = () => {
-            console.log(`[SocketContext] [BLOCK_4] Socket connected successfully with ID: ${socket.id}`);
-        };
+        // Only connect if the user is logged in
+        if (user) {
+            console.log(`[SocketContext] User authenticated. Connecting to Socket.io at ${BACKEND_URL}`);
 
-        const handleDisconnect = (reason) => {
-            console.warn(`[SocketContext] [BLOCK_4] Socket disconnected: ${reason}`);
-        };
+            const newSocket = io(BACKEND_URL, {
+                withCredentials: true,
+            });
 
-        const handleConnectError = (error) => {
-            console.error(`[SocketContext] [BLOCK_4] Socket connection error:`, error.message);
-        };
+            newSocket.on('connect', () => {
+                const id = newSocket.id;
+                console.log(`[SocketContext] Socket connected. ID: ${id}`);
+                setIsConnected(true);
+                setSocketId(id);
+            });
 
-        socket.on('connect', handleConnect);
-        socket.on('disconnect', handleDisconnect);
-        socket.on('connect_error', handleConnectError);
+            newSocket.on('disconnect', (reason) => {
+                console.warn(`[SocketContext] Socket disconnected. Reason: ${reason}`);
+                setIsConnected(false);
+                setSocketId(null);
+            });
 
-        // Cleanup function to remove listeners when the provider unmounts
-        return () => {
-            console.log('[SocketContext] Cleaning up socket listeners...');
-            socket.off('connect', handleConnect);
-            socket.off('disconnect', handleDisconnect);
-            socket.off('connect_error', handleConnectError);
-            // We don't disconnect here, as the memoized socket should persist
-            // for the app's lifecycle. If you need to disconnect on logout,
-            // you'd call socket.disconnect() from the AuthContext.
-        };
-    }, [socket]);
+            newSocket.on('connect_error', (error) => {
+                console.error('[SocketContext] Socket connection error:', error.message);
+                setIsConnected(false);
+            });
 
-    // Provide the socket instance to all child components
+            setSocket(newSocket);
+
+            // Cleanup function will ONLY run when 'user' changes (i.e., logs out)
+            return () => {
+                console.log('[SocketContext] User logged out or component unmounted. Disconnecting socket.');
+                newSocket.disconnect();
+                setSocket(null);
+                setIsConnected(false);
+                setSocketId(null);
+            };
+        }
+    // [FIX] The dependency array ONLY contains 'user'.
+    }, [user]);
+
+    const value = {
+        socket,
+        isConnected,
+        socketId
+    };
+
     return (
-        <SocketContext.Provider value={socket}>
+        <SocketContext.Provider value={value}>
             {children}
         </SocketContext.Provider>
     );

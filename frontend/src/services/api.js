@@ -1,6 +1,7 @@
 // frontend/src/services/api.js
 
 import axios from 'axios';
+// [FIX] Removed 'import logger from ../utils/logger'
 
 const API_URL = 'http://localhost:5000/api';
 
@@ -38,8 +39,6 @@ api.interceptors.response.use(
 // --- Auth ---
 export const loginUser = (credentials) => api.post('/auth/login', credentials);
 export const signupUser = (userData) => api.post('/auth/signup', userData);
-
-// --- [SIGNUP_FIX] NEW FUNCTION ---
 export const signupAdmin = (userData) => {
   console.log('[LOG] api.js: Sending request to sign up ADMIN...', userData);
   return api.post('/auth/signup-admin', userData);
@@ -60,10 +59,17 @@ export const getUserInfo = async () => {
 export const checkVerificationStatus = (email) => api.get(`/auth/verification-status?email=${email}`);
 
 // --- Documents ---
-export const uploadDocument = (files, roomId, signal) => {
-  console.log(`[LOG] api.js: Sending upload request for room ${roomId}...`);
+
+// [WORKER_REFACTOR] uploadDocument now requires a socketId
+export const uploadDocument = (files, roomId, socketId, signal) => {
+  console.log(`[LOG] api.js: Sending ASYNC upload request for room ${roomId}`);
   const formData = new FormData();
   files.forEach((file) => formData.append('documents', file));
+  
+  // [WORKER_REFACTOR] The backend queue *requires* the socketId 
+  // to know who to send progress updates to.
+  formData.append('socketId', socketId);
+
   return api.post(`/documents/upload/${roomId}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     signal,
@@ -81,21 +87,45 @@ export const getDocuments = (roomId) => {
   return api.get(`/documents/list/${roomId}`);
 };
 
-// --- [BUG_3_FIX] NEW FUNCTION ---
 export const deleteDocument = (docId) => {
   console.log(`[LOG] api.js: Sending request to DELETE document: ${docId}...`);
   return api.delete(`/rooms/documents/${docId}`);
 };
 
-// --- Chat & Search ---
-export const search = (query, history, conversationId, roomId, signal) => {
-  console.log(`[LOG] api.js: Sending search request for convo ${conversationId}...`);
-  return api.post(`/search/${roomId}`, { query, history, conversationId }, { signal });
+// --- Chat & Conversation (Refactored for Streaming) ---
+export const getConversations = (roomId) => {
+    console.log(`[LOG] api.js: Getting conversations for room ${roomId}`);
+    return api.get(`/chat/${roomId}`);
 };
 
-export const createNewConversation = (roomId) => api.post(`/chat/new/${roomId}`);
-export const getConversations = (roomId) => api.get(`/chat/conversations/${roomId}`);
-export const getConversationHistory = (conversationId) => api.get(`/chat/history/${conversationId}`);
+export const createNewConversation = (roomId) => {
+    console.log(`[LOG] api.js: Creating new conversation in room ${roomId}`);
+    return api.post(`/chat/${roomId}/new`);
+};
+
+export const getConversationHistory = (roomId, conversationId) => {
+    console.log(`[LOG] api.js: Getting history for convo ${conversationId}`);
+    return api.get(`/chat/${roomId}/${conversationId}`);
+};
+
+export const postChatQuery = (
+    query, 
+    conversationId, 
+    roomId, 
+    socketId, 
+    modelName, 
+    isDeepThink
+) => {
+    const endpoint = `/chat/${roomId}/${conversationId}`;
+    const payload = {
+        query,
+        socketId,
+        modelName,
+        isDeepThink
+    };
+    console.log(`[LOG] api.js: Posting streaming query to ${endpoint}`, payload);
+    return api.post(endpoint, payload);
+};
 
 // --- Products ---
 export const requestProductCreation = (productData) => api.post('/products/request-product', productData);
@@ -105,12 +135,10 @@ export const approveProduct = (productId) => api.post(`/products/approve/${produ
 export const rejectProduct = (productId) => api.delete(`/products/reject/${productId}`);
 export const getAllProducts = () => api.get('/products/all');
 export const updateProduct = (productId, productData) => api.put(`/products/${productId}`, productData);
-// --- [NEW] ADD DELETE PRODUCT ---
 export const deleteProduct = (productId) => {
   console.log(`[LOG] api.js: Sending request to DELETE product ${productId}...`);
   return api.delete(`/products/${productId}`);
 };
-// --- [END NEW] ---
 
 // --- Rooms ---
 export const getRooms = () => api.get('/rooms');
@@ -121,20 +149,14 @@ export const logRoomEntry = (roomId) => {
   });
 };
 export const joinRoom = (roomId) => api.post(`/rooms/join/${roomId}`);
-
-// --- [BLOCK 6] NEW HIERARCHICAL DASHBOARD FUNCTION ---
 export const getRoomsForClient = (clientId) => {
   console.log(`[LOG] api.js: [BLOCK 6] Sending request to get rooms for client ${clientId}...`);
   return api.get(`/rooms/client/${clientId}`);
 };
-
-// [ROOM_FIX] Modified "Send Downstream" function
 export const sendDownstream = (roomId, assignIds) => {
   console.log(`[LOG] api.js: Sending request to send room ${roomId} downstream to IDs...`, assignIds);
   return api.post(`/rooms/send-downstream/${roomId}`, { assignIds });
 };
-
-// --- [ISSUE 6] NEW FUNCTION ---
 export const editRoomPassword = (roomId, password) => api.put(`/rooms/password/${roomId}`, { password });
 
 // --- [JIT_REFACTOR] Room-Level JIT Access ---

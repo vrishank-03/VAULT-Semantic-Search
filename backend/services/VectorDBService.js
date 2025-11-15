@@ -1,32 +1,55 @@
 // backend/services/VectorDBService.js
-// New File
 
-const { getDb, chromaClient } = require('../database'); // Assumes chromaClient is exported from database.js
+const { ChromaClient } = require('chromadb');
+const { getDb } = require('../database');
 const logger = require('../utils/logger');
+require('dotenv').config();
 
 const SERVICE_NAME = 'VectorDBService';
+
+const chromaClient = new ChromaClient({
+    path: `http://${process.env.CHROMA_HOST}:${process.env.CHROMA_PORT}`,
+});
 
 /**
  * Queries the ChromaDB collection for relevant chunks.
  * @param {number[]} queryEmbedding - The embedding vector for the query.
  * @param {string|number} roomId - The room ID to filter by.
  * @param {number} nResults - The number of results to fetch.
+ * @param {Array<string>|null} [documentFilter=null] - Optional list of document names to filter by.
  * @returns {Promise<object>} - The raw query results from Chroma.
  */
-async function queryByRoom(queryEmbedding, roomId, nResults = 10) {
+async function queryByRoom(queryEmbedding, roomId, nResults = 10, documentFilter = null) {
     logger.info(SERVICE_NAME, `Querying ChromaDB for room ${roomId} with ${nResults} results`);
     try {
         const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
 
-        const whereFilter = {
-            "roomId": Number(roomId) // Ensure roomId is a number
-        };
-        logger.debug(SERVICE_NAME, 'Using Chroma WHERE filter:', whereFilter);
+        // [CHROMA_SYNTAX_FIX] Build the dynamic 'where' filter
+        let whereFilter;
+
+        if (documentFilter && documentFilter.length > 0) {
+            // If a document filter is provided, we *must* use an '$and' clause
+            // to combine it with the roomId filter.
+            logger.debug(SERVICE_NAME, `Applying document filter: ${documentFilter}`);
+            whereFilter = {
+                "$and": [
+                    { "roomId": Number(roomId) },
+                    { "documentName": { "$in": documentFilter } }
+                ]
+            };
+        } else {
+            // If no document filter, just filter by room (this is valid)
+            whereFilter = {
+                "roomId": Number(roomId)
+            };
+        }
+        
+        logger.debug(SERVICE_NAME, 'Using Chroma WHERE filter:', JSON.stringify(whereFilter));
 
         const results = await collection.query({
             queryEmbeddings: [queryEmbedding],
             nResults: nResults,
-            where: whereFilter
+            where: whereFilter // Use the new, correct filter
         });
 
         logger.info(SERVICE_NAME, `ChromaDB retrieved ${results?.documents?.[0]?.length || 0} chunks`);
@@ -48,11 +71,10 @@ const deleteDocumentVectors = async (docId) => {
     try {
         const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
 
-        // 1. Find all vectors associated with this document ID.
         logger.debug(SERVICE_NAME, `Querying for vectors where documentId = ${docId}`);
         const results = await collection.get({
             where: { "documentId": Number(docId) },
-            include: ["metadatas"] // We only need the IDs, this is efficient
+            include: ["metadatas"] // We only need the IDs
         });
 
         if (!results || results.ids.length === 0) {
@@ -60,7 +82,6 @@ const deleteDocumentVectors = async (docId) => {
             return { success: true, deletedCount: 0 };
         }
 
-        // 2. Delete the found vectors by their unique IDs.
         logger.info(SERVICE_NAME, `Found ${results.ids.length} vectors. Deleting...`);
         await collection.delete({
             ids: results.ids
@@ -76,6 +97,7 @@ const deleteDocumentVectors = async (docId) => {
 };
 
 module.exports = {
+    chromaClient, 
     queryByRoom,
     deleteDocumentVectors
 };

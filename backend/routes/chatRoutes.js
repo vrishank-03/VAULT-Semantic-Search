@@ -1,39 +1,51 @@
 // backend/routes/chatRoutes.js
-// Updated File
 
 const express = require('express');
 const router = express.Router();
-// --- MODIFIED LINE: Import all handlers including handleChatMessage ---
-const {
-    createConversation,
-    getConversations,
-    getConversationHistory,
-    handleChatMessage
-} = require('../controllers/chatController');
+const chatController = require('../controllers/chatController');
 const { protect } = require('../middleware/authMiddleware');
+const logger = require('../utils/logger'); // For atomic logging
 
-// --- NEW ROUTE START ---
-// @route   POST /api/chat/message
-// @desc    Send a message to a conversation and get a RAG response
-// @access  Private
-router.post('/message', protect, handleChatMessage);
-// --- NEW ROUTE END ---
+logger.info('chatRoutes.js', 'Setting up chat routes...');
 
-// --- [MODIFIED] Route now includes :roomId ---
-// @route   POST /api/chat/new/:roomId
-// @desc    Create a new empty conversation in a specific room
-// @access  Private
-router.post('/new/:roomId', protect, createConversation);
+// --- Conversation Management Routes ---
 
-// --- [MODIFIED] Route now includes :roomId ---
-// @route   GET /api/chat/conversations/:roomId
-// @desc    Get all conversations for a specific room
-// @access  Private
-router.get('/conversations/:roomId', protect, getConversations);
+// [NEW] GET /api/chat/:roomId
+// Get all conversations for a user in a specific room
+router.get(
+    '/:roomId',
+    protect,
+    chatController.getConversations
+);
 
-// @route   GET /api/chat/history/:conversationId
-// @desc    Get message history for a specific conversation
-// @access  Private
-router.get('/history/:conversationId', protect, getConversationHistory);
+// [NEW] POST /api/chat/:roomId/new
+// Create a new, empty conversation in a room
+router.post(
+    '/:roomId/new',
+    protect,
+    chatController.createConversation
+);
+
+// [NEW] GET /api/chat/:roomId/:conversationId
+// Get the full message history for a single conversation
+router.get(
+    '/:roomId/:conversationId',
+    protect,
+    chatController.getConversationHistory
+);
+
+// --- Streaming Chat Query Route ---
+
+// [MODIFIED] POST /api/chat/:roomId/:conversationId
+// Post a new query to an existing conversation.
+// This is now ASYNCHRONOUS. It triggers the pipeline and returns 202.
+// The actual response is sent via Socket.io.
+router.post(
+    '/:roomId/:conversationId',
+    protect,
+    chatController.handleChatQuery
+);
+
+logger.info('chatRoutes.js', 'Chat routes configured successfully.');
 
 module.exports = router;
