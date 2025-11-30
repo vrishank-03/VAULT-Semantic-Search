@@ -1,40 +1,31 @@
-// backend/controllers/chatController.js
-
 const RAGPipelineService = require('../services/RAGPipelineService');
 const ChatHistoryService = require('../services/ChatHistoryService');
 const logger = require('../utils/logger');
-const { getDb } = require('../database');
 
 const SERVICE_NAME = 'chatController';
 
 /**
- * [NEW] Handles the ASYNCHRONOUS streaming chat query.
- * This function is non-blocking. It validates the request,
- * triggers the RAG pipeline, and immediately returns a 202 response.
- * The RAG pipeline will send the answer back over Socket.io.
+ * [MODIFIED] Handles the ASYNCHRONOUS streaming chat query.
+ * Extracts the required chatMode parameter.
  */
 exports.handleChatQuery = (req, res) => {
     const { roomId, conversationId } = req.params;
-    const { query, socketId, modelName, isDeepThink } = req.body;
+    const { query, socketId, chatMode } = req.body; 
     const userId = req.user.id;
     const userRole = req.user.role;
     const reqSocketServer = req.io; // The Socket.io server instance
+    
+    // Validate chatMode to ensure it's one of our defined tiers
+    const validModes = ['STANDARD', 'DEEP_THINK', 'DEEP_RESEARCH'];
+    const finalChatMode = chatMode && validModes.includes(chatMode) ? chatMode : 'STANDARD';
 
     logger.info(SERVICE_NAME, `[START] POST /${roomId}/${conversationId} for user ${userId}`);
-    logger.debug(SERVICE_NAME, `Body: { query: "${query.substring(0, 20)}...", socketId: ${socketId}, model: ${modelName}, deepThink: ${isDeepThink} }`);
+    logger.debug(SERVICE_NAME, `Body: { query: "${query ? query.substring(0, 20) : 'NULL'}...", socketId: ${socketId}, mode: ${finalChatMode} }`);
 
     // --- 1. Validation ---
-    if (!query) {
-        logger.warn(SERVICE_NAME, 'Validation failed: No query provided.');
-        return res.status(400).json({ message: 'Query is required.' });
-    }
-    if (!socketId) {
-        logger.warn(SERVICE_NAME, 'Validation failed: No socketId provided.');
-        return res.status(400).json({ message: 'socketId is required for streaming response.' });
-    }
-    if (!reqSocketServer) {
-        logger.error(SERVICE_NAME, 'Validation failed: req.io (Socket.io server) is not attached.');
-        return res.status(500).json({ message: 'Server configuration error.' });
+    if (!query || !socketId || !reqSocketServer) {
+        logger.warn(SERVICE_NAME, 'Validation failed: Missing query, socketId, or socket server.');
+        return res.status(400).json({ message: 'Missing required query or streaming context.' });
     }
     
     // --- 2. Find the specific user's socket ---
@@ -45,28 +36,23 @@ exports.handleChatQuery = (req, res) => {
     }
 
     // --- 3. Define the unique event name for this response ---
-    // The frontend will listen to *this specific event*
     const responseEventName = `chat_response_${conversationId}`;
 
     // --- 4. Trigger the RAG pipeline (FIRE-AND-FORGET) ---
-    // We do NOT await this. This is the key to non-blocking.
-    // The pipeline will run in the background.
-    logger.info(SERVICE_NAME, `Triggering async RAGPipelineService. User socket: ${socket.id}, Event: ${responseEventName}`);
+    logger.info(SERVICE_NAME, `Triggering async RAGPipelineService. Mode: ${finalChatMode}`);
+    
+    // [ASYNC EXECUTION] We do NOT await this. 
+    // The pipeline runs in the background and emits events via Socket.io
     RAGPipelineService.handleUserQuery({
-        // Query Details
         query,
-        modelName,
-        isDeepThink,
-        // Context
+        chatMode: finalChatMode,
         userId,
         userRole,
         roomId,
         conversationId,
-        // Streaming
         socket,
         responseEventName
     }).catch(pipelineError => {
-        // This catch is for *unhandled* exceptions during pipeline boot-up
         logger.error(SERVICE_NAME, `[FATAL] RAG Pipeline boot-up failed for convo ${conversationId}:`, pipelineError);
         socket.emit(responseEventName, {
             type: 'error',
@@ -75,8 +61,7 @@ exports.handleChatQuery = (req, res) => {
     });
 
     // --- 5. Immediately send the HTTP 202 Accepted response ---
-    // This tells the frontend "We got your request, now listen on this socket event."
-    logger.info(SERVICE_NAME, `[END] Sending 202 Accepted. Listening event: ${responseEventName}`);
+    logger.info(SERVICE_NAME, `[END] Sending 202 Accepted. Event: ${responseEventName}`);
     res.status(202).json({
         message: 'Query received. Processing... Listen for streaming response.',
         eventName: responseEventName
@@ -84,7 +69,7 @@ exports.handleChatQuery = (req, res) => {
 };
 
 /**
- * [NEW] Creates a new, empty conversation.
+ * [EXISTING] Creates a new, empty conversation.
  */
 exports.createConversation = async (req, res) => {
     const { roomId } = req.params;
@@ -102,7 +87,7 @@ exports.createConversation = async (req, res) => {
 };
 
 /**
- * [NEW] Gets all conversations for the user in a specific room.
+ * [EXISTING] Gets all conversations for the user in a specific room.
  */
 exports.getConversations = async (req, res) => {
     const { roomId } = req.params;
@@ -119,15 +104,14 @@ exports.getConversations = async (req, res) => {
 };
 
 /**
- * [NEW] Gets the full message history for one conversation.
+ * [EXISTING] Gets the full message history for one conversation.
  */
 exports.getConversationHistory = async (req, res) => {
-    const { roomId, conversationId } = req.params;
+    const { conversationId } = req.params;
     const userId = req.user.id;
-    logger.info(SERVICE_NAME, `GET /${roomId}/${conversationId} for user ${userId}`);
-
+    logger.info(SERVICE_NAME, `GET /history/${conversationId} for user ${userId}`);
+    
     try {
-        // The service layer handles auth (checking if this user owns this convo)
         const history = await ChatHistoryService.getConversationHistory(userId, conversationId);
         res.status(200).json(history);
     } catch (error) {
@@ -137,5 +121,50 @@ exports.getConversationHistory = async (req, res) => {
         }
         logger.error(SERVICE_NAME, `Failed to get history for convo ${conversationId}`, error);
         res.status(500).json({ message: 'Error fetching history.' });
+    }
+};
+
+/**
+ * [NEW] Deletes a conversation and all history.
+ */
+exports.deleteConversation = async (req, res) => {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+    logger.info(SERVICE_NAME, `DELETE /${conversationId} for user ${userId}`);
+
+    try {
+        const result = await ChatHistoryService.deleteConversation(userId, conversationId);
+        if (!result.success) {
+            return res.status(404).json({ message: result.message });
+        }
+        logger.info(SERVICE_NAME, `Successfully deleted convo ${conversationId}`);
+        res.status(204).send();
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to delete conversation ${conversationId}`, error);
+        res.status(500).json({ message: 'Error deleting conversation.' });
+    }
+};
+
+
+/**
+ * [NEW] Searches conversation history across all rooms for a user.
+ */
+exports.searchChatHistory = async (req, res) => {
+    const { q: searchTerm } = req.query;
+    const userId = req.user.id;
+    logger.info(SERVICE_NAME, `GET /search for user ${userId} with term: "${searchTerm}"`);
+
+    if (!searchTerm || searchTerm.length < 3) {
+        logger.warn(SERVICE_NAME, 'Search term too short or missing.');
+        return res.status(400).json({ message: 'Search term must be at least 3 characters.' });
+    }
+    
+    try {
+        const results = await ChatHistoryService.searchChatHistory(userId, searchTerm);
+        logger.info(SERVICE_NAME, `Found ${results.length} grouped search results.`);
+        res.status(200).json(results);
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to run search for user ${userId}`, error);
+        res.status(500).json({ message: 'Error performing search.' });
     }
 };

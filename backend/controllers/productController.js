@@ -1,261 +1,206 @@
-// backend/controllers/productController.js
+// backend/controllers/productController.js - OPTIMIZED for PostgreSQL and DB-Driven RBAC
 
 console.log('[LOG] Loading productController.js...'); // V V IMP LOG
-const { getDb } = require('../database');
+// Replaced getDb with the PostgreSQL query utilities
+const { query, executeTransaction, CORE_ROLES } = require('../database'); 
 const { CTO_EMAIL } = require('../credentials');
 const bcrypt = require('bcryptjs'); 
 const crypto = require('crypto'); 
-require('dotenv').config();
-
-// --- [TASK 15 REFACTOR] ---
-// Import the new centralized email service
+const logger = require('../utils/logger'); // Use centralized logger
 const { sendEmail } = require('../services/emailService');
-// --- [END REFACTOR] ---
 
-// --- [PHASE 1.E] MODIFIED HELPER FUNCTION: inviteOrPromotePO ---
+const SERVICE_NAME = 'productController';
+
+// --- HELPER FUNCTION: inviteOrPromotePO (REFACTORED for PostgreSQL and Role Keys) ---
 /**
- * @desc      Handles the logic for inviting a new user as a PO or promoting an existing user.
- * @param     {object} db - The database connection.
- * @param     {string} poEmail - The email of the PO to invite/promote.
- * @param     {number} productId - The ID of the product they are being assigned to.
- * @param     {string} productName - The name of the product for the email.
- * @param     {number} ctoId - [FIX] The ID of the CTO approving the product, to be set as manager.
- * @returns   {Promise<{action: string, userId: number}>} - Resolves with action and new PO's user ID.
+ * @desc 	  Handles the logic for inviting a new user as a PO or promoting an existing user.
+ * @param 	 {object} client - The PostgreSQL transaction client.
+ * @param 	 {string} poEmail - The email of the PO to invite/promote.
+ * @param 	 {number} productId - The ID of the product they are being assigned to.
+ * @param 	 {string} productName - The name of the product for the email.
+ * @param 	 {number} ctoId - The ID of the CTO approving the product, to be set as manager.
+ * @returns  {Promise<{action: string, userId: number}>} - Resolves with action and new PO's user ID.
  */
-// --- [BUG_FIX] Added ctoId parameter ---
-const inviteOrPromotePO = (db, poEmail, productId, productName, ctoId) => {
-    return new Promise((resolve, reject) => {
-        console.log(`[PO_UPSERT] [PHASE 1.E] Checking user status for: ${poEmail}`);
+const inviteOrPromotePO = async (client, poEmail, productId, productName, ctoId) => {
+    logger.info(SERVICE_NAME, `[PO_UPSERT] Checking user status for: ${poEmail}`);
+    
+    // Use CORE_ROLES for role keys
+    const PO_ROLE_KEY = CORE_ROLES.find(r => r.key === 'PO').key; 
+    
+    // 1. Check if user exists
+    const userRes = await client.query('SELECT * FROM users WHERE email = $1', [poEmail]);
+    const user = userRes.rows[0];
+
+    if (user) {
+        // --- CASE 1: USER EXISTS (Promote) ---
+        logger.info(SERVICE_NAME, `[PO_UPSERT] User ${poEmail} exists. Promoting to 'active' PO.`);
         
-        db.get('SELECT * FROM users WHERE email = ?', [poEmail], (err, user) => {
-            if (err) {
-                console.error(`[PO_UPSERT_ERROR] DB error checking user ${poEmail}:`, err.message);
-                return reject(new Error('Database error checking user.'));
-            }
+        const promoteSql = `
+            UPDATE users SET 
+                role = $1, 
+                status = 'active', 
+                product_id = $2, 
+                manager_id = $3 
+            WHERE email = $4
+            RETURNING id;
+        `;
+        const promoteRes = await client.query(promoteSql, [PO_ROLE_KEY, productId, ctoId, poEmail]);
 
-            if (user) {
-                // --- CASE 1: USER EXISTS (Promote) ---
-                console.log(`[PO_UPSERT] [PHASE 1.E] User ${poEmail} exists. Promoting to 'active' ProductOwner.`);
-                
-                // --- [BUG_FIX] Added manager_id = ? ---
-                const promoteSql = `
-                    UPDATE users SET 
-                        role = 'ProductOwner', 
-                        status = 'active', 
-                        product_id = ?, 
-                        manager_id = ? 
-                    WHERE email = ?
-                `;
-                // --- [BUG_FIX] Added ctoId to params ---
-                db.run(promoteSql, [productId, ctoId, poEmail], function(promoteErr) {
-                    if (promoteErr) {
-                        console.error(`[PO_UPSERT_ERROR] Failed to promote user ${poEmail}:`, promoteErr.message);
-                        return reject(new Error('Database error promoting user.'));
-                    }
+        logger.info(SERVICE_NAME, `[PO_UPSERT_SUCCESS] User ${poEmail} (ID: ${user.id}) promoted and assigned to manager ${ctoId}.`);
+        
+        // Send "You've been promoted" email (Non-blocking external call)
+        const subject = `You are now the Product Owner for "${productName}"`;
+        const html = `
+            <h3 style="font-family: sans-serif;">You Have Been Assigned a Product</h3>
+            <p style="font-family: sans-serif;">You have been assigned as the Product Owner for "<strong>${productName}</strong>" in VAULT.</p>
+            <p style="font-family: sans-serif;">Your account ("<strong>${poEmail}</strong>") is now active with Product Owner permissions.</p>
+            <p style="font-family: sans-serif;">You can log in with your existing password.</p>
+        `;
+        sendEmail(poEmail, subject, html);
+        
+        return { action: 'promoted', userId: user.id }; 
 
-                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] User ${poEmail} (ID: ${user.id}) promoted and assigned to manager ${ctoId}.`);
-                    
-                    // Send "You've been promoted" email
-                    const subject = `You are now the Product Owner for "${productName}"`;
-                    const html = `
-                        <h3 style="font-family: sans-serif;">You Have Been Assigned a Product</h3>
-                        <p style="font-family: sans-serif;">You have been assigned as the Product Owner for "<strong>${productName}</strong>" in VAULT.</p>
-                        <p style="font-family: sans-serif;">Your account ("<strong>${poEmail}</strong>") is now active with Product Owner permissions.</p>
-                        <p style="font-family: sans-serif;">You can log in with your existing password.</p>
-                    `;
-                    sendEmail(poEmail, subject, html);
-                    
-                    resolve({ action: 'promoted', userId: user.id }); 
-                });
+    } else {
+        // --- CASE 2: USER DOES NOT EXIST (Invite) ---
+        logger.info(SERVICE_NAME, `[PO_UPSERT] User ${poEmail} does not exist. Creating invitation.`);
+        
+        const poStatus = 'invited';
+        const password_hash = 'INVITED_USER_NO_PASS';
+        const invitationToken = crypto.randomBytes(32).toString('hex');
+        const invitationExpires = Date.now() + 3600000; 
 
-            } else {
-                // --- CASE 2: USER DOES NOT EXIST (Invite) ---
-                console.log(`[PO_UPSERT] [PHASE 1.E] User ${poEmail} does not exist. Creating invitation.`);
-                
-                const poRole = 'ProductOwner';
-                const poStatus = 'invited'; // New status
-                const password_hash = 'INVITED_USER_NO_PASS'; // Unusable password
-                const invitationToken = crypto.randomBytes(32).toString('hex');
-                const invitationExpires = Date.now() + 3600000; // 1 hour
+        const inviteSql = `
+            INSERT INTO users (email, password_hash, role, status, product_id, manager_id, password_reset_token, password_reset_expires, is_email_verified)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
+            RETURNING id;
+        `;
+        const inviteParams = [poEmail, password_hash, PO_ROLE_KEY, poStatus, productId, ctoId, invitationToken, invitationExpires];
 
-                // --- [BUG_FIX] Added manager_id column ---
-                const inviteSql = `
-                    INSERT INTO users (email, password_hash, role, status, product_id, manager_id, password_reset_token, password_reset_expires, is_email_verified)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-                `;
-                // --- [BUG_FIX] Added ctoId to params ---
-                const inviteParams = [poEmail, password_hash, poRole, poStatus, productId, ctoId, invitationToken, invitationExpires];
+        const inviteRes = await client.query(inviteSql, inviteParams);
+        const newUserId = inviteRes.rows[0].id;
+        
+        logger.info(SERVICE_NAME, `[PO_UPSERT_SUCCESS] Invitation created for ${poEmail} (New ID: ${newUserId}), assigned to manager ${ctoId}.`);
 
-                db.run(inviteSql, inviteParams, function(inviteErr) {
-                    if (inviteErr) {
-                        console.error(`[PO_UPSERT_ERROR] Failed to create invitation for ${poEmail}:`, inviteErr.message);
-                        return reject(new Error('Database error creating PO invitation.'));
-                    }
-                    
-                    const newUserId = this.lastID; 
-                    console.log(`[PO_UPSERT_SUCCESS] [PHASE 1.E] Invitation created for ${poEmail} (New ID: ${newUserId}), assigned to manager ${ctoId}.`);
-
-                    // Send "Invitation" email
-                    const setupLink = `${process.env.FRONTEND_URL}/reset-password?token=${invitationToken}`;
-                    const subject = `You've been invited to join VAULT as a Product Owner!`;
-                    const html = `
-                        <h3 style="font-family: sans-serif;">Welcome to VAULT!</h3>
-                        <p style="font-family: sans-serif;">You have been invited to be the Product Owner for "<strong>${productName}</strong>".</p>
-                        <p style="font-family: sans-serif;">To activate your account, please click the button below to set your password. This link will expire in one hour.</p>
-                        <a href="${setupLink}" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;font-family: sans-serif;">Set Your Password</a>
-                    `;
-                    sendEmail(poEmail, subject, html);
-                    
-                    resolve({ action: 'invited', userId: newUserId }); 
-                });
-            }
-        });
-    });
+        // Send "Invitation" email (Non-blocking external call)
+        const setupLink = `${process.env.FRONTEND_URL}/reset-password?token=${invitationToken}`;
+        const subject = `You've been invited to join VAULT as a Product Owner!`;
+        const html = `
+            <h3 style="font-family: sans-serif;">Welcome to VAULT!</h3>
+            <p style="font-family: sans-serif;">You have been invited to be the Product Owner for "<strong>${productName}</strong>".</p>
+            <p style="font-family: sans-serif;">To activate your account, please click the button below to set your password. This link will expire in one hour.</p>
+            <a href="${setupLink}" style="background-color:#2563eb;color:white;padding:12px 20px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;font-size:16px;font-family: sans-serif;">Set Your Password</a>
+        `;
+        sendEmail(poEmail, subject, html);
+        
+        return { action: 'invited', userId: newUserId }; 
+    }
 };
 // --- [END HELPER FUNCTION] ---
 
 
 /**
- * @desc      Request the creation of a new product
- * @route     POST /api/products/request-product
- * @access    Public
+ * @desc 	  Request the creation of a new product
+ * @route 	 POST /api/products/request-product
+ * @access 	 Public
  */
-const requestProductCreation = (req, res) => {
-    console.log('[PRODUCT_CTRL] Received POST /request-product');
+const requestProductCreation = async (req, res) => {
+    logger.info(SERVICE_NAME, '[PRODUCT_CTRL] Received POST /request-product');
     
     const { productName, productOwnerName, productOwnerEmail } = req.body;
     
-    console.log(`[PRODUCT_CTRL] Validating input: ${JSON.stringify(req.body)}`);
     if (!productName || !productOwnerName || !productOwnerEmail) {
-        console.warn('[PRODUCT_CTRL_WARN] Validation failed: Missing fields.');
+        logger.warn(SERVICE_NAME, 'Validation failed: Missing fields.');
         return res.status(400).json({ 
             message: 'All fields are required: productName, productOwnerName, productOwnerEmail.' 
         });
     }
 
-    const db = getDb();
+    // [PG_MIGRATE] Use query and RETURNING
     const sql = `
         INSERT INTO products (product_name, product_owner_name, product_owner_email, status)
-        VALUES (?, ?, ?, 'pending') -- [PHASE 1.B] Changed status from 'suspended' to 'pending'
+        VALUES ($1, $2, $3, 'pending')
+        RETURNING id;
     `;
     const params = [productName, productOwnerName, productOwnerEmail];
 
-    console.log(`[PRODUCT_CTRL_DB] [PHASE 1.B] Executing SQL: ${sql} with params: [${params.join(', ')}]`);
+    try {
+        const resDb = await query(sql, params);
+        const newProductId = resDb.rows[0].id;
+        
+        logger.info(SERVICE_NAME, `Product created with ID ${newProductId} in 'pending' state.`);
 
-    db.run(sql, params, function(err) {
-        if (err) {
-            if (err.message.includes('UNIQUE constraint failed')) {
-                console.warn(`[PRODUCT_CTRL_DB_WARN] Product name '${productName}' already exists.`);
-                return res.status(409).json({ message: `A product with the name '${productName}' already exists.` });
-            }
-            console.error('[PRODUCT_CTRL_DB_ERROR] Failed to insert new product:', err.message);
-            return res.status(500).json({ message: 'Database error while creating product.' });
-        }
-
-        const newProductId = this.lastID;
-        console.log(`[PRODUCT_CTRL_SUCCESS] [PHASE 1.B] Product created with ID ${newProductId} in 'pending' state.`);
-        console.log(`[PRODUCT_CTRL_EMAIL] Skipping redundant email notification to CTO (dashboard now handles this).`);
-
-        // --- [BLOCK 4] EMIT SOCKET EVENT ---
-        console.log(`[PRODUCT_CTRL] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
-        req.io.emit('PRODUCT_LIST_UPDATED'); // Tell all clients to refresh their product lists
-        // --- [END BLOCK 4] ---
+        // EMIT SOCKET EVENT
+        req.io.emit('PRODUCT_LIST_UPDATED');
 
         res.status(201).json({
             message: 'Product creation request received and is pending approval.',
             productId: newProductId,
-            status: 'pending' // [PHASE 1.B] Changed status from 'suspended' to 'pending'
+            status: 'pending'
         });
-    });
+    } catch (error) {
+        if (error.message.includes('unique constraint "products_product_name_key"')) { // Specific PG error for unique violation
+            logger.warn(SERVICE_NAME, `Product name '${productName}' already exists.`);
+            return res.status(409).json({ message: `A product with the name '${productName}' already exists.` });
+        }
+        logger.error(SERVICE_NAME, 'Failed to insert new product:', error.message);
+        return res.status(500).json({ message: 'Database error while creating product.' });
+    }
 };
 
 /**
- * @desc      Approve a product, creating/activating the PO
- * @route     POST /api/products/approve/:productId
- * @access    Private (CTO/Admin)
+ * @desc 	  Approve a product, creating/activating the PO
+ * @route 	 POST /api/products/approve/:productId
+ * @access 	 Private (CTO/Admin)
  */
-const approveProduct = (req, res) => {
+const approveProduct = async (req, res) => {
     const { productId } = req.params;
     const ctoId = req.user.id; 
-    console.log(`[PRODUCT_CTRL_APPROVE] Received request to approve product ID: ${productId} by CTO ID: ${ctoId}`);
-
-    const db = getDb();
+    logger.info(SERVICE_NAME, `Request to approve product ID: ${productId} by CTO ID: ${ctoId}`);
     
-    const productSql = `SELECT * FROM products WHERE id = ?`;
-    db.get(productSql, [productId], async (err, product) => {
-        if (err) {
-            console.error(`[PRODUCT_CTRL_APPROVE_ERROR] DB error fetching product ${productId}:`, err.message);
-            return res.status(500).json({ message: "Database error." });
-        }
-        if (!product) {
-            console.warn(`[PRODUCT_CTRL_APPROVE_WARN] Product ${productId} not found.`);
-            return res.status(404).json({ message: "Product not found." });
-        }
-        if (product.status !== 'pending') {
-            console.warn(`[PRODUCT_CTRL_APPROVE_WARN] Product ${productId} is not 'pending'. Current status: ${product.status}`);
-            return res.status(400).json({ message: `Product is not pending approval. Current status: ${product.status}` });
-        }
+    try {
+        const result = await executeTransaction(async (client) => {
+            // 1. Get product and validation (using transaction client)
+            const productRes = await client.query('SELECT * FROM products WHERE id = $1', [productId]);
+            const product = productRes.rows[0];
 
-        console.log(`[PRODUCT_CTRL_APPROVE] Found product "${product.product_name}". Proceeding to invite/promote PO: ${product.product_owner_email}`);
+            if (!product) throw new Error("Product not found.");
+            if (product.status !== 'pending') throw new Error(`Product is not pending approval. Current status: ${product.status}`);
+
+            logger.info(SERVICE_NAME, `Found product "${product.product_name}". Proceeding to invite/promote PO.`);
+            
+            const poEmail = product.product_owner_email;
+
+            // 2. Invite or Promote the PO (using transaction client)
+            const { action, userId } = await inviteOrPromotePO(client, poEmail, product.id, product.product_name, ctoId); 
+            
+            // 3. Set the product status based on the action.
+            const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
+            logger.debug(SERVICE_NAME, `PO action was '${action}'. Setting product status to '${newStatus}'.`);
+
+            const updateProductSql = `UPDATE products SET status = $1 WHERE id = $2`;
+            await client.query(updateProductSql, [newStatus, productId]);
+
+            return { product, poEmail, newStatus };
+        }); // End executeTransaction
+
+        // EMIT SOCKET EVENT
+        req.io.emit('PRODUCT_LIST_UPDATED');
+
+        res.status(200).json({ message: `Product "${result.product.product_name}" approved. PO ${result.poEmail} has been notified.` });
         
-        const poEmail = product.product_owner_email;
-
-        // --- [BUG_FIX] REPLACED db.serialize with manual transaction chain ---
-        db.run("BEGIN TRANSACTION", (beginErr) => {
-            if (beginErr) {
-                console.error(`[PRODUCT_CTRL_APPROVE_ERROR] [BUG_FIX] Failed to BEGIN transaction:`, beginErr.message);
-                return res.status(500).json({ message: 'Database error starting transaction.' });
-            }
-
-            // Step 1: Invite or Promote the PO.
-            inviteOrPromotePO(db, poEmail, product.id, product.product_name, ctoId)
-                .then(({ action, userId }) => { 
-                    
-                    // Step 2: Set the product status based on the action.
-                    const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
-                    console.log(`[PRODUCT_CTRL_APPROVE] [BUG_FIX] PO action was '${action}'. Setting product status to '${newStatus}'.`);
-
-                    const updateProductSql = `UPDATE products SET status = ? WHERE id = ?`;
-                    db.run(updateProductSql, [newStatus, productId], function(prodErr) {
-                        if (prodErr) {
-                            console.error(`[PRODUCT_CTRL_APPROVE_ERROR] [BUG_FIX] Failed to set product status:`, prodErr.message);
-                            db.run("ROLLBACK");
-                            return res.status(500).json({ message: "Database error updating product status." });
-                        }
-
-                        // Step 3: Commit
-                        db.run("COMMIT", (commitErr) => {
-                            if (commitErr) {
-                                console.error(`[PRODUCT_CTRL_APPROVE_ERROR] [BUG_FIX] Failed to COMMIT transaction:`, commitErr.message);
-                                return res.status(500).json({ message: 'Failed to commit changes.' });
-                            }
-                            console.log(`[PRODUCT_CTRL_APPROVE_SUCCESS] [BUG_FIX] Transaction complete.`);
-                            
-                            // --- [BLOCK 4] EMIT SOCKET EVENT ---
-                            console.log(`[PRODUCT_CTRL_APPROVE] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
-                            req.io.emit('PRODUCT_LIST_UPDATED');
-                            // --- [END BLOCK 4] ---
-
-                            res.status(200).json({ message: `Product "${product.product_name}" approved. PO ${poEmail} has been notified.` });
-                        });
-                    });
-                })
-                .catch((inviteErr) => {
-                    // Step 4: Rollback on error
-                    console.error(`[PRODUCT_CTRL_APPROVE_ERROR] [BUG_FIX] Failed to invite PO, rolling back:`, inviteErr.message);
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ message: inviteErr.message || "Failed to create/promote PO." });
-                });
-        });
-        // --- [END BUG_FIX] ---
-    });
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to approve product ${productId}. Error:`, error.message);
+        if (error.message.includes('not found') || error.message.includes('pending')) {
+             return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: "Internal server error during product approval." });
+    }
 };
 
-// (getConfirmedProducts function is unchanged)
-const getConfirmedProducts = (req, res) => {
-    console.log('[PRODUCT_CTRL] Received GET /confirmed');
+// (getConfirmedProducts function is migrated)
+const getConfirmedProducts = async (req, res) => {
+    logger.info(SERVICE_NAME, 'Received GET /confirmed');
 
-    const db = getDb();
     const sql = `
         SELECT id, product_name 
         FROM products 
@@ -263,376 +208,244 @@ const getConfirmedProducts = (req, res) => {
         ORDER BY product_name ASC
     `;
 
-    console.log(`[PRODUCT_CTRL_DB] Executing SQL: ${sql}`);
-
-    db.all(sql, [], (err, products) => {
-        if (err) {
-            console.error('[PRODUCT_CTRL_DB_ERROR] Failed to fetch confirmed products:', err.message);
-            return res.status(500).json({ message: 'Database error fetching products.' });
-        }
-
-        console.log(`[PRODUCT_CTRL_SUCCESS] Found ${products.length} confirmed products.`);
-        res.status(200).json(products);
-    });
+    try {
+        const resDb = await query(sql);
+        logger.info(SERVICE_NAME, `Found ${resDb.rows.length} confirmed products.`);
+        res.status(200).json(resDb.rows);
+    } catch (error) {
+        logger.error(SERVICE_NAME, 'Failed to fetch confirmed products:', error.message);
+        res.status(500).json({ message: 'Database error fetching products.' });
+    }
 };
 
 
-// (getPendingProducts function is unchanged)
-const getPendingProducts = (req, res) => {
-    console.log('[PRODUCT_CTRL] [PHASE 1.C] Received GET /pending');
-    const db = getDb();
+// (getPendingProducts function is migrated)
+const getPendingProducts = async (req, res) => {
+    logger.info(SERVICE_NAME, 'Received GET /pending');
+    
     const sql = `
         SELECT id, product_name, product_owner_name, product_owner_email, created_at 
         FROM products 
         WHERE status = 'pending'
         ORDER BY created_at ASC
     `;
-    console.log(`[PRODUCT_CTRL_DB] [PHASE 1.C] Executing SQL: ${sql}`);
-    db.all(sql, [], (err, products) => {
-        if (err) {
-            console.error('[PRODUCT_CTRL_DB_ERROR] [PHASE 1.C] Failed to fetch pending products:', err.message);
-            return res.status(500).json({ message: 'Database error fetching pending products.' });
-        }
-        console.log(`[PRODUCT_CTRL_SUCCESS] [PHASE 1.C] Found ${products.length} pending products.`);
-        res.status(200).json(products);
-    });
-};
-
-// (rejectProduct function is unchanged)
-const rejectProduct = (req, res) => {
-    const { productId } = req.params;
-    console.log(`[PRODUCT_CTRL_REJECT] Received request to REJECT product ID: ${productId}`);
-    const db = getDb();
     
-    const productSql = `SELECT * FROM products WHERE id = ? AND status = 'pending'`;
-    db.get(productSql, [productId], (err, product) => {
-        if (err) {
-            console.error(`[PRODUCT_CTRL_REJECT_ERROR] DB error fetching product ${productId}:`, err.message);
-            return res.status(500).json({ message: "Database error." });
-        }
-        if (!product) {
-            console.warn(`[PRODUCT_CTRL_REJECT_WARN] Pending product ${productId} not found or was already handled.`);
-            return res.status(404).json({ message: "Pending product not found." });
-        }
-
-        console.log(`[PRODUCT_CTRL_REJECT] Found pending product "${product.product_name}". Proceeding to delete.`);
-        
-        const deleteSql = `DELETE FROM products WHERE id = ? AND status = 'pending'`;
-        db.run(deleteSql, [productId], function(deleteErr) {
-            if (deleteErr) {
-                console.error(`[PRODUCT_CTRL_REJECT_ERROR] Failed to delete product ${productId}:`, deleteErr.message);
-                return res.status(500).json({ message: "Database error deleting product." });
-            }
-            if (this.changes === 0) {
-                 console.warn(`[PRODUCT_CTRL_REJECT_WARN] No product was deleted (race condition?).`);
-                 return res.status(404).json({ message: "Product not found or already handled." });
-            }
-
-            console.log(`[PRODUCT_CTRL_REJECT_SUCCESS] Product ${productId} deleted.`);
-            console.log(`[PRODUCT_CTRL_EMAIL] Sending REAL email to PO (${product.product_owner_email}) about rejection.`);
-            
-            const subject = `Your VAULT Product Request: "${product.product_name}"`;
-            const html = `
-                <h3 style="font-family: sans-serif;">VAULT Product Status</h3>
-                <p style="font-family: sans-serif;">Thank you for your submission. After careful review, your product request for "<strong>${product.product_name}</strong>" has been rejected.</p>
-                <p style="font-family: sans-serif;">If you believe this is in error, please contact the CTO.</p>
-            `;
-            sendEmail(product.product_owner_email, subject, html);
-
-            // --- [BLOCK 4] EMIT SOCKET EVENT ---
-            console.log(`[PRODUCT_CTRL_REJECT] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
-            req.io.emit('PRODUCT_LIST_UPDATED');
-            // --- [END BLOCK 4] ---
-
-            res.status(200).json({ message: `Product "${product.product_name}" rejected and deleted.` });
-        });
-    });
+    try {
+        const resDb = await query(sql);
+        logger.info(SERVICE_NAME, `Found ${resDb.rows.length} pending products.`);
+        res.status(200).json(resDb.rows);
+    } catch (error) {
+        logger.error(SERVICE_NAME, 'Failed to fetch pending products:', error.message);
+        res.status(500).json({ message: 'Database error fetching pending products.' });
+    }
 };
 
-// (getAllProducts function is unchanged)
-const getAllProducts = (req, res) => {
-    console.log('[PRODUCT_CTRL] [PHASE 1.D] Received GET /all');
-    const db = getDb();
+// (rejectProduct function is migrated)
+const rejectProduct = async (req, res) => {
+    const { productId } = req.params;
+    logger.info(SERVICE_NAME, `Received request to REJECT product ID: ${productId}`);
+    
+    try {
+        const result = await executeTransaction(async (client) => {
+            // 1. Verify existence and status
+            const productRes = await client.query('SELECT * FROM products WHERE id = $1 AND status = $2', [productId, 'pending']);
+            const product = productRes.rows[0];
+            
+            if (!product) throw new Error("Product not found or not pending.");
+            
+            logger.info(SERVICE_NAME, `Found pending product "${product.product_name}". Deleting...`);
+            
+            // 2. Delete the product. (CASCADE handles clients/rooms/etc.)
+            const deleteSql = `DELETE FROM products WHERE id = $1 AND status = 'pending' RETURNING product_owner_email`;
+            const deleteRes = await client.query(deleteSql, [productId]);
+            
+            if (deleteRes.rowCount === 0) throw new Error("Deletion failed or product status changed.");
+
+            return product;
+        }); // End executeTransaction
+
+        logger.info(SERVICE_NAME, `Product ${productId} deleted. Sending rejection email.`);
+        
+        // Send rejection email (Non-blocking external call)
+        const subject = `Your VAULT Product Request: "${result.product_name}"`;
+        const html = `<p>Your request for "<strong>${result.product_name}</strong>" has been rejected.</p>`;
+        sendEmail(result.product_owner_email, subject, html);
+
+        // EMIT SOCKET EVENT
+        req.io.emit('PRODUCT_LIST_UPDATED');
+
+        res.status(200).json({ message: `Product "${result.product_name}" rejected and deleted.` });
+        
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to reject product ${productId}:`, error.message);
+        if (error.message.includes('not found') || error.message.includes('pending')) {
+            return res.status(404).json({ message: "Pending product not found or already handled." });
+        }
+        res.status(500).json({ message: "Database error during product rejection." });
+    }
+};
+
+// (getAllProducts function is migrated)
+const getAllProducts = async (req, res) => {
+    logger.info(SERVICE_NAME, 'Received GET /all');
+    
     const sql = `
         SELECT * FROM products 
         ORDER BY product_name ASC
     `;
-    console.log(`[PRODUCT_CTRL_DB] [PHASE 1.D] Executing SQL: ${sql}`);
-    db.all(sql, [], (err, products) => {
-        if (err) {
-            console.error('[PRODUCT_CTRL_DB_ERROR] [PHASE 1.D] Failed to fetch all products:', err.message);
-            return res.status(500).json({ message: 'Database error fetching all products.' });
-        }
-        console.log(`[PRODUCT_CTRL_SUCCESS] [PHASE 1.D] Found ${products.length} total products.`);
-        res.status(200).json(products);
-    });
+    
+    try {
+        const resDb = await query(sql);
+        logger.info(SERVICE_NAME, `Found ${resDb.rows.length} total products.`);
+        res.status(200).json(resDb.rows);
+    } catch (error) {
+        logger.error(SERVICE_NAME, 'Failed to fetch all products:', error.message);
+        res.status(500).json({ message: 'Database error fetching all products.' });
+    }
 };
 
 /**
- * @desc      Update an existing product's details
- * @route     PUT /api/products/:productId
- * @access    Private (CTO Only)
+ * @desc 	  Update an existing product's details
+ * @route 	 PUT /api/products/:productId
+ * @access 	 Private (CTO Only)
  */
-const updateProduct = (req, res) => {
+const updateProduct = async (req, res) => {
     const { productId } = req.params;
     const { productName, productOwnerName, productOwnerEmail } = req.body;
     const ctoId = req.user.id;
     
-    console.log(`[PRODUCT_CTRL_UPDATE] [PHASE 1.D] Received PUT /${productId} by CTO ${ctoId} with data:`, req.body);
+    logger.info(SERVICE_NAME, `Received PUT /${productId} by CTO ${ctoId}`);
 
     if (!productName || !productOwnerName || !productOwnerEmail) {
-        console.warn('[PRODUCT_CTRL_UPDATE_WARN] Validation failed: Missing fields.');
-        return res.status(400).json({ 
-            message: 'All fields are required: productName, productOwnerName, productOwnerEmail.' 
-        });
+        return res.status(400).json({ message: 'All fields are required.' });
     }
 
-    const db = getDb();
-    
-    // Step 1: Get the current product state
-    const productSql = `SELECT * FROM products WHERE id = ?`;
-    db.get(productSql, [productId], (err, product) => {
-        if (err) {
-            console.error(`[PRODUCT_CTRL_UPDATE_ERROR] DB error fetching product ${productId}:`, err.message);
-            return res.status(500).json({ message: "Database error." });
-        }
-        if (!product) {
-            console.warn(`[PRODUCT_CTRL_UPDATE_WARN] Product ${productId} not found.`);
-            return res.status(404).json({ message: "Product not found." });
-        }
+    try {
+        const result = await executeTransaction(async (client) => {
+            // 1. Get current product state
+            const productRes = await client.query('SELECT product_owner_email FROM products WHERE id = $1', [productId]);
+            const product = productRes.rows[0];
+            if (!product) throw new Error("Product not found.");
 
-        const oldPoEmail = product.product_owner_email;
-        const newPoEmail = productOwnerEmail;
-        const poEmailChanged = oldPoEmail.toLowerCase() !== newPoEmail.toLowerCase();
+            const oldPoEmail = product.product_owner_email;
+            const newPoEmail = productOwnerEmail;
+            const poEmailChanged = oldPoEmail.toLowerCase() !== newPoEmail.toLowerCase();
+            logger.debug(SERVICE_NAME, `PO email changed: ${poEmailChanged}`);
 
-        console.log(`[PRODUCT_CTRL_UPDATE] [PHASE 1.D] PO email changed: ${poEmailChanged}`);
-
-        // If PO email didn't change, just update the text fields and we're done.
-        if (!poEmailChanged) {
-            console.log('[PRODUCT_CTRL_UPDATE] [CAUSALITY_FIX] PO Email not changed, only updating text fields.');
-            const updateSql = `
-                UPDATE products SET 
-                    product_name = ?, 
-                    product_owner_name = ?
-                WHERE id = ?
-            `;
-            db.run(updateSql, [productName, productOwnerName, productId], function(updateErr) {
-                if (updateErr) {
-                    console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to update product ${productId}:`, updateErr.message);
-                    return res.status(500).json({ message: 'Database error updating product.' });
-                }
-                console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Product updated. PO email unchanged.`);
-                
-                // --- [BLOCK 4] EMIT SOCKET EVENT ---
-                console.log(`[PRODUCT_CTRL_UPDATE] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
-                req.io.emit('PRODUCT_LIST_UPDATED');
-                // --- [END BLOCK 4] ---
-                
-                return res.status(200).json({ message: 'Product updated successfully.' });
-            });
-            return; // Stop execution
-        }
-
-        // --- [BUG_FIX] REPLACED db.serialize with manual transaction chain ---
-        db.run("BEGIN TRANSACTION", (beginErr) => {
-            if (beginErr) {
-                console.error(`[PRODUCT_CTRL_UPDATE_ERROR] [BUG_FIX] Failed to BEGIN transaction:`, beginErr.message);
-                return res.status(500).json({ message: 'Database error starting transaction.' });
+            if (!poEmailChanged) {
+                // Case 1: PO email unchanged (simple update)
+                const updateSql = `UPDATE products SET product_name = $1, product_owner_name = $2 WHERE id = $3`;
+                await client.query(updateSql, [productName, productOwnerName, productId]);
+                return { action: 'updated', newPoEmail };
             }
 
-            // [ORPHAN_FIX_1] Step 1: Get the old PO's ID.
-            db.get('SELECT id FROM users WHERE email = ? AND role = ?', [oldPoEmail, 'ProductOwner'], function(findErr, oldPoUser) {
-                if (findErr) {
-                    console.error(`[PRODUCT_CTRL_UPDATE_ERROR] [ORPHAN_FIX_1] Failed to find old PO ${oldPoEmail}:`, findErr.message);
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ message: 'Database error finding old PO.' });
-                }
+            // Case 2: PO email CHANGED (Complex transaction)
+            
+            // 2a. Deactivate old PO and clear their product_id
+            const deactivateSql = `
+                UPDATE users 
+                SET status = 'deactivated', product_id = NULL 
+                WHERE email = $1 AND role = 'PO'
+                RETURNING id;
+            `;
+            const deactivateRes = await client.query(deactivateSql, [oldPoEmail]);
+            const oldPoId = deactivateRes.rows.length > 0 ? deactivateRes.rows[0].id : null;
 
-                const oldPoId = oldPoUser ? oldPoUser.id : null;
-                console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Found old PO ID: ${oldPoId}`);
+            // 2b. Invite or Promote the new PO
+            const { action: newPoAction, userId: newPoId } = await inviteOrPromotePO(client, newPoEmail, productId, productName, ctoId);
 
-                // Step 2a: Deactivate old PO
-                console.log(`[PRODUCT_CTRL_UPDATE] [PHASE 1.D] Deactivating old PO: ${oldPoEmail}`);
-                const deactivateSql = `
+            // 2c. Orphan Fix: Re-assign Admins from old PO to new PO
+            if (oldPoId && newPoId) {
+                const reassignSql = `
                     UPDATE users 
-                    SET status = 'deactivated', product_id = NULL 
-                    WHERE email = ? AND role = 'ProductOwner'
+                    SET manager_id = $1 
+                    WHERE manager_id = $2 AND role = 'Admin' AND status = 'active'
                 `;
-                db.run(deactivateSql, [oldPoEmail], function(deactivateErr) {
-                    if (deactivateErr) {
-                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to deactivate old PO ${oldPoEmail}:`, deactivateErr.message);
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ message: 'Database error deactivating old PO.' });
-                    }
-                    console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Old PO ${oldPoEmail} deactivated (Rows: ${this.changes}).`);
+                const reassignRes = await client.query(reassignSql, [newPoId, oldPoId]);
+                logger.info(SERVICE_NAME, `Re-assigned ${reassignRes.rowCount} Admins.`);
+            }
 
-                    // Step 2b: Invite or Promote the new PO
-                    inviteOrPromotePO(db, newPoEmail, product.id, productName, ctoId) 
-                        .then(({ action, userId: newPoId }) => { 
-                            console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] New PO (${newPoEmail}) has ID: ${newPoId}. Action was '${action}'.`);
+            // 2d. Final Product Update (Set new PO email, name, and status)
+            const newStatus = (newPoAction === 'invited') ? 'awaiting_po_activation' : 'confirmed';
+            const updateProductSql = `
+                UPDATE products SET 
+                    product_name = $1, 
+                    product_owner_name = $2, 
+                    product_owner_email = $3,
+                    status = $4
+                WHERE id = $5
+            `;
+            await client.query(updateProductSql, [productName, productOwnerName, newPoEmail, newStatus, productId]);
 
-                            const runFinalProductUpdate = () => {
-                                // Step 2d: Set the product status based on the action.
-                                const newStatus = (action === 'invited') ? 'awaiting_po_activation' : 'confirmed';
-                                console.log(`[PRODUCT_CTRL_UPDATE] [CAUSALITY_FIX] PO action was '${action}'. Setting product status to '${newStatus}'.`);
+            return { action: 'updated_po', newPoEmail };
+        }); // End executeTransaction
 
-                                const updateProductSql = `
-                                    UPDATE products SET 
-                                        product_name = ?, 
-                                        product_owner_name = ?, 
-                                        product_owner_email = ?,
-                                        status = ?
-                                    WHERE id = ?
-                                `;
-                                const productParams = [productName, productOwnerName, newPoEmail, newStatus, productId];
+        logger.info(SERVICE_NAME, `Product ${productId} update successful. Action: ${result.action}`);
+        req.io.emit('PRODUCT_LIST_UPDATED');
+        res.status(200).json({ message: `Product updated successfully. PO: ${result.newPoEmail}` });
 
-                                db.run(updateProductSql, productParams, function(updateErr) {
-                                    if (updateErr) {
-                                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to update product ${productId}:`, updateErr.message);
-                                        db.run("ROLLBACK");
-                                        return res.status(500).json({ message: 'Database error updating product.' });
-                                    }
-                                    console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Product ${productId} details updated.`);
-
-                                    // Step 2e: Commit
-                                    db.run("COMMIT", (commitErr) => {
-                                        if (commitErr) {
-                                            console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to COMMIT transaction:`, commitErr.message);
-                                            return res.status(500).json({ message: 'Failed to commit changes.' });
-                                        }
-                                        console.log(`[PRODUCT_CTRL_UPDATE_SUCCESS] [PHASE 1.D] Transaction complete.`);
-                                        
-                                        // --- [BLOCK 4] EMIT SOCKET EVENT ---
-                                        console.log(`[PRODUCT_CTRL_UPDATE] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' event.`);
-                                        req.io.emit('PRODUCT_LIST_UPDATED');
-                                        // --- [END BLOCK 4] ---
-                                        
-                                        res.status(200).json({ message: `Product updated and PO ${newPoEmail} has been notified.` });
-                                    });
-                                });
-                            };
-
-                            // [ORPHAN_FIX_1] Step 2c: Re-assign Admins.
-                            if (oldPoId) {
-                                console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Re-assigning Admins from old PO (${oldPoId}) to new PO (${newPoId}).`);
-                                const reassignSql = `
-                                    UPDATE users 
-                                    SET manager_id = ? 
-                                    WHERE manager_id = ? AND role = 'Admin' AND (deactivated IS NULL OR deactivated = 0)
-                                `;
-                                db.run(reassignSql, [newPoId, oldPoId], function(reassignErr) {
-                                    if (reassignErr) {
-                                        console.error(`[PRODUCT_CTRL_UPDATE_ERROR] [ORPHAN_FIX_1] Failed to reassign Admins:`, reassignErr.message);
-                                        db.run("ROLLBACK");
-                                        return res.status(500).json({ message: 'Database error re-assigning Admins.' });
-                                    }
-                                    console.log(`[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] Successfully re-assigned ${this.changes} Admins.`);
-                                    
-                                    runFinalProductUpdate();
-                                });
-                            } else {
-                                console.log('[PRODUCT_CTRL_UPDATE] [ORPHAN_FIX_1] No old PO ID found, skipping Admin re-assignment.');
-                                runFinalProductUpdate();
-                            }
-                        })
-                        .catch((inviteErr) => {
-                            // Step 2f: Rollback on invite/promote error
-                            console.error(`[PRODUCT_CTRL_UPDATE_ERROR] Failed to invite/promote PO, rolling back:`, inviteErr.message);
-                            db.run("ROLLBACK");
-                            return res.status(500).json({ message: inviteErr.message || "Failed to create/promote PO." });
-                        });
-                });
-            });
-        });
-        // --- [END BUG_FIX] ---
-    });
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Update failed for ${productId}:`, error.message);
+        if (error.message.includes("Product not found")) {
+            return res.status(404).json({ message: error.message });
+        }
+        res.status(500).json({ message: "Database error during product update." });
+    }
 };
-// --- [END NEW FUNCTION] ---
 
-// --- [NEW] DELETE PRODUCT FUNCTION ---
 /**
- * @desc      Delete an existing product and deactivate all its users
- * @route     DELETE /api/products/:productId
- * @access    Private (CTO Only)
+ * @desc 	  Delete an existing product and deactivate all its users
+ * @route 	 DELETE /api/products/:productId
+ * @access 	 Private (CTO Only)
  */
-const deleteProduct = (req, res) => {
+const deleteProduct = async (req, res) => {
     const { productId } = req.params;
-    console.log(`[PRODUCT_CTRL_DELETE] Received DELETE request for product ID: ${productId}`);
+    logger.info(SERVICE_NAME, `Received DELETE request for product ID: ${productId}`);
 
-    const db = getDb();
-    
-    // First, check if the product exists
-    db.get('SELECT * FROM products WHERE id = ?', [productId], (err, product) => {
-        if (err) {
-            console.error(`[PRODUCT_CTRL_DELETE_ERROR] DB error fetching product ${productId}:`, err.message);
-            return res.status(500).json({ message: "Database error." });
-        }
-        if (!product) {
-            console.warn(`[PRODUCT_CTRL_DELETE_WARN] Product ${productId} not found.`);
-            return res.status(404).json({ message: "Product not found." });
-        }
-
-        console.log(`[PRODUCT_CTRL_DELETE] Found product "${product.product_name}". Proceeding with deletion transaction.`);
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-
-            // Step 1: Deactivate all users associated with this product
+    try {
+        await executeTransaction(async (client) => {
+            // 1. Deactivate all users associated with this product
             const deactivateUsersSql = `
                 UPDATE users 
                 SET status = 'deactivated', product_id = NULL 
-                WHERE product_id = ?
+                WHERE product_id = $1
             `;
-            db.run(deactivateUsersSql, [productId], function(deactivateErr) {
-                if (deactivateErr) {
-                    console.error(`[PRODUCT_CTRL_DELETE_ERROR] Failed to deactivate users for product ${productId}:`, deactivateErr.message);
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ message: "Database error deactivating product users." });
-                }
-                console.log(`[PRODUCT_CTRL_DELETE] Deactivated ${this.changes} users for product ${productId}.`);
-                
-                // Step 2: Delete the product. ON DELETE CASCADE will handle clients, rooms, etc.
-                const deleteProductSql = `DELETE FROM products WHERE id = ?`;
-                db.run(deleteProductSql, [productId], function(deleteErr) {
-                    if (deleteErr) {
-                        console.error(`[PRODUCT_CTRL_DELETE_ERROR] Failed to delete product ${productId}:`, deleteErr.message);
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ message: "Database error deleting product." });
-                    }
-                    console.log(`[PRODUCT_CTRL_DELETE] Successfully deleted product ${productId}.`);
+            const deactivateRes = await client.query(deactivateUsersSql, [productId]);
+            logger.info(SERVICE_NAME, `Deactivated ${deactivateRes.rowCount} users for product ${productId}.`);
+            
+            // 2. Delete the product. ON DELETE CASCADE will handle clients, rooms, etc.
+            const deleteProductSql = `DELETE FROM products WHERE id = $1 RETURNING id`;
+            const deleteRes = await client.query(deleteProductSql, [productId]);
 
-                    // Step 3: Commit
-                    db.run("COMMIT", (commitErr) => {
-                        if (commitErr) {
-                            console.error(`[PRODUCT_CTRL_DELETE_ERROR] Failed to COMMIT transaction:`, commitErr.message);
-                            return res.status(500).json({ message: 'Failed to commit changes.' });
-                        }
-                        
-                        console.log(`[PRODUCT_CTRL_DELETE_SUCCESS] Transaction complete.`);
-                        
-                        // --- [BLOCK 4] EMIT SOCKET EVENTS ---
-                        console.log(`[PRODUCT_CTRL_DELETE] [SOCKET] Emitting 'PRODUCT_LIST_UPDATED' and 'USER_LIST_UPDATED' events.`);
-                        req.io.emit('PRODUCT_LIST_UPDATED');
-                        req.io.emit('USER_LIST_UPDATED');
-                        // --- [END BLOCK 4] ---
-                        
-                        res.status(200).json({ message: `Product "${product.product_name}" and all associated data have been deleted.` });
-                    });
-                });
-            });
+            if (deleteRes.rowCount === 0) {
+                 throw new Error("Product not found or deletion failed.");
+            }
+            logger.info(SERVICE_NAME, `Successfully deleted product ${productId}.`);
+            // Transaction commits here
         });
-    });
+
+        // EMIT SOCKET EVENT
+        req.io.emit('PRODUCT_LIST_UPDATED');
+        res.status(204).send(); // 204 No Content for successful deletion
+
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to delete product ${productId}:`, error.message);
+        if (error.message.includes('not found')) {
+            return res.status(404).json({ message: "Product not found." });
+        }
+        res.status(500).json({ message: "Database error during product deletion." });
+    }
 };
 // --- [END NEW FUNCTION] ---
 
 
 module.exports = {
     requestProductCreation,
-    getConfirmedProducts,
     approveProduct,
-    getPendingProducts, 
-    rejectProduct,      
-    getAllProducts,     
+    rejectProduct,
+    getConfirmedProducts,
+    getPendingProducts,
+    getAllProducts,
     updateProduct,
-    deleteProduct       // --- [NEW] Export
+    deleteProduct,
 };

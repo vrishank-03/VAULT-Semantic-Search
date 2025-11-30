@@ -1,113 +1,122 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,100..900;1,100..900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Apply Inter font to the entire body */
+/* --- GLOBAL VARIABLES --- */
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #9ca3af;
+  --accent: #2563eb;
+  --accent-light: #eff6ff;
+  --border: #e5e7eb;
+}
+
+/* --- BASE TYPOGRAPHY --- */
 body {
   margin: 0;
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
 
-/* --- DELETED OLD BLINK ANIMATION --- */
-/* The old blink animation has been removed as it conflicted with the new one. */
+/* --- ENTERPRISE TYPOGRAPHY ENGINE (For Chat Answers) --- */
+.prose {
+  max-width: 75ch; /* Optimal reading length */
+  line-height: 1.65; /* Air between lines */
+  font-size: 1rem;
+}
 
+.prose h1 { font-size: 1.75rem; font-weight: 700; margin-top: 2rem; margin-bottom: 1rem; letter-spacing: -0.025em; color: var(--text-primary); }
+.prose h2 { font-size: 1.4rem; font-weight: 600; margin-top: 1.75rem; margin-bottom: 0.75rem; letter-spacing: -0.015em; color: var(--text-primary); }
+.prose h3 { font-size: 1.15rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--text-primary); }
 
-/*
-  The main container for the login page, now covering the whole screen.
-  We'll use a specific background image for the blurred effect as an overlay
-  or pseudo-element. The image path should be correct for your `assets_logo` variable.
-*/
+.prose p { margin-bottom: 1.25rem; color: var(--text-secondary); }
+
+.prose ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1.25rem; }
+.prose ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 1.25rem; }
+.prose li { margin-bottom: 0.5rem; padding-left: 0.25rem; }
+
+.prose strong { font-weight: 600; color: var(--text-primary); }
+.prose blockquote { border-left: 4px solid var(--accent); padding-left: 1rem; font-style: italic; color: var(--text-secondary); background: var(--bg-secondary); padding: 1rem; border-radius: 0 8px 8px 0; margin-bottom: 1.5rem; }
+
+/* Citations (The "Clickable Badges") */
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  background-color: var(--accent-light);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 99px;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+.citation-badge:hover {
+  border-color: var(--accent);
+  background-color: white;
+}
+
+/* --- LOGIN & GLASSMORPHISM STYLES --- */
 .login-page-background {
-    /* Main background color */
     background-color: #1A202C; /* Dark blue/gray */
     position: relative;
-    overflow: hidden; /* Ensures blur/mask effects are contained */
+    overflow: hidden;
 }
 
-/* Glassmorphic card styling */
 .glassmorphic-card {
-  background-color: rgba(255, 255, 255, 0.08); /* Semi-transparent white */
-  /* This is the magic for the glass effect */
-  backdrop-filter: blur(12px); /* Adjust blur strength as needed */
-  -webkit-backdrop-filter: blur(12px); /* For Safari support */
-  border: 1px solid rgba(255, 255, 255, 0.18); /* Subtle white border */
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); /* Stronger shadow for depth */
+  background-color: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
 
-/* Custom font utility classes for specific weights from Inter */
-.font-inter-thin {
-  font-weight: 100;
-}
-.font-inter-extralight {
-  font-weight: 200;
-}
-.font-inter-regular {
-  font-weight: 400;
-}
-/* Already have font-extrabold from Tailwind for 800 */
-
-/*
-  Override default input styles for the glassmorphic form.
-  This ensures inputs are transparent, text is white, and placeholders are visible.
-*/
 .glassmorphic-card input {
-  background-color: rgba(255, 255, 255, 0.05) !important; /* Slightly more transparent */
+  background-color: rgba(255, 255, 255, 0.05) !important;
   border: 1px solid rgba(255, 255, 255, 0.15) !important;
   color: white !important;
 }
 
 .glassmorphic-card input::placeholder {
-  color: rgba(255, 255, 255, 0.6) !important; /* Lighter placeholder text */
+  color: rgba(255, 255, 255, 0.6) !important;
 }
 
 .glassmorphic-card label {
-    color: white !important; /* Ensure labels are white */
+    color: white !important;
 }
 
-
-/* --- NEW STYLES FOR LOOPING TYPEWRITER --- */
-
-/* Class for the typewriter to apply the requested font style (Inter ExtraLight 200 Italic) */
+/* --- TYPEWRITER & ANIMATIONS --- */
 .typewriter-font {
   font-family: 'Inter', sans-serif;
   font-weight: 200;
   font-style: italic;
-  /* Uses a CSS variable set by the JS component for dynamic color, with a fallback */
-  color: var(--typewriter-color, #4b5563); /* Default text-gray-600 */
+  color: var(--typewriter-color, #4b5563);
   transition: color 0.5s ease-in-out;
 }
 
-/* The blinking animation for the cursor */
 .cursor-blink {
     animation: blink 1s step-end infinite;
-    /* The cursor will also get its color from the CSS variable for a perfect match */
     color: var(--typewriter-color, #4b5563);
     transition: color 0.5s ease-in-out;
 }
 
 @keyframes blink {
-    from, to {
-        color: transparent;
-    }
-    50% {
-        /* 'inherit' makes the cursor take on the color of its parent, which is set by the JS */
-        color: inherit;
-    }
-}
-
-/* Ensure the typing effect span itself inherits the parent's color correctly */
-.typing-effect {
-    color: inherit;
+    from, to { color: transparent; }
+    50% { color: inherit; }
 }
 
 .scan-line {
@@ -127,7 +136,7 @@ code {
   left: 50%;
   width: 10px;
   height: 10px;
-  background-color: #67e8f9; /* cyan-300 */
+  background-color: #67e8f9;
   border-radius: 50%;
   opacity: 0;
   transform: translate(-50%, -50%) scale(0);
@@ -136,32 +145,19 @@ code {
 }
 
 @keyframes burst {
-  0%, 40% { /* Start bursting after scan line passes halfway */
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0);
-  }
-  60% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  100% {
-    opacity: 0;
-    /* Use CSS variables passed from the component for dynamic positions */
-    transform: translate(var(--x), var(--y)) scale(0);
-  }
+  0%, 40% { opacity: 0; transform: translate(-50%, -50%) scale(0); }
+  60% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(var(--x), var(--y)) scale(0); }
 }
 
-.success-animation {
-  margin: 0 auto;
-}
-
+/* Success Checkmark */
 .checkmark {
   width: 100px;
   height: 100px;
   border-radius: 50%;
   display: block;
   stroke-width: 3;
-  stroke: #4BB543; /* A nice success green */
+  stroke: #4BB543;
   stroke-miterlimit: 10;
   box-shadow: inset 0px 0px 0px #4BB543;
   animation: fill .4s ease-in-out .4s forwards, scale .3s ease-in-out .9s both;
@@ -180,7 +176,7 @@ code {
 }
 
 .dark .checkmark__circle {
-  fill: #2d3748; /* gray-800 for dark mode */
+  fill: #2d3748;
 }
 
 .checkmark__check {
@@ -190,23 +186,6 @@ code {
   animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.8s forwards;
 }
 
-@keyframes stroke {
-  100% {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes scale {
-  0%, 100% {
-    transform: none;
-  }
-  50% {
-    transform: scale3d(1.1, 1.1, 1);
-  }
-}
-
-@keyframes fill {
-  100% {
-    box-shadow: inset 0px 0px 0px 60px #4BB543;
-  }
-}
+@keyframes stroke { 100% { stroke-dashoffset: 0; } }
+@keyframes scale { 0%, 100% { transform: none; } 50% { transform: scale3d(1.1, 1.1, 1); } }
+@keyframes fill { 100% { box-shadow: inset 0px 0px 0px 60px #4BB543; } }

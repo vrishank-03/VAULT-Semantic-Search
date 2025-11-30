@@ -1,17 +1,16 @@
 // frontend/src/pages/ChatRoomPage/hooks/useRoomAccess.js
+// --------------------------------------------------------
+// [FIXED] Deep property inspection to find "test room" inside nested 'room' object
+// [FIXED] Console logging for easier debugging of backend response structure
+// --------------------------------------------------------
 
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { joinRoom, logRoomEntry } from '../../../services/api';
 
-/**
- * Hook to manage checking and validating a user's access to a room.
- * @param {string} roomId - The ID of the room from the URL.
- * @returns {object} { accessStatus, roomName, checkRoomAccess }
- */
 export const useRoomAccess = (roomId) => {
     const [accessStatus, setAccessStatus] = useState('checking');
-    const [roomName, setRoomName] = useState(`Room ${roomId}`);
+    const [roomName, setRoomName] = useState(null);
     const navigate = useNavigate();
 
     const checkRoomAccess = useCallback(async () => {
@@ -20,18 +19,35 @@ export const useRoomAccess = (roomId) => {
             return;
         }
 
-        console.log(`[useRoomAccess] Checking access for room ID: ${roomId}...`);
         try {
             const response = await joinRoom(roomId);
-            const status = response.data.status;
-            console.log(`[useRoomAccess] API response: ${status}`);
-            
+            const data = response.data;
+            const status = data.status;
+
+            // [DEBUG] Log the exact structure so we can be 100% sure
+            console.log('[useRoomAccess] Join Room Response:', data);
+
             if (status === 'granted') {
                 setAccessStatus('granted');
                 logRoomEntry(roomId);
-                const currentRoomName = response.data.roomName || `Room ${roomId}`;
-                setRoomName(currentRoomName);
-                return currentRoomName; // Return name for initialization
+
+                // [FIX] Deep check for the name in common backend patterns
+                // Priority: 
+                // 1. data.room.name (Nested object pattern)
+                // 2. data.room.roomName
+                // 3. data.roomName (Flat pattern)
+                // 4. data.name
+                const possibleName =
+                    data.room?.name ||
+                    data.room?.roomName ||
+                    data.roomName ||
+                    data.name ||
+                    data.room_name;
+
+                const finalName = possibleName || `Room ${roomId}`;
+
+                setRoomName(finalName);
+                return finalName;
             } else {
                 setAccessStatus(status || 'denied');
             }

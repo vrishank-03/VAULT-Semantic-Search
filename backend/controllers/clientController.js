@@ -1,50 +1,57 @@
-// backend/controllers/clientController.js
+// backend/controllers/clientController.js - OPTIMIZED for PostgreSQL and DB-Driven RBAC
 
-const { getDb } = require('../database');
+// Replaced getDb with the PostgreSQL query utilities and logger
+const { query, executeTransaction, CORE_ROLES } = require('../database'); 
+const logger = require('../utils/logger');
+
+const SERVICE_NAME = 'clientController';
+
+// Map hardcoded role names to constant keys for internal checks
+const ROLE_KEYS = {
+    ADMIN: CORE_ROLES.find(r => r.key === 'Admin').key,
+    PO: CORE_ROLES.find(r => r.key === 'PO').key,
+    CTO: CORE_ROLES.find(r => r.key === 'CTO').key,
+};
+
 
 /**
- * @desc      Get all clients (for CreateRoomModal dropdown)
- * @route     GET /api/clients
- * @access    Private (Admin, PO, CTO)
+ * @desc 	  Get all clients (for CreateRoomModal dropdown)
+ * @route 	 GET /api/clients
+ * @access 	 Private (Admin, PO, CTO)
  */
-exports.getClients = (req, res) => { // Renamed from getClientsForAdmin for clarity
-    console.log(`[CLIENT_CTRL] Received GET /api/clients for user ID: ${req.user.id}`);
+exports.getClients = async (req, res) => {
+    logger.info(SERVICE_NAME, `Received GET /api/clients for user ID: ${req.user.id}`);
     
-    // 1. Get database and user info
-    const db = getDb();
     const userId = req.user.id;
+    
+    try {
+        // 1. Fetch user details, role, and product_id
+        const userSql = `SELECT role, product_id FROM users WHERE id = $1`;
+        const userRes = await query(userSql, [userId]);
+        const user = userRes.rows[0];
 
-    console.log(`[CLIENT_CTRL] Fetching user details (role, product_id) for user ${userId}`);
-    // [BUG_FIX] Also select product_id from the user, not just req.user
-    const userSql = `SELECT role, product_id FROM users WHERE id = ?`;
-
-    db.get(userSql, [userId], (err, user) => {
-        if (err) {
-            console.error(`[CLIENT_CTRL_ERROR] DB error fetching user ${userId}:`, err.message);
-            return res.status(500).json({ message: "Error fetching user data." });
-        }
         if (!user) {
-            console.warn(`[CLIENT_CTRL_WARN] User ${userId} not found.`);
+            logger.warn(SERVICE_NAME, `User ${userId} not found.`);
             return res.status(404).json({ message: "User not found." });
         }
-
-        // 2. Authorize: Only Admins, POs, and CTOs can see this list
-        const allowedRoles = ['Administrator', 'ProductOwner', 'CTO'];
+        
+        // 2. Authorize using Role Keys
+        const allowedRoles = [ROLE_KEYS.ADMIN, ROLE_KEYS.PO, ROLE_KEYS.CTO];
         if (!allowedRoles.includes(user.role)) {
-             console.warn(`[CLIENT_CTRL_FAIL] User ${userId} (Role: ${user.role}) tried to get client list. Forbidden.`);
+            logger.warn(SERVICE_NAME, `User ${userId} (Role: ${user.role}) tried to get client list. Forbidden.`);
             return res.status(403).json({ message: "Forbidden: You do not have permission to view clients." });
         }
 
-        console.log(`[CLIENT_CTRL] User is '${user.role}'.`);
+        logger.info(SERVICE_NAME, `User is '${user.role}'.`);
 
         // 3. Build the query based on role
         let clientSql = ``;
         let params = [];
-        // [BUG_FIX] Use the product_id from the DB user object, not req.user
         const userProductId = user.product_id; 
 
-        if (user.role === 'CTO') {
-            console.log(`[CLIENT_CTRL] CTO fetching ALL clients from ALL products.`);
+        if (user.role === ROLE_KEYS.CTO) {
+            logger.info(SERVICE_NAME, `CTO fetching ALL clients from ALL products.`);
+            // [PG_MIGRATE] Using PG JOIN syntax
             clientSql = `
                 SELECT c.id, c.name, c.product_id, p.product_name 
                 FROM clients c 
@@ -53,150 +60,124 @@ exports.getClients = (req, res) => { // Renamed from getClientsForAdmin for clar
             `;
         } else {
             // Admin and PO get clients for their specific product
-            console.log(`[CLIENT_CTRL] Fetching clients for product ${userProductId}`);
-            clientSql = `SELECT id, name, product_id FROM clients WHERE product_id = ? ORDER BY name ASC`;
+            logger.info(SERVICE_NAME, `Fetching clients for product ${userProductId}`);
+            clientSql = `SELECT id, name, product_id FROM clients WHERE product_id = $1 ORDER BY name ASC`;
             params = [userProductId];
         }
 
         // 4. Execute the query
-        console.log(`[CLIENT_CTRL_DB] Executing: ${clientSql} with params: [${params.join(',')}]`);
-        db.all(clientSql, params, (clientErr, clients) => {
-            if (clientErr) {
-                console.error(`[CLIENT_CTRL_DB_ERROR] DB error fetching clients:`, clientErr.message);
-                return res.status(500).json({ message: "Error fetching clients." });
-            }
+        const clientRes = await query(clientSql, params);
+        
+        logger.info(SERVICE_NAME, `Found ${clientRes.rows.length} clients.`);
+        res.status(200).json(clientRes.rows);
 
-            console.log(`[CLIENT_CTRL_SUCCESS] Found ${clients.length} clients.`);
-            res.status(200).json(clients);
-        });
-    });
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Error fetching clients:`, error.message);
+        res.status(500).json({ message: "Error fetching clients." });
+    }
 };
 
 /**
- * @desc      Create a new client
- * @route     POST /api/clients
- * @access    Private (Admin, PO, CTO)
+ * @desc 	  Create a new client
+ * @route 	 POST /api/clients
+ * @access 	 Private (Admin, PO, CTO)
  */
-exports.createClient = (req, res) => {
-    console.log(`[CLIENT_CTRL_CREATE] Received POST /api/clients from user ID: ${req.user.id}`);
+exports.createClient = async (req, res) => {
+    logger.info(SERVICE_NAME, `Received POST /api/clients from user ID: ${req.user.id}`);
     
-    // 1. Get user info to check role
-    const db = getDb();
     const userId = req.user.id;
 
-    console.log(`[CLIENT_CTRL_CREATE] Fetching user role for user ${userId}`);
-    const userSql = `SELECT role, product_id FROM users WHERE id = ?`;
+    try {
+        // 1. Fetch user role and product_id
+        const userSql = `SELECT role, product_id FROM users WHERE id = $1`;
+        const userRes = await query(userSql, [userId]);
+        const user = userRes.rows[0];
 
-    db.get(userSql, [userId], async (userErr, user) => {
-        if (userErr) {
-            console.error(`[CLIENT_CTRL_CREATE_ERROR] DB error fetching user ${userId}:`, userErr.message);
-            return res.status(500).json({ message: "Error fetching user data." });
-        }
-        if (!user) {
-            console.warn(`[CLIENT_CTRL_CREATE_WARN] User ${userId} not found.`);
-            return res.status(404).json({ message: "User not found." });
-        }
-
-        // 2. Authorize: Admins, POs, and CTOs can create clients
-        const allowedRoles = ['Administrator', 'ProductOwner', 'CTO'];
+        if (!user) return res.status(404).json({ message: "User not found." });
+        
+        // 2. Authorize using Role Keys
+        const allowedRoles = [ROLE_KEYS.ADMIN, ROLE_KEYS.PO, ROLE_KEYS.CTO];
         if (!allowedRoles.includes(user.role)) {
-            console.warn(`[CLIENT_CTRL_CREATE_FAIL] User ${userId} (Role: ${user.role}) tried to create a client. Forbidden.`);
-            return res.status(403).json({ message: "Forbidden: Only Administrators, Product Owners, or the CTO can create clients." });
+            logger.warn(SERVICE_NAME, `User ${userId} (Role: ${user.role}) tried to create a client. Forbidden.`);
+            return res.status(403).json({ message: "Forbidden: Insufficient permissions." });
         }
 
-        console.log(`[CLIENT_CTRL_CREATE_AUTH] User ${userId} (Role: ${user.role}) is authorized.`);
-
-        // 3. Get client data from request body
-        const { name, productId } = req.body;
-        if (!name) {
-            console.warn(`[CLIENT_CTRL_CREATE_WARN] Validation failed: Client name is required.`);
-            return res.status(400).json({ message: "Client name is required." });
-        }
+        // 3. Determine product ID for insertion
+        const { name, productId: bodyProductId } = req.body;
+        if (!name) return res.status(400).json({ message: "Client name is required." });
 
         let clientProductId;
-        if (user.role === 'Administrator' || user.role === 'ProductOwner') {
-            // [BUG_FIX] Use product_id from the DB user object
+        if (user.role === ROLE_KEYS.ADMIN || user.role === ROLE_KEYS.PO) {
             clientProductId = user.product_id;
-            console.log(`[CLIENT_CTRL_CREATE] User is ${user.role}, assigning client to product ${clientProductId}.`);
-        } else if (user.role === 'CTO') {
-            if (!productId) {
-                console.warn(`[CLIENT_CTRL_CREATE_FAIL] CTO ${userId} did not provide a productId.`);
+        } else if (user.role === ROLE_KEYS.CTO) {
+            if (!bodyProductId) {
+                logger.warn(SERVICE_NAME, `CTO ${userId} did not provide a productId.`);
                 return res.status(400).json({ message: "Product ID is required for CTO to create a client." });
             }
-            clientProductId = productId;
-            console.log(`[CLIENT_CTRL_CREATE] User is CTO, assigning client to specified product ${clientProductId}.`);
+            clientProductId = bodyProductId;
         }
 
-        // 4. Insert the new client into the database
-        const insertSql = `INSERT INTO clients (product_id, name) VALUES (?, ?)`;
+        // 4. Insert the new client
+        const insertSql = `INSERT INTO clients (product_id, name) VALUES ($1, $2) RETURNING id, product_id, name`;
         const params = [clientProductId, name];
 
-        console.log(`[CLIENT_CTRL_DB] Executing insert for product ${clientProductId} with params: [${clientProductId}, ${name}]`);
+        const insertRes = await query(insertSql, params);
+        const newClient = insertRes.rows[0];
 
-        db.run(insertSql, params, function (insertErr) {
-            if (insertErr) {
-                if (insertErr.message.includes('UNIQUE constraint failed')) {
-                    console.warn(`[CLIENT_CTRL_DB_WARN] Client name '${name}' already exists for this product.`);
-                    return res.status(409).json({ message: `A client named '${name}' already exists for this product.` });
-                }
-                console.error(`[CLIENT_CTRL_DB_ERROR] Failed to insert new client:`, insertErr.message);
-                return res.status(500).json({ message: 'Database error creating client.' });
-            }
+        logger.info(SERVICE_NAME, `New client created with ID: ${newClient.id}`);
+        
+        // Emit Socket Event
+        req.io.emit('CLIENT_LIST_UPDATED');
 
-            const newClientId = this.lastID;
-            console.log(`[CLIENT_CTRL_SUCCESS] New client created with ID: ${newClientId}`);
-            
-            // 5. Return the newly created client
-            res.status(201).json({
-                id: newClientId,
-                product_id: clientProductId, 
-                name: name,
-            });
-        });
-    });
+        res.status(201).json(newClient);
+
+    } catch (error) {
+        if (error.message.includes('unique constraint "clients_product_id_name_key"')) {
+            logger.warn(SERVICE_NAME, `Client name '${req.body.name}' already exists for this product.`);
+            return res.status(409).json({ message: `A client named '${req.body.name}' already exists for this product.` });
+        }
+        logger.error(SERVICE_NAME, `Failed to insert new client:`, error.message);
+        return res.status(500).json({ message: 'Database error creating client.' });
+    }
 };
 
 // --- [BLOCK 5] NEW FUNCTIONS ---
 
 /**
- * @desc      Get assigned and available clients for a specific Admin
- * @route     GET /api/clients/assignments/:adminId
- * @access    Private (ProductOwner, CTO)
+ * @desc 	  Get assigned and available clients for a specific Admin
+ * @route 	 GET /api/clients/assignments/:adminId
+ * @access 	 Private (ProductOwner, CTO)
  */
 exports.getAdminClientAssignments = async (req, res) => {
     const { adminId } = req.params;
-    const { id: poId, role: poRole, product_id: poProductId } = req.user;
-    console.log(`[CLIENT_CTRL_ASSIGN] PO/CTO ${poId} (Role: ${poRole}) fetching client assignments for Admin ${adminId}`);
-
-    const db = getDb();
+    // req.user already contains role/product_id, but use keys for safety
+    const { id: managerId, role: managerRole, product_id: managerProductId } = req.user;
+    logger.info(SERVICE_NAME, `Manager ${managerId} (${managerRole}) fetching assignments for Admin ${adminId}`);
 
     try {
-        // 1. Security Check: Verify Admin reports to this PO/CTO and is in their product
-        const adminUser = await new Promise((resolve, reject) => {
-            db.get(`SELECT product_id, manager_id FROM users WHERE id = ? AND role = 'Administrator'`, [adminId], (err, row) => err ? reject(err) : resolve(row));
-        });
+        // 1. Security Check: Verify Admin reports to this Manager (PO/CTO)
+        const adminSql = `SELECT product_id, manager_id FROM users WHERE id = $1 AND role = $2`;
+        const adminRes = await query(adminSql, [adminId, ROLE_KEYS.ADMIN]);
+        const adminUser = adminRes.rows[0];
 
-        if (!adminUser) {
-            console.warn(`[CLIENT_CTRL_ASSIGN_FAIL] Admin user ${adminId} not found or is not an Administrator.`);
-            return res.status(404).json({ message: "Administrator user not found." });
-        }
+        if (!adminUser) return res.status(404).json({ message: "Administrator user not found." });
 
-        if (poRole === 'ProductOwner' && (adminUser.manager_id !== poId || adminUser.product_id !== poProductId)) {
-            console.warn(`[CLIENT_CTRL_ASSIGN_FAIL] PO ${poId} is not authorized to manage Admin ${adminId}.`);
+        // PO check: Must be the direct manager AND in the same product
+        if (managerRole === ROLE_KEYS.PO && (adminUser.manager_id !== managerId || adminUser.product_id !== managerProductId)) {
+            logger.warn(SERVICE_NAME, `PO ${managerId} not authorized to manage Admin ${adminId}.`);
             return res.status(403).json({ message: "Forbidden: You do not manage this Administrator." });
         }
+        // CTO check is implicit: CTO manages everyone.
 
         // 2. Fetch all clients for this product
-        const productClients = await new Promise((resolve, reject) => {
-            db.all(`SELECT id, name FROM clients WHERE product_id = ?`, [adminUser.product_id], (err, rows) => err ? reject(err) : resolve(rows));
-        });
+        const productClientsSql = `SELECT id, name FROM clients WHERE product_id = $1`;
+        const productClientsRes = await query(productClientsSql, [adminUser.product_id]);
+        const productClients = productClientsRes.rows;
 
         // 3. Fetch clients already assigned to this Admin
-        const assignedClientRows = await new Promise((resolve, reject) => {
-            db.all(`SELECT client_id FROM admin_client_assignments WHERE admin_id = ?`, [adminId], (err, rows) => err ? reject(err) : resolve(rows));
-        });
-        
-        const assignedClientIds = new Set(assignedClientRows.map(r => r.client_id));
+        const assignedSql = `SELECT client_id FROM admin_client_assignments WHERE admin_id = $1`;
+        const assignedRes = await query(assignedSql, [adminId]);
+        const assignedClientIds = new Set(assignedRes.rows.map(r => r.client_id));
         
         const assignedClients = [];
         const availableClients = [];
@@ -209,191 +190,156 @@ exports.getAdminClientAssignments = async (req, res) => {
             }
         }
 
-        console.log(`[CLIENT_CTRL_ASSIGN_SUCCESS] Found ${assignedClients.length} assigned and ${availableClients.length} available clients for Admin ${adminId}.`);
+        logger.info(SERVICE_NAME, `Found ${assignedClients.length} assigned and ${availableClients.length} available clients for Admin ${adminId}.`);
         res.status(200).json({ assignedClients, availableClients });
 
     } catch (err) {
-        console.error(`[CLIENT_CTRL_ASSIGN_ERROR] Failed to get client assignments:`, err.message);
+        logger.error(SERVICE_NAME, `Failed to get client assignments:`, err.message);
         res.status(500).json({ message: "Server error fetching client assignments." });
     }
 };
 
 /**
- * @desc      Update the clients assigned to a specific Admin
- * @route     PUT /api/clients/assignments/:adminId
- * @access    Private (ProductOwner, CTO)
+ * @desc 	  Update the clients assigned to a specific Admin
+ * @route 	 PUT /api/clients/assignments/:adminId
+ * @access 	 Private (ProductOwner, CTO)
  */
 exports.updateAdminClientAssignments = async (req, res) => {
     const { adminId } = req.params;
     const { clientIds } = req.body; // Array of client IDs to assign
-    const { id: poId, role: poRole, product_id: poProductId } = req.user;
-    console.log(`[CLIENT_CTRL_UPDATE_ASSIGN] PO/CTO ${poId} updating client assignments for Admin ${adminId} with clients: [${clientIds}]`);
+    const { id: managerId, role: managerRole } = req.user;
+    logger.info(SERVICE_NAME, `Manager ${managerId} updating assignments for Admin ${adminId} with ${clientIds.length} clients.`);
 
-    if (!Array.isArray(clientIds)) {
-        return res.status(400).json({ message: "clientIds must be an array." });
-    }
-
-    const db = getDb();
+    if (!Array.isArray(clientIds)) return res.status(400).json({ message: "clientIds must be an array." });
 
     try {
-        // 1. Security Check: Verify Admin reports to this PO/CTO
-        const adminUser = await new Promise((resolve, reject) => {
-            db.get(`SELECT product_id, manager_id FROM users WHERE id = ? AND role = 'Administrator'`, [adminId], (err, row) => err ? reject(err) : resolve(row));
-        });
+        await executeTransaction(async (client) => {
+            // 1. Security Check (Admin Verification and Ownership)
+            const adminSql = `SELECT product_id, manager_id FROM users WHERE id = $1 AND role = $2`;
+            const adminRes = await client.query(adminSql, [adminId, ROLE_KEYS.ADMIN]);
+            const adminUser = adminRes.rows[0];
 
-        if (!adminUser) {
-            console.warn(`[CLIENT_CTRL_UPDATE_ASSIGN_FAIL] Admin user ${adminId} not found or is not an Administrator.`);
-            return res.status(404).json({ message: "Administrator user not found." });
-        }
+            if (!adminUser) throw new Error("Administrator user not found.");
 
-        if (poRole === 'ProductOwner' && (adminUser.manager_id !== poId || adminUser.product_id !== poProductId)) {
-            console.warn(`[CLIENT_CTRL_UPDATE_ASSIGN_FAIL] PO ${poId} is not authorized to manage Admin ${adminId}.`);
-            return res.status(403).json({ message: "Forbidden: You do not manage this Administrator." });
-        }
-        
-        // 2. Security Check: Verify all submitted clientIds belong to the correct product
-        if (clientIds.length > 0) {
-            const placeholders = clientIds.map(() => '?').join(',');
-            const result = await new Promise((resolve, reject) => {
-                db.get(`SELECT COUNT(*) as count FROM clients WHERE id IN (${placeholders}) AND product_id = ?`, 
-                       [...clientIds, adminUser.product_id], 
-                       (err, row) => err ? reject(err) : resolve(row));
-            });
+            // PO check
+            if (managerRole === ROLE_KEYS.PO && adminUser.manager_id !== managerId) {
+                throw new Error("Forbidden: Manager does not own this Administrator.");
+            }
             
-            if (result.count !== clientIds.length) {
-                console.warn(`[CLIENT_CTRL_UPDATE_ASSIGN_FAIL] One or more client IDs do not belong to product ${adminUser.product_id}.`);
-                return res.status(403).json({ message: "Forbidden: One or more selected clients do not belong to this product." });
-            }
-        }
+            const adminProductId = adminUser.product_id;
 
-        // 3. Perform Transaction: Delete all old, Insert all new
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-
-            // Delete old assignments
-            db.run(`DELETE FROM admin_client_assignments WHERE admin_id = ?`, [adminId], (err) => {
-                if (err) {
-                    console.error(`[CLIENT_CTRL_UPDATE_ASSIGN_DB_ERROR] Failed to delete old assignments:`, err.message);
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ message: "Database error during assignment update." });
-                }
-            });
-
-            // Insert new assignments
+            // 2. Security Check: Verify all submitted clientIds belong to the correct product
             if (clientIds.length > 0) {
-                const stmt = db.prepare(`INSERT INTO admin_client_assignments (admin_id, client_id) VALUES (?, ?)`);
-                clientIds.forEach(clientId => {
-                    stmt.run(adminId, clientId);
-                });
-                stmt.finalize((err) => {
-                    if (err) {
-                        console.error(`[CLIENT_CTRL_UPDATE_ASSIGN_DB_ERROR] Failed to insert new assignments:`, err.message);
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ message: "Database error during assignment update." });
-                    }
-                });
+                const placeholders = clientIds.map((_, i) => `$${i + 2}`).join(','); // $2, $3, ...
+                const productCheckSql = `SELECT COUNT(*) FROM clients WHERE id IN (${placeholders}) AND product_id = $1`;
+                const productCheckRes = await client.query(productCheckSql, [adminProductId, ...clientIds]);
+                
+                if (parseInt(productCheckRes.rows[0].count, 10) !== clientIds.length) {
+                    throw new Error("Forbidden: One or more selected clients do not belong to this product.");
+                }
             }
 
-            // Commit transaction
-            db.run("COMMIT", (err) => {
-                if (err) {
-                    console.error(`[CLIENT_CTRL_UPDATE_ASSIGN_DB_ERROR] Failed to commit transaction:`, err.message);
-                    return res.status(500).json({ message: "Database error committing changes." });
-                }
+            // 3. Delete old assignments
+            await client.query(`DELETE FROM admin_client_assignments WHERE admin_id = $1`, [adminId]);
+            logger.debug(SERVICE_NAME, `Deleted old assignments for Admin ${adminId}.`);
 
-                console.log(`[CLIENT_CTRL_UPDATE_ASSIGN_SUCCESS] Successfully updated assignments for Admin ${adminId}.`);
-                
-                // --- [BLOCK 5] EMIT SOCKET EVENT ---
-                console.log(`[CLIENT_CTRL_UPDATE_ASSIGN] [SOCKET] Emitting 'CLIENT_LIST_UPDATED' event.`);
-                req.io.emit('CLIENT_LIST_UPDATED'); 
-                // --- [END BLOCK 5] ---
-                
-                res.status(200).json({ message: "Client assignments updated successfully." });
-            });
+            // 4. Insert new assignments
+            if (clientIds.length > 0) {
+                // Bulk INSERT (PostgreSQL specific optimization)
+                const insertValues = clientIds.map(clientId => `(${adminId}, ${clientId})`).join(',');
+                const insertSql = `INSERT INTO admin_client_assignments (admin_id, client_id) VALUES ${insertValues}`;
+                await client.query(insertSql);
+                logger.debug(SERVICE_NAME, `Inserted ${clientIds.length} new assignments.`);
+            }
+            
+            // Transaction commits here
         });
+
+        // EMIT SOCKET EVENT (Outside transaction)
+        req.io.emit('CLIENT_LIST_UPDATED');
+        logger.info(SERVICE_NAME, `Successfully updated assignments for Admin ${adminId}.`);
+        
+        res.status(200).json({ message: "Client assignments updated successfully." });
 
     } catch (err) {
-        console.error(`[CLIENT_CTRL_UPDATE_ASSIGN_ERROR] Critical error in update:`, err.message);
+        logger.error(SERVICE_NAME, `Critical error in update:`, err.message);
+        if (err.message.includes("Forbidden")) {
+             return res.status(403).json({ message: err.message });
+        }
+        if (err.message.includes("not found")) {
+             return res.status(404).json({ message: err.message });
+        }
         res.status(500).json({ message: "Server error updating client assignments." });
     }
 };
 
-// --- [END BLOCK 5] ---
-
 // --- [BLOCK 6] NEW HIERARCHICAL DASHBOARD FUNCTION ---
+
 /**
- * @desc      Get all clients for a specific product, with access level
- * @route     GET /api/clients/product/:productId
- * @access    Private (CTO, PO, Admin)
+ * @desc 	  Get all clients for a specific product, with access level
+ * @route 	 GET /api/clients/product/:productId
+ * @access 	 Private (CTO, PO, Admin)
  */
 exports.getClientsForProduct = async (req, res) => {
     const { productId } = req.params;
     const { user } = req;
-    const db = getDb();
-
-    console.log(`[CLIENT_CTRL_GET_PROD] User ${user.id} (Role: ${user.role}) fetching clients for Product ${productId}`);
+    logger.info(SERVICE_NAME, `User ${user.id} (${user.role}) fetching clients for Product ${productId}`);
 
     try {
         // 1. Get all clients for the product
-        const allClientsSql = `SELECT id, name FROM clients WHERE product_id = ?`;
-        const allClients = await new Promise((res, rej) => 
-            db.all(allClientsSql, [productId], (err, rows) => err ? rej(err) : res(rows))
-        );
+        const allClientsSql = `SELECT id, name FROM clients WHERE product_id = $1`;
+        const allClientsRes = await query(allClientsSql, [productId]);
+        const allClients = allClientsRes.rows;
 
         if (allClients.length === 0) {
-            console.log(`[CLIENT_CTRL_GET_PROD] No clients found for product ${productId}.`);
+            logger.warn(SERVICE_NAME, `No clients found for product ${productId}.`);
             return res.status(200).json([]);
         }
-
-        // 2. Determine access level based on role
-        if (user.role === 'CTO') {
-            console.log(`[CLIENT_CTRL_GET_PROD] User is CTO. Granting full access to all clients.`);
+        
+        // 2. CTO/PO (Product Owner) Access Check
+        if (user.role === ROLE_KEYS.CTO || (user.role === ROLE_KEYS.PO && user.product_id === parseInt(productId, 10))) {
+            logger.info(SERVICE_NAME, `User is CTO or PO owner. Granting full access.`);
             const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'full', expires_at: null }));
             return res.status(200).json(clientsWithAccess);
         }
+        
+        let jitClientMap = new Map();
 
-        if (user.role === 'ProductOwner') {
-            // PO has access if it's their product OR they have JIT access
-            if (user.product_id === parseInt(productId, 10)) {
-                console.log(`[CLIENT_CTRL_GET_PROD] User is PO. This is their own product. Granting full access.`);
-                const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'full', expires_at: null }));
-                return res.status(200).json(clientsWithAccess);
-            }
-            
-            // Check for PO-to-PO JIT access
+        // 3. PO JIT Access Check (PO accessing another PO's product)
+        if (user.role === ROLE_KEYS.PO && user.product_id !== parseInt(productId, 10)) {
             const jitSql = `SELECT expires_at FROM product_access_requests 
-                            WHERE product_id = ? AND requester_id = ? AND status = 'approved' AND expires_at > CURRENT_TIMESTAMP`;
-            const jitAccess = await new Promise((res, rej) => db.get(jitSql, [productId, user.id], (err, row) => err ? rej(err) : res(row)));
-
-            if (jitAccess) {
-                console.log(`[CLIENT_CTRL_GET_PROD] User is PO. Granting JIT access via product_access_requests.`);
-                const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'full', expires_at: jitAccess.expires_at }));
+                             WHERE product_id = $1 AND requester_id = $2 AND status = 'approved' AND expires_at > NOW()`;
+            const jitAccessRes = await query(jitSql, [productId, user.id]);
+            
+            if (jitAccessRes.rows.length > 0) {
+                logger.info(SERVICE_NAME, `PO ${user.id} granted JIT access to Product ${productId}.`);
+                const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'full', expires_at: jitAccessRes.rows[0].expires_at }));
                 return res.status(200).json(clientsWithAccess);
             }
-
-            console.log(`[CLIENT_CTRL_GET_PROD] User is PO. This is not their product and no JIT. Returning locked.`);
-            const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'locked', expires_at: null }));
-            return res.status(200).json(clientsWithAccess);
+             // If PO has no JIT, they see the clients but they are locked/read-only (default below)
         }
 
-        if (user.role === 'Administrator') {
+
+        // 4. Administrator Access Check (Assigned Clients + Client JIT)
+        if (user.role === ROLE_KEYS.ADMIN) {
             if (user.product_id !== parseInt(productId, 10)) {
-                console.warn(`[CLIENT_CTRL_GET_PROD_FAIL] Admin ${user.id} tried to access clients for wrong product ${productId}.`);
+                logger.warn(SERVICE_NAME, `Admin ${user.id} tried to access clients for wrong product ${productId}.`);
                 return res.status(403).json({ message: "Forbidden: You do not belong to this product." });
             }
 
-            // Admin is in the right product. Now check assignments and JIT.
-            const assignmentsSql = `SELECT client_id FROM admin_client_assignments WHERE admin_id = ?`;
-            const assignedRows = await new Promise((res, rej) => db.all(assignmentsSql, [user.id], (err, rows) => err ? rej(err) : res(rows)));
-            const assignedClientIds = new Set(assignedRows.map(r => r.client_id));
+            // Get Assigned Clients
+            const assignmentsSql = `SELECT client_id FROM admin_client_assignments WHERE admin_id = $1`;
+            const assignedRes = await query(assignmentsSql, [user.id]);
+            const assignedClientIds = new Set(assignedRes.rows.map(r => r.client_id));
 
+            // Get Client JIT Access
             const jitSql = `SELECT client_id, expires_at FROM client_access_requests 
-                            WHERE requester_id = ? AND status = 'approved' AND expires_at > CURRENT_TIMESTAMP`;
-            const jitRows = await new Promise((res, rej) => db.all(jitSql, [user.id], (err, rows) => err ? rej(err) : res(rows)));
-            const jitClientMap = new Map(jitRows.map(r => [r.client_id, r.expires_at]));
+                             WHERE requester_id = $1 AND status = 'approved' AND expires_at > NOW()`;
+            const jitRes = await query(jitSql, [user.id]);
+            jitClientMap = new Map(jitRes.rows.map(r => [r.client_id, r.expires_at]));
 
-            console.log(`[CLIENT_CTRL_GET_PROD] Admin ${user.id} has ${assignedClientIds.size} assigned clients and ${jitClientMap.size} JIT clients.`);
-
+            logger.info(SERVICE_NAME, `Admin ${user.id} has ${assignedClientIds.size} assigned and ${jitClientMap.size} JIT clients.`);
+            
             const clientsWithAccess = allClients.map(client => {
                 if (assignedClientIds.has(client.id)) {
                     return { ...client, accessLevel: 'full', expires_at: null };
@@ -401,18 +347,21 @@ exports.getClientsForProduct = async (req, res) => {
                 if (jitClientMap.has(client.id)) {
                     return { ...client, accessLevel: 'full', expires_at: jitClientMap.get(client.id) };
                 }
-                return { ...client, accessLevel: 'locked', expires_at: null };
+                // Default: Locked/Visible
+                return { ...client, accessLevel: 'locked', expires_at: null }; 
             });
 
             return res.status(200).json(clientsWithAccess);
         }
 
-        // Default deny for 'User' role
-        console.warn(`[CLIENT_CTRL_GET_PROD_FAIL] User ${user.id} (Role: ${user.role}) is not authorized to view clients.`);
-        return res.status(403).json({ message: "Forbidden: You do not have permission to view this resource." });
+        // 5. Default Deny/Locked View for unassigned roles (e.g., PO viewing another product without JIT)
+        logger.warn(SERVICE_NAME, `User ${user.id} (Role: ${user.role}) is not authorized for full client view.`);
+        const clientsWithAccess = allClients.map(c => ({ ...c, accessLevel: 'locked', expires_at: null }));
+        return res.status(200).json(clientsWithAccess);
+
 
     } catch (err) {
-        console.error(`[CLIENT_CTRL_GET_PROD_ERROR] Critical error:`, err.message);
+        logger.error(SERVICE_NAME, `Critical error:`, err.message);
         res.status(500).json({ message: "Server error fetching clients." });
     }
 };

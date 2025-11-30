@@ -1,56 +1,64 @@
+// backend/services/emailService.js
 const nodemailer = require('nodemailer');
-require('dotenv').config();
+const logger = require('../utils/logger');
+const dns = require('dns');
 
-// [TASK 15 REFACTOR] Centralized Nodemailer Setup
-// [ECONNRESET_FIX] We no longer create a single global transporter.
-// A new transporter will be created for each email to prevent stale connections.
-// console.log('[EmailService] Initializing Nodemailer transporter...');
-// const transporter = ... (REMOVED)
-// transporter.verify(... (REMOVED)
+// [NETWORK FIX] Force Node to look for IPv4 addresses first
+// This fixes the "Greeting never received" timeout on many Windows machines
+dns.setDefaultResultOrder('ipv4first');
 
+const SERVICE_NAME = 'EmailService';
+
+// Check if variables exist
+if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    logger.warn(SERVICE_NAME, 'Email credentials missing in .env. Email sending will fail.');
+}
+
+const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.EMAIL_PORT || '587'),
+    secure: process.env.EMAIL_SECURE === 'true', // Must be FALSE for port 587
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS ? process.env.EMAIL_PASS.replace(/"/g, '') : undefined, // Remove quotes if present
+    },
+    // [TIMEOUT FIXES] Increase timeouts for slow connections
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,   // 10 seconds
+    socketTimeout: 10000,     // 10 seconds
+    tls: {
+        // [DEV ONLY] Helps if you are behind a strict corporate proxy
+        rejectUnauthorized: false
+    }
+});
 
 /**
- * @desc    Sends an email using the centralized transporter
- * @param   {string} to Recipient's email address
- * @param   {string} subject Email subject line
- * @param   {string} html HTML content for the email
+ * Sends an email using the configured transporter.
  */
-const sendEmail = async (to, subject, html) => {
-    console.log(`[EmailService] Attempting to send email to: ${to}`);
+const sendEmail = async (to, subject, text, html) => {
+    logger.info(SERVICE_NAME, `Attempting to send email to: ${to}`);
+
+    const mailOptions = {
+        from: `"VAULT System" <${process.env.EMAIL_USER}>`,
+        to,
+        subject,
+        text,
+        html,
+    };
+
     try {
-        // [ECONNRESET_FIX] Create a new transporter for *this specific email*.
-        // This guarantees a fresh connection and avoids ECONNRESET from idle timeouts.
-        const transporter = nodemailer.createTransport({
-            host: process.env.EMAIL_HOST,
-            port: parseInt(process.env.EMAIL_PORT, 10),
-            secure: process.env.EMAIL_PORT == 465, // true for 465, false for other ports
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS,
-            },
-            tls: {
-                rejectUnauthorized: false
-            }
-        });
-
-        console.log(`[EmailService] Transporter created for ${to}. Verifying connection...`);
-        
-        // We verify *right before sending* to ensure the connection is good.
+        // Verify connection before sending
         await transporter.verify();
-        console.log(`[EmailService] Connection verified. Sending email...`);
+        logger.debug(SERVICE_NAME, 'SMTP Connection verified.');
 
-        const info = await transporter.sendMail({
-            from: `"VAULT" <${process.env.EMAIL_USER}>`,
-            to,
-            subject,
-            html,
-        });
-        
-        console.log(`[EmailService] Email sent successfully to ${to}. Message ID: ${info.messageId}`);
-        return true; 
+        const info = await transporter.sendMail(mailOptions);
+        logger.info(SERVICE_NAME, `Email sent: ${info.messageId}`);
+        return info;
     } catch (error) {
-        console.error(`[EmailService] Error sending email to ${to}:`, error);
-        return false; 
+        logger.error(SERVICE_NAME, `Error sending email to ${to}: ${error.message}`);
+        // We do NOT throw here so the signup process doesn't crash.
+        // We just log the failure.
+        return null; 
     }
 };
 

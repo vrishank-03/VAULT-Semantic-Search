@@ -1,186 +1,285 @@
 // backend/services/RAGPipelineService.js
+// --------------------------------------------------------
+// [ENTERPRISE FIX] Replaced direct socket.emit with Redis Publisher
+// --------------------------------------------------------
 
+const Redis = require('ioredis'); // [NEW] Required for bridging
 const logger = require('../utils/logger');
-const { getDb } = require('../database');
-const { getEmbeddingForQuery } = require('../ml_runner');
+const { query } = require('../database');
 const RetrievalService = require('./RetrievalService');
 const GenerationService = require('./GenerationService');
 const FormattingService = require('./FormattingService');
 const ChatHistoryService = require('./ChatHistoryService');
-const VectorDBService = require('./VectorDBService');
+require('dotenv').config();
 
 const SERVICE_NAME = 'RAGPipelineService';
 
+// --- [NEW] REDIS PUBLISHER SETUP ---
+// We publish events here. backend/index.js subscribes and relays them to the real socket.
+const redisPublisher = new Redis({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379,
+});
+
+const NOTIFICATION_CHANNEL = 'socket-notifications';
+
 /**
- * Runs a read-only, safe metadata query.
+ * [HELPER] Safe Publisher
+ * Instead of socket.emit(), we publish to Redis. 
+ * The API Gateway (index.js) picks this up and sends it to the frontend.
  */
-const runMetadataQuery = (sqlQuery, socket, responseEventName) => {
-    return new Promise((resolve, reject) => {
-        const db = getDb();
-        db.all(sqlQuery, [], (err, rows) => {
-            if (err) {
-                logger.error(SERVICE_NAME, `[AGENT] SQL query failed: ${err.message}. Query: ${sqlQuery}`);
-                socket.emit(responseEventName, {
-                    type: 'error',
-                    data: { message: 'The metadata query failed.' }
-                });
-                return reject(err);
-            }
-            logger.info(SERVICE_NAME, `[AGENT] SQL query successful. Found ${rows.length} rows.`);
-            resolve(rows);
-        });
+const safeEmit = (socketId, event, data) => {
+    if (!socketId) {
+        logger.warn(SERVICE_NAME, `[EMIT_FAIL] No socketId provided for event: ${event}`);
+        return;
+    }
+
+    const payload = JSON.stringify({
+        targetSocketId: socketId,
+        event: event,
+        data: data
     });
+
+    redisPublisher.publish(NOTIFICATION_CHANNEL, payload)
+        .catch(err => logger.error(SERVICE_NAME, `[REDIS_FAIL] Failed to publish ${event}:`, err));
 };
 
-/**
- * Main orchestrated RAG pipeline.
- */
+// --- NEW HELPER: Runs PostgreSQL Read-Only Query ---
+const runMetadataQuery = async (sqlQuery, socketId, responseEventName) => {
+    logger.info(SERVICE_NAME, `[PG_QUERY] Executing metadata query: ${sqlQuery.substring(0, 100)}...`);
+    try {
+        const res = await query(sqlQuery);
+        logger.info(SERVICE_NAME, `[PG_QUERY] SQL query successful. Found ${res.rows.length} rows.`);
+        return res.rows;
+    } catch (err) {
+        logger.error(SERVICE_NAME, `[PG_QUERY] SQL query failed: ${err.message}. Query: ${sqlQuery}`);
+        safeEmit(socketId, responseEventName, {
+            type: 'error',
+            data: { message: 'The database query failed due to invalid SQL or permissions.' }
+        });
+        throw err;
+    }
+};
+
+// --- MAIN ORCHESTRATOR ---
 async function handleUserQuery(options) {
     const {
-        query, modelName, isDeepThink,
-        userId, userRole, roomId, conversationId,
-        socket, responseEventName
+        query, userId, userRole, roomId, conversationId, chatMode: initialMode,
+        socket, // [LEGACY] Might be a mock or disconnected object
+        socketId, // [CRITICAL] The actual ID string we need for Redis
+        responseEventName
     } = options;
 
-    logger.info(SERVICE_NAME, `--- 1. RAG PIPELINE START | Convo ID: ${conversationId} | Room ID: ${roomId} ---`);
-    
+    // Fallback: If socketId wasn't passed explicitly, try to grab it from the socket object
+    const targetSocketId = socketId || socket?.id;
+
+    if (!targetSocketId) {
+        logger.error(SERVICE_NAME, "[FATAL] No targetSocketId found. Cannot stream response.");
+        return;
+    }
+
+    logger.info(SERVICE_NAME, `--- 1. RAG PIPELINE START | Convo ID: ${conversationId} | Mode: ${initialMode} | Socket: ${targetSocketId} ---`);
+
     let fullAiResponse = "";
     let finalPayload = {};
+    let finalChatMode = initialMode;
+    let mathResults = [];
 
     try {
-        const docList = await RetrievalService.getDocumentList(roomId);
-        logger.debug(SERVICE_NAME, `--- 1b. Found ${docList.length} documents.`);
+        // --- 2. AGENT 1: Classification & Mode Selection ---
+        safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Understanding user intent & scope...' } });
 
-        socket.emit(responseEventName, { type: 'status', data: { message: 'Analyzing query...' }});
-        const classification = await GenerationService.classifyQuery(query, userRole, docList);
-        socket.emit(responseEventName, { type: 'classification', data: classification });
+        const classification = await GenerationService.classifyQuery(query, userRole, initialMode);
+        finalChatMode = classification.chatMode;
+        safeEmit(targetSocketId, responseEventName, { type: 'classification', data: classification });
 
+        logger.info(SERVICE_NAME, `[AGENT] Classified Action: ${classification.queryType}. Final Mode: ${finalChatMode}`);
+
+        // --- 3. ACTION ROUTING ---
         switch (classification.queryType) {
-            
+
+            // === PATH A: METADATA / SQL ===
             case 'METADATA':
-                logger.info(SERVICE_NAME, `[AGENT] Query classified as METADATA.`);
-                if (classification.sql === 'PERMISSION_DENIED') {
-                    logger.warn(SERVICE_NAME, `[AGENT] User ${userId} (Role: ${userRole}) denied access to logs.`);
-                    fullAiResponse = "I'm sorry, but your role does not have permission to query system logs.";
-                    socket.emit(responseEventName, { type: 'chunk', data: fullAiResponse });
+            case 'SQL_METADATA':
+                logger.info(SERVICE_NAME, `[AGENT] Query classified as METADATA. SQL: ${classification.sql}`);
+
+                if (!classification.sql || classification.sql === 'PERMISSION_DENIED') {
+                    fullAiResponse = classification.sql === 'PERMISSION_DENIED'
+                        ? "I'm sorry, your role does not have permission to query system logs."
+                        : "I failed to generate a valid metadata query. Please try rephrasing.";
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: fullAiResponse });
                     finalPayload = { answer: fullAiResponse, sources: [] };
-                    break; 
+                    break;
                 }
 
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Querying system metadata...' }});
-                const sqlResult = await runMetadataQuery(classification.sql, socket, responseEventName);
-                const sqlResultJson = JSON.stringify(sqlResult, null, 2);
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Querying PostgreSQL metadata...' } });
+                const sqlResult = await runMetadataQuery(classification.sql, targetSocketId, responseEventName);
 
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Formatting metadata...' }});
-                const metaStream = GenerationService.streamMetadataAnswer(query, sqlResultJson, modelName);
-                
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Synthesizing metadata answer...' } });
+                const metaStream = GenerationService.streamMetadataAnswer(query, JSON.stringify(sqlResult, null, 2), finalChatMode);
+
                 for await (const chunk of metaStream) {
                     fullAiResponse += chunk;
-                    socket.emit(responseEventName, { type: 'chunk', data: chunk });
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: chunk });
                 }
-                
+
                 finalPayload = await FormattingService.formatMetadataAnswer(fullAiResponse, sqlResult);
                 break;
 
+            // === PATH B: RAG (VECTOR + KEYWORD) ===
             case 'VECTOR':
-                // [SCOPED_SEARCH_FIX] Log the document filter
-                logger.info(SERVICE_NAME, `[AGENT] Query classified as VECTOR. Rephrased: "${classification.rephrasedQuery}". Filter: ${JSON.stringify(classification.documentFilter)}`);
-                
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Retrieving relevant documents...' }});
-                logger.info(SERVICE_NAME, '--- 4. RETRIEVING CHUNKS ---');
-                const embedding = await getEmbeddingForQuery(classification.rephrasedQuery);
-                
-                // [SCOPED_SEARCH_FIX] Pass the documentFilter to the query service
-                const initialResults = await VectorDBService.queryByRoom(
-                    embedding, 
-                    roomId, 
-                    10, 
-                    classification.documentFilter // <-- This is the new filter
+            case 'VECTOR_RAG':
+                logger.info(SERVICE_NAME, `[AGENT] Query classified as VECTOR/RAG. Starting Hybrid Retrieval...`);
+
+                // --- 4. RAG Step 1: Query Transformation ---
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Optimizing search strategy...' } });
+
+                const candidateDocs = await RetrievalService.getDocumentList(roomId);
+                const candidateDocNames = candidateDocs.map(d => d.name);
+
+                const rephrasedQuery = await GenerationService.transformQuery(query, candidateDocNames, finalChatMode);
+                logger.info(SERVICE_NAME, `[AGENT] Transformed query: "${rephrasedQuery.substring(0, 50)}..."`);
+
+
+                // --- 5. RAG Step 2: Hybrid Retrieval ---
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Scanning documents for relevant context...' } });
+
+                const retrievalResult = await RetrievalService.retrieveChunks(
+                    rephrasedQuery,
+                    roomId,
+                    classification.documentFilter,
+                    finalChatMode === 'DEEP_RESEARCH' ? 25 : 15
                 );
 
-                if (!initialResults || initialResults.documents.length === 0 || initialResults.documents[0].length === 0) {
-                    logger.warn(SERVICE_NAME, 'No relevant chunks found. Returning early.');
-                    fullAiResponse = "I couldn't find any relevant information for that query in your documents.";
-                    socket.emit(responseEventName, { type: 'chunk', data: fullAiResponse });
+                const mergedChunks = retrievalResult.chunks;
+
+                // [MODE SWITCHING]
+                if (retrievalResult.suggestedMode === 'SEQUENTIAL') {
+                    finalChatMode = 'SEQUENTIAL';
+                    logger.info(SERVICE_NAME, `[MODE_SWITCH] Retrieval suggested SEQUENTIAL mode (Switching to Gemini).`);
+                }
+
+                // [OBSERVABILITY] Log the decision path
+                logger.info(SERVICE_NAME, `[MODE_COORDINATION] Initial: ${initialMode} → Final: ${finalChatMode} | Reason: ${retrievalResult.suggestedMode || 'No override'}`);
+
+                if (mergedChunks.length === 0) {
+                    logger.warn(SERVICE_NAME, 'Hybrid Retrieval found no relevant sources.');
+                    fullAiResponse = `I'm sorry, but I couldn't find any information related to "${query}" in the available documents.`;
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: fullAiResponse });
                     finalPayload = { answer: fullAiResponse, sources: [] };
                     break;
                 }
-                
-                const initialChunks = initialResults.documents[0].map((doc, index) => ({
-                    text: doc,
-                    metadata: initialResults.metadatas[0][index]
-                }));
-                
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Re-ranking results...' }});
-                logger.info(SERVICE_NAME, '--- 6. CALLING RE-RANKER ---');
-                const relevantIndices = await GenerationService.rerankChunks(classification.rephrasedQuery, initialChunks);
-                const relevantSources = relevantIndices
-                    .map(index => (index >= 0 && initialChunks.length > index) ? initialChunks[index] : null)
-                    .filter(Boolean);
-                logger.info(SERVICE_NAME, `--- 9. Final Relevant Sources Count: ${relevantSources.length} ---`);
+
+                // --- 6. RAG Step 3: Re-ranking ---
+                let relevantSources = mergedChunks;
+
+                if (finalChatMode !== 'SEQUENTIAL') {
+                    safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Cross-referencing & filtering results...' } });
+                    const relevantIndices = await GenerationService.rerankChunks(rephrasedQuery, mergedChunks, finalChatMode);
+                    relevantSources = relevantIndices.map(idx => mergedChunks[idx]).filter(Boolean);
+                } else {
+                    logger.info(SERVICE_NAME, `[RERANK] Skipping re-ranking for Sequential Mode (Preserving reading order).`);
+                }
 
                 if (relevantSources.length === 0) {
-                    logger.warn(SERVICE_NAME, 'Re-ranker found no relevant sources. Returning early.');
-                    fullAiResponse = "I found some documents, but after re-ranking, none seemed relevant to your specific query.";
-                    socket.emit(responseEventName, { type: 'chunk', data: fullAiResponse });
+                    logger.warn(SERVICE_NAME, 'Re-ranker filtered out all sources.');
+                    fullAiResponse = `I'm sorry, but after filtering the available information, I couldn't find a precise answer for "${query}".`;
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: fullAiResponse });
                     finalPayload = { answer: fullAiResponse, sources: [] };
                     break;
                 }
 
-                const labeledContext = relevantSources
-                    .map(source => `[Source from Document ID ${source.metadata.documentId}, Page ${source.metadata.pageNumber}]:\n${source.text}`)
-                    .join('\n---\n');
+                // --- 7. RAG Step 4: Math Check ---
+                if (query.toLowerCase().includes('calculate') || query.toLowerCase().includes('sum') || query.toLowerCase().includes('average') || query.toLowerCase().includes('percent')) {
+                    safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Running calculations...' } });
+                    try {
+                        const mathExpression = await GenerationService.extractMathExpression(query, relevantSources);
+                        if (mathExpression) {
+                            const mathResult = await GenerationService.executeMath(mathExpression, finalChatMode);
+                            mathResults.push({ expression: mathExpression, result: mathResult });
+                        }
+                    } catch (mathErr) {
+                        logger.warn(SERVICE_NAME, `Math execution failed: ${mathErr.message}`);
+                    }
+                }
 
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Synthesizing answer...' }});
-                logger.info(SERVICE_NAME, '--- 10. CALLING FINAL ANSWER SYNTHESIZER ---');
-                const answerStream = GenerationService.streamFinalAnswer(labeledContext, query, modelName, isDeepThink);
+                // --- 8. RAG Step 5: Context Assembly ---
+                const labeledContext = relevantSources
+                    .map(source => {
+                        const name = source.metadata?.documentName || "Unknown";
+                        const page = source.metadata?.pageNumber || 1;
+                        const text = source.text || "";
+                        return `[Source: ${name}, Page ${page}]:\n${text}`;
+                    })
+                    .join('\n\n---\n\n');
+
+                // [CRITICAL DEBUG LOG RESTORED]
+                logger.debug(SERVICE_NAME, '--- FINAL CONTEXT FOR LLM ---', { snippet: labeledContext.substring(0, 300) + '...' });
+
+                // --- 9. RAG Step 6: Final Synthesis ---
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Synthesizing final insights...' } });
+
+                const answerStream = GenerationService.streamFinalAnswer(labeledContext, query, finalChatMode, mathResults);
 
                 for await (const chunk of answerStream) {
                     fullAiResponse += chunk;
-                    socket.emit(responseEventName, { type: 'chunk', data: chunk });
+                    // [FIX] Use safeEmit instead of socket.emit
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: chunk });
                 }
 
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Formatting citations...' }});
+                // --- 10. Final Formatting ---
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Formatting citations...' } });
                 finalPayload = await FormattingService.formatAnswer(fullAiResponse, relevantSources);
+                break;
+
+            // === PATH C: DIRECT LLM ===
+            case 'LLM':
+            case 'HYPOTHETICAL':
+                logger.info(SERVICE_NAME, `[AGENT] Query classified as LLM/HYPOTHETICAL.`);
+                safeEmit(targetSocketId, responseEventName, { type: 'status', data: { message: 'Thinking...' } });
+
+                const directPrompt = [{ role: 'user', content: `Respond to this directly: ${query}` }];
+                const directStream = GenerationService.generateStreamingResponse(directPrompt, finalChatMode, 0.7);
+
+                for await (const chunk of directStream) {
+                    fullAiResponse += chunk;
+                    safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: chunk });
+                }
+                finalPayload = { answer: fullAiResponse, sources: [] };
+                break;
+
+            // === PATH D: ACTION ===
+            case 'ACTION':
                 break;
 
             case 'GENERAL':
             default:
                 logger.info(SERVICE_NAME, `[AGENT] Query classified as GENERAL.`);
-                socket.emit(responseEventName, { type: 'status', data: { message: 'Generating response...' }});
-                const generalStream = GenerationService.streamFinalAnswer(
-                    "No context provided.", 
-                    `The user asked a general question: "${query}". Respond conversationally.`,
-                    modelName,
-                    false
-                );
-
-                for await (const chunk of generalStream) {
-                    fullAiResponse += chunk;
-                    socket.emit(responseEventName, { type: 'chunk', data: chunk });
-                }
+                fullAiResponse = "I am a document analysis assistant. I can only answer questions using the private documents you have uploaded.";
+                safeEmit(targetSocketId, responseEventName, { type: 'chunk', data: fullAiResponse });
                 finalPayload = { answer: fullAiResponse, sources: [] };
                 break;
         }
 
-        logger.info(SERVICE_NAME, '--- 11. STREAM COMPLETE. Sending final payload. ---');
-        socket.emit(responseEventName, { type: 'final', data: finalPayload });
+        // --- 11. Post-Stream Cleanup ---
+        logger.info(SERVICE_NAME, '--- STREAM COMPLETE. Sending final payload. ---');
+        safeEmit(targetSocketId, responseEventName, { type: 'final', data: finalPayload });
 
+        // [LOGGING RESTORED] Success log for history save
         ChatHistoryService.saveMessages(conversationId, userId, query, finalPayload.answer, finalPayload)
-            .then(() => logger.info(SERVICE_NAME, `--- 12. History saved for convo ${conversationId} ---`))
-            .catch(err => logger.error(SERVICE_NAME, `--- 12. FAILED to save history for ${conversationId} ---`, err));
-        
-        logger.info(SERVICE_NAME, '--- 13. RAG PIPELINE END ---');
+            .then(() => logger.info(SERVICE_NAME, `--- History saved for convo ${conversationId} ---`))
+            .catch(err => logger.error(SERVICE_NAME, `--- FAILED to save history for ${conversationId} ---`, err));
+
+        logger.info(SERVICE_NAME, '--- RAG PIPELINE END ---');
 
     } catch (error) {
+        // [LOGGING RESTORED] Detailed error logging
         logger.error(SERVICE_NAME, `[FATAL] Unhandled error in RAG Pipeline for convo ${conversationId}:`, error);
-        socket.emit(responseEventName, {
+        safeEmit(targetSocketId, responseEventName, {
             type: 'error',
-            data: { message: `A fatal pipeline error occurred: ${error.message}` }
+            data: { message: `A fatal error occurred. Please check the logs for details. (${error.message.split(':')[0]})` }
         });
     }
 }
 
-module.exports = {
-    handleUserQuery,
-};
+module.exports = { handleUserQuery };

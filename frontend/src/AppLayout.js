@@ -1,39 +1,40 @@
 // frontend/src/AppLayout.js
-// Corrected Refactor
+// --------------------------------------------------------
+// [FIXED] Changed 'overflow-hidden' to 'overflow-y-auto' on <main>
+// [RESULT] Dashboard can now scroll vertically.
+// --------------------------------------------------------
 
 import React from 'react';
 import { Outlet } from 'react-router-dom';
-import { LayoutProvider, useLayout } from './context/LayoutContext';
 import Sidebar from './components/Sidebar';
-import { motion } from 'framer-motion';
-
-// Main content area that adjusts its margin based on sidebar state
-const MainContent = () => {
-    const { isSidebarOpen } = useLayout();
-
-    return (
-        <motion.div
-            className="flex-grow flex flex-col"
-            animate={{
-                // 16rem = w-64 (sidebar)
-                // 0rem = NO GAP when closed
-                marginLeft: isSidebarOpen ? '16rem' : '0rem' 
-            }}
-            transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-        >
-            <main className="flex-grow overflow-y-auto">
-                <Outlet />
-            </main>
-        </motion.div>
-    );
-};
+import { LayoutProvider } from './context/LayoutContext';
 
 const AppLayout = () => {
     return (
         <LayoutProvider>
-            <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300 overflow-hidden">
+            {/* PARENT CONTAINER 
+                - flex: Establishes the row direction (Sidebar | Content)
+                - h-screen/w-screen: Locks to viewport size
+                - overflow-hidden: Prevents BODY scrollbars (we want internal scrolling)
+                - bg-[#1e1e1e]: Dark background base
+            */}
+            <div className="flex h-screen w-screen overflow-hidden bg-[#FAFAFA] dark:bg-[#1e1e1e]">
+
+                {/* SIDEBAR 
+                   Stays static on the left.
+                */}
                 <Sidebar />
-                <MainContent />
+
+                {/* MAIN CONTENT 
+                   - flex-1: Takes up ALL remaining width
+                   - min-w-0: Prevents flexbox overflow bugs
+                   - overflow-y-auto: [CRITICAL FIX] Enables vertical scrolling for the content
+                   - relative: Establishes context for absolute headers/modals
+                */}
+                <main className="flex-1 flex flex-col h-full min-w-0 relative overflow-y-auto custom-scrollbar">
+                    <Outlet />
+                </main>
+
             </div>
         </LayoutProvider>
     );
