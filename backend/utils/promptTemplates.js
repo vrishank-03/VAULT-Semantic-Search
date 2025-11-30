@@ -1,85 +1,55 @@
-// backend/utils/promptTemplates.js
+// backend/utils/promptTemplates.js - HYBRID: ENTERPRISE QUALITY + CRASH PROOF
 
-const logger = require('./logger'); // [FIX] Corrected relative path
+const logger = require('./logger'); 
 const SERVICE_NAME = 'promptTemplates';
 
-// --- 1. SYSTEM PERSONA (Used in Final RAG Answer) ---
-const SYSTEM_PERSONA_PROMPT = `You are "VAULT", a professional, analytical AI assistant.
-- Your primary goal is to provide accurate, relevant, and comprehensive answers by **synthesizing, reasoning over, and inferring from** the provided context.
-- You must *never* use any external knowledge. All parts of your answer must be directly supported by the context.
-- If the user's query truly cannot be answered *at all* by the context (e.g., they ask about a completely different topic), you must state that clearly.
-- When answering, **do not just extract text**. Analyze the user's query and the context, and provide a direct, synthesized answer.
-- You must cite your sources meticulously.
-- When you use information from a source, you *must* append a citation placeholder *exactly* as it was given to you in the context, like: [Source from Document ID 123, Page 2].
-- Do not add conversational preambles like "Here is the answer:" or "Based on the context...". Just provide the direct answer.`;
+// --- 1. SYSTEM PERSONA (Retained from CURR for High Quality) ---
+const SYSTEM_PERSONA_PROMPT = `You are "VAULT", an expert-level analytical AI assistant.
+Your tone is professional, confident, and direct.
 
-// --- 2. QUERY CLASSIFIER (The "Agent" Brain) ---
-/**
- * Creates the prompt for the SQL Agent / Query Classifier.
- * This is the *first* call in the pipeline to decide *what* to do.
- */
-function getQueryClassifierPrompt(userQuery, userRole, docList) {
+## Your Mandate
+1.  **Synthesize, Do Not Summarize:** You MUST synthesize information from the provided context to answer the user's query. DO NOT just list text.
+2.  **No Evasion:** Do not use meta-commentary (e.g., "The document appears to..."). Present your synthesized findings as fact.
+3.  **Comprehensive Answers:** Your answers MUST be detailed, well-structured, and comprehensive.
+4.  **Rich Formatting:** You MUST use rich Markdown (headings, **bolding**, and multi-level bullet points).
+5.  **Strict Sourcing:** You MUST cite your sources for every claim you make using the exact format provided (e.g., '[Source: file.pdf, Page 2]').
+6.  **No External Knowledge:** You must *never* use any external knowledge.
+`;
+
+// --- 2. QUERY CLASSIFIER (Retained detailed logic from CURR) ---
+function getQueryClassifierPrompt(userQuery, userRole) {
     logger.debug(SERVICE_NAME, 'Generating QueryClassifierPrompt');
     
-    const docListString = docList.length > 0
-        ? docList.map(doc => `- ${doc.name} (ID: ${doc.id})`).join('\n') // AI needs the *name*
-        : "No documents found in this room.";
-
     const metadataSchema = `
-TABLE: documents
-COLUMNS: id (INTEGER), name (TEXT), room_id (INTEGER), uploaded_at (DATETIME), uploaded_by_user_id (INTEGER)
-TABLE: users
-COLUMNS: id (INTEGER), email (TEXT), role (TEXT), status (TEXT)
-TABLE: rooms
-COLUMNS: id (INTEGER), name (TEXT), created_at (DATETIME)
-TABLE: room_access
-COLUMNS: room_id (INTEGER), user_id (INTEGER), granted_at (DATETIME)
-TABLE: internal_logs
-COLUMNS: id (INTEGER), timestamp (DATETIME), user_id (INTEGER), action (TEXT), details (TEXT)
+TABLE: documents (id, name, room_id, uploaded_at)
+TABLE: users (id, email, role)
+TABLE: rooms (id, name)
+TABLE: internal_logs (id, action, details)
     `;
 
     return `You are a query classification agent. Your task is to analyze the user's query and classify it into one of three types: "VECTOR", "METADATA", or "GENERAL".
-You must respond *only* with a single, valid JSON object with the keys: "queryType", "rephrasedQuery", "sql", "documentFilter".
+Respond *only* with a single, valid JSON object with the keys: "queryType", "rephrasedQuery", "sql", "documentFilter".
 
 USER ROLE: "${userRole}"
-
 DATABASE SCHEMA:
 ${metadataSchema}
 
-DOCUMENT LIST:
-${docListString}
-
 ---
-Here are the query types:
+TYPES:
+1.  **"VECTOR"**: Content questions (e.g., "Summarize the report", "What are the pain points in X?").
+2.  **"METADATA"**: System/DB questions (e.g., "Who uploaded file X?", "How many documents?").
+3.  **"GENERAL"**: Greetings/Off-topic.
 
-1.  **"VECTOR"**: The query is about the *content* of one or more documents.
-    - Example: "What are the basal requirements?"
-    - Example: "Summarize the pain points in the project."
-    - Example: "what are the pain points in 4MXIGGV3UCFRYPPPQ4LGGB27K42PFGQV.pdf document?"
-
-2.  **"METADATA"**: The query is about system metadata, logs, files, or users.
-    - Example: "How many documents are in this room?"
-    - Example: "Which user uploaded document 14?"
-    - Example: "how many times did Siddhart log into XYZ room?"
-
-3.  **"GENERAL"**: The query is a simple greeting or off-topic question.
-    - Example: "Hello"
-
----
-YOUR TASK:
-Analyze the query below and generate the JSON response.
-1.  Classify its "queryType".
-2.  If the type is "VECTOR":
-    - Set "rephrasedQuery" to a search-optimized version of the query.
-    - **CRITICAL**: Check if the query mentions specific document names (like '4MX...pdf').
-    - If it does, find the *exact* matching document names from the "DOCUMENT LIST" and put them in the "documentFilter" array (e.g., ["4MXIGGV3UCFRYPPPQ4LGGB27K42PFGQV.pdf"]).
-    - If no specific documents are mentioned, set "documentFilter" to null.
+TASK:
+1.  Classify "queryType".
+2.  If "VECTOR":
+    - Set "rephrasedQuery" to null.
+    - **CRITICAL**: Check if the query *explicitly* mentions a document name. If yes, put it in "documentFilter" array. Else null.
     - Set "sql" to null.
-3.  If the type is "METADATA":
-    - You *must* generate a *read-only* (SELECT) SQLite query ("sql") to answer the question.
-    - **SECURITY RULE**: 'User' role CANNOT query 'internal_logs'. If they try, set "sql" to "PERMISSION_DENIED".
-    - Set "rephrasedQuery" and "documentFilter" to null.
-4.  If the type is "GENERAL", set "rephrasedQuery", "sql", and "documentFilter" to null.
+3.  If "METADATA":
+    - Generate a read-only Postgres "sql" query.
+    - **SECURITY**: 'User' role CANNOT query 'internal_logs'.
+4.  If "GENERAL", set all extras to null.
 
 USER QUERY: "${userQuery}"
 
@@ -87,22 +57,54 @@ JSON_RESPONSE:
 `;
 }
 
-// --- 3. RE-RANKER ---
+// --- 3. QUERY TRANSFORMER (Retained detailed logic from CURR) ---
+function getTransformQueryPrompt(originalQuery, candidateDocList) {
+    logger.debug(SERVICE_NAME, 'Generating TransformQueryPrompt');
+    
+    const docListString = candidateDocList.length > 0 
+        ? candidateDocList.join('\n') 
+        : "No candidate documents found.";
+
+    return `You are a search query transformation agent. Your task is to transform a "fluffy" user query into a single, dense, search-optimized query string.
+
+USER QUERY: "${originalQuery}"
+CANDIDATE DOCUMENTS:
+- ${docListString}
+
+YOUR TASK:
+1.  Analyze the USER QUERY for its core intent.
+2.  Analyze the CANDIDATE DOCUMENT LIST for key topics/names.
+3.  Generate 5-10 search-optimized keywords relevant to the query AND documents.
+4.  Combine into a single, dense query string.
+5.  Respond *only* with this string.
+
+EXAMPLE:
+Query: "what about education?" -> New Query: education report cards student assessment "Maine High School Assessment" SAT
+`;
+}
+
+// --- 4. RE-RANKER (HYBRID: Crash-Proof Logic + Wide Funnel) ---
 function getRerankPrompt(query, chunks) {
     logger.debug(SERVICE_NAME, 'Generating RerankPrompt');
     
     let chunkText = "No chunks found.";
     if (chunks && chunks.length > 0) {
         chunkText = chunks.map((chunk, index) => {
-            // Use camelCase to match our metadata
-            return `[CHUNK ${index} | Doc ID ${chunk.metadata.documentId} | Page ${chunk.metadata.pageNumber}]:\n"${chunk.text}"`
+            // [CRASH_PROOF_LOGIC] This is the fix from 'new'
+            const text = chunk.text || chunk.content || "";
+            const meta = chunk.metadata || {};
+            const docName = meta.documentName || meta.source || `DocID ${meta.documentId || '?'}`;
+            const page = meta.pageNumber || meta.page || '?';
+
+            // [QUALITY_FORMAT] This is the format from 'curr'
+            return `[CHUNK ${index} | Source: ${docName}, Page ${page}]:\n"${text}"`
         }).join('\n---\n');
     }
 
-    return `You are a re-ranking agent. I have a query and several document chunks.
-Your task is to analyze the relevance of each chunk to the query and return a JSON array of the *indices* of the most relevant chunks (max 5), in order from most to least relevant.
-If no chunks are relevant, return an empty array [].
-You must respond *only* with a single, valid JSON array and nothing else.
+    return `You are a re-ranking agent. Analyze the relevance of each chunk to the query.
+Return a JSON array of the *indices* of the most relevant chunks (max 25), in order from most to least relevant.
+If no chunks are relevant, return [].
+Respond *only* with the JSON array.
 
 QUERY: "${query}"
 
@@ -112,83 +114,71 @@ ${chunkText}
 JSON_RESPONSE:`;
 }
 
-// --- 4. FINAL RAG ANSWER SYNTHESIZER (REASONING_FIX) ---
+// --- 5. FINAL ANSWER (Retained "Hyper-Decomposition" from CURR) ---
 function getFinalAnswerPrompt(context, query, isDeepThink = false) {
-    logger.debug(SERVICE_NAME, `Generating FinalAnswerPrompt (DeepThink: ${isDeepThink})`);
+    logger.debug(SERVICE_NAME, `Generating "Hyper-Decomposition" FinalAnswerPrompt (DeepThink: ${isDeepThink})`);
     
-    let userMessage;
-    
-    if (isDeepThink) {
-        userMessage = `CONTEXT:
+    const userMessage = `CONTEXT:
+You have been provided with an extensive set of context passages.
+---
 ${context}
 ---
-TASK:
-This is "Deep Thinking Mode". You must provide a highly detailed, comprehensive, and multi-paragraph response to the following query.
-**Deeply analyze** the context above to provide the answer.
-You must **synthesize** information from *all* relevant sources to build a complete picture.
-If the query asks for information *not* present (e.g., "what does this document fail to cover?" or "what are the risks?"), you must first **state what the document *does* cover**, and then **use reasoning to infer** what is missing or implied.
-Do not just list facts; explain *how* they connect.
-You *must* cite every piece of information you use with its placeholder (e.g., [Source from Document ID 123, Page 2]).
-
-QUERY: "${query}"`;
-    } else {
-        userMessage = `CONTEXT:
-${context}
----
-TASK:
-**Deeply analyze** the context above to provide a concise and direct answer to the following query.
-You must **synthesize** the answer, not just copy-paste text.
-If the query asks for information *not* present (e.g., "what does this document fail to cover?"), you must first **state what the document *does* cover**, and then **use reasoning to infer** what is missing.
-You *must* cite every piece of information you use with its placeholder (e.g., [Source from Document ID 123, Page 2]).
-
-QUERY: "${query}"`;
-    }
-
-    return [
-        {
-            role: 'system',
-            content: SYSTEM_PERSONA_PROMPT
-        },
-        {
-            role: 'user',
-            content: userMessage
-        }
-    ];
-}
-
-// --- 5. METADATA ANSWER SYNTHESIZER ---
-function getMetadataAnswerPrompt(query, sqlResultJson) {
-    logger.debug(SERVICE_NAME, 'Generating MetadataAnswerPrompt');
-
-    return `You are an AI assistant. A user asked a question about system metadata, and I have run a SQL query to get the answer.
-Your task is to take the user's query and the JSON result from the SQL query and provide a clear, natural language answer.
-Do not mention SQL or databases. Just give the answer.
+## TASK:
+Perform a deep analysis of the provided context to answer the user's query.
 
 USER QUERY: "${query}"
 
-JSON RESULT:
-${sqlResultJson}
+---
+## MANDATORY OUTPUT STRUCTURE AND INSTRUCTIONS:
+You MUST follow this structure and these instructions precisely.
 
-NATURAL LANGUAGE ANSWER:`;
+**1. Meta-Analysis Preamble (MANDATORY):**
+* Provide a one-sentence preamble contextualizing the document(s) (e.g., "This appears to be a public testimony...").
+
+**2. Main Analysis Section (MANDATORY):**
+* Create a numbered, **bolded** heading for each main point.
+* **DO NOT USE DENSE PARAGRAPHS.**
+* Use a **multi-level bulleted list** to synthesize the "what," "why," and "so what?".
+* You MUST **bold** key terms, names, and statistics.
+* You MUST append the citation (e.g., '[Source: file.pdf, Page 2]') to every claim.
+
+**3. "In Short" Summary (MANDATORY):**
+* A scannable, **bulleted list** summarizing the key takeaways.
+
+**4. Suggested Follow-ups (MANDATORY):**
+* Provide 3-4 suggested follow-up questions to explore the topic deeper.
+
+**5. Missing Information:**
+* If the context is insufficient, state it clearly.
+`;
+
+    return [
+        { role: 'system', content: SYSTEM_PERSONA_PROMPT },
+        { role: 'user', content: userMessage }
+    ];
 }
 
+// --- 6. METADATA ANSWER ---
+function getMetadataAnswerPrompt(query, sqlResultJson) {
+    logger.debug(SERVICE_NAME, 'Generating MetadataAnswerPrompt');
+    return `You are an AI assistant. Answer this metadata question based on the SQL result.
+QUERY: "${query}"
+RESULT: ${sqlResultJson}
+ANSWER (Natural Language, Markdown):`;
+}
 
-// --- 6. TITLE GENERATOR ---
+// --- 7. TITLE GENERATOR ---
 function getTitleGenerationPrompt(userMessage, aiMessage) {
     logger.debug(SERVICE_NAME, 'Generating TitleGenerationPrompt');
-    
-    return `Analyze the following user query and AI response.
-Generate a very short, concise, and descriptive title for this conversation (max 5 words).
-Respond *only* with the title text and nothing else (no quotes).
-
+    return `Generate a very short, concise title (max 5 words) for this conversation.
 USER: "${userMessage.substring(0, 100)}..."
 AI: "${aiMessage.substring(0, 150)}..."
-
 TITLE:`;
 }
 
 module.exports = {
     getQueryClassifierPrompt,
+    getTransformQueryPrompt,
     getRerankPrompt,
     getFinalAnswerPrompt,
     getMetadataAnswerPrompt,

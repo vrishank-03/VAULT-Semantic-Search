@@ -1,87 +1,90 @@
 // backend/middleware/authMiddleware.js
-
 const jwt = require('jsonwebtoken');
-const { getDb } = require('../database');
+const { query } = require('../database'); // Use Postgres query directly
+const logger = require('../utils/logger');
 
-const protect = (req, res, next) => {
+const SERVICE_NAME = 'AuthMiddleware';
+
+/**
+ * @desc Middleware to protect routes, verify JWT, and load the full user object.
+ */
+const protect = async (req, res, next) => {
     let token;
 
-    // 1. Check for the 'Authorization' header and ensure it starts with 'Bearer'
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
         try {
-            // 2. Extract the token from the header
             token = req.headers.authorization.split(' ')[1];
-
-            // 3. Verify the token
+            
+            // 1. Verify Token
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             
-            // 4. Find the user from the database
-            // [TASK 8 ATOMIC LOG] Modified SQL to select role and status for RBAC
-            const db = getDb();
-
-            // --- [BUG_FIX] Added product_id to the SELECT statement ---
-            const sql = 'SELECT id, email, role, status, product_id FROM users WHERE id = ?';
+            // 2. Fetch User (Postgres syntax $1)
+            const sql = `
+                SELECT u.id, u.email, u.role, u.status, u.product_id, rd.hierarchy_level
+                FROM users u
+                JOIN role_definitions rd ON u.role = rd.role_key
+                WHERE u.id = $1
+            `;
             
-            db.get(sql, [decoded.id], (err, user) => {
-            // --- [END BUG_FIX] ---
+            const result = await query(sql, [decoded.id]);
+            const user = result.rows[0];
 
-                if (err || !user) {
-                    return res.status(401).json({ message: 'Not authorized, user not found.' });
-                }
+            if (!user) {
+                logger.warn(SERVICE_NAME, `User ID ${decoded.id} not found in DB (Token valid but user gone).`);
+                // RETURN JSON 401 so frontend clears token
+                return res.status(401).json({ message: 'Not authorized, user not found.' });
+            }
 
-                // [TASK 8 ATOMIC LOG] NEW: Check if the user is active.
-                // A user who is suspended, deactivated, or pending cannot access protected routes.
-                if (user.status !== 'active') {
-                    console.warn(`[AUTH_MIDDLEWARE_WARN] User ${user.email} (Status: ${user.status}) blocked by protect middleware.`);
-                    return res.status(403).json({ message: `Your account is not active (Status: ${user.status}).` });
-                }
-                
-                // 5. Attach the full user object to the request
-                // This object will now correctly include 'product_id'
-                req.user = user;
-                next(); // Success, Proceed to the protected route.
-            });
+            if (user.status !== 'active') {
+                return res.status(403).json({ message: 'Account is not active.' });
+            }
+
+            req.user = user;
+            next();
 
         } catch (error) {
-            console.error('Token verification failed:', error);
+            logger.error(SERVICE_NAME, 'Token verification failed:', error.message);
             return res.status(401).json({ message: 'Not authorized, token failed.' });
         }
-    }
-
-    // If there's no token in the header at all, reject the request.
-    if (!token) {
-        return res.status(401).json({ message: 'Not authorized, no token provided.' });
+    } else {
+        return res.status(401).json({ message: 'Not authorized, no token.' });
     }
 };
 
-// --- [TASK 8] NEW: Role-Based Access Control Middleware ---
 /**
- * @desc      Middleware to authorize users based on their role.
- * @param     {...string} roles - An array of roles (e.g., 'Administrator', 'ProductOwner', 'CTO')
- * @example   router.get('/admin-only', protect, authorize('Administrator', 'CTO'), ...)
+ * @desc Role-based authorization
  */
-const authorize = (...roles) => {
-    return (req, res, next) => {
-        // [TASK 8 ATOMIC LOG] This middleware MUST run *after* the 'protect' middleware.
-        // 'protect' sets req.user, including req.user.role.
+const authorize = (...minimumRoleKeys) => {
+    return async (req, res, next) => {
         if (!req.user || !req.user.role) {
-            console.error('[AUTH_MIDDLEWARE_ERROR] authorize() ran before protect(). req.user is not set.');
-            return res.status(401).json({ message: 'Not authorized.' });
+            return res.status(401).json({ message: 'User not authenticated' });
         }
 
-        if (!roles.includes(req.user.role)) {
-            console.warn(`[AUTH_MIDDLEWARE_WARN] User ${req.user.email} (Role: ${req.user.role}) tried to access a route restricted to roles: [${roles.join(', ')}]. FORBIDDEN.`);
-            return res.status(403).json({ message: 'Forbidden: You do not have the required role to perform this action.' });
-        }
+        const userLevel = req.user.hierarchy_level;
 
-        // [TASK 8 ATOMIC LOG] User has the required role. Proceed.
-        next();
+        // Dynamically fetch required levels
+        const placeholders = minimumRoleKeys.map((_, i) => `$${i + 1}`).join(',');
+        const sql = `SELECT hierarchy_level FROM role_definitions WHERE role_key IN (${placeholders})`;
+        
+        try {
+            const result = await query(sql, minimumRoleKeys);
+            const levels = result.rows.map(r => r.hierarchy_level);
+
+            if (levels.length === 0) return res.status(500).json({ message: 'Invalid role config' });
+
+            const lowestRequiredLevel = Math.min(...levels); // Lower number = Higher privilege
+
+            if (userLevel <= lowestRequiredLevel) {
+                next();
+            } else {
+                logger.warn(SERVICE_NAME, `User ${req.user.email} denied. Level ${userLevel} > ${lowestRequiredLevel}`);
+                res.status(403).json({ message: 'Forbidden: Insufficient permissions.' });
+            }
+        } catch (err) {
+            logger.error(SERVICE_NAME, 'Authorize DB error', err);
+            res.status(500).json({ message: 'Authorization error' });
+        }
     };
 };
-// --- [END TASK 8] ---
 
-
-module.exports = { 
-    protect,
-    authorize // --- [TASK 8] NEW: Export authorize
-};
+module.exports = { protect, authorize };

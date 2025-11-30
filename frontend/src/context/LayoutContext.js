@@ -1,26 +1,36 @@
 // frontend/src/context/LayoutContext.js
-// Corrected File
+// --------------------------------------------------------
+// [FIXED] Added missing sidebar toggle state to prevent crash
+// [FIXED] Default state logic based on screen width
+// --------------------------------------------------------
 
-import React, { createContext, useState, useContext } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 
-const LayoutContext = createContext(null);
+const LayoutContext = createContext();
 
+// Hook to consume the context
+export const useLayout = () => {
+    const context = useContext(LayoutContext);
+    if (!context) {
+        throw new Error("useLayout must be used within a LayoutProvider");
+    }
+    return context;
+};
+
+// Provider Component
 export const LayoutProvider = ({ children }) => {
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-    // --- [NEW] State for dynamic sidebar content ---
+    // 1. Dynamic Sidebar Content (for injecting Chat History)
     const [sidebarContent, setSidebarContent] = useState(null);
 
-    const toggleSidebar = () => {
-        setIsSidebarOpen(prev => !prev);
-    };
+    // 2. Sidebar Visibility State (The missing piece causing the crash)
+    // Default: Open on Desktop (>= 768px), Closed on Mobile
+    const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768);
 
-    // --- [MODIFIED] Removed useMemo for stability ---
-    // This value object will be passed to all consumers
     const value = {
-        isSidebarOpen,
-        toggleSidebar,
         sidebarContent,
-        setSidebarContent, // Expose setter
+        setSidebarContent,
+        isSidebarOpen,
+        setIsSidebarOpen
     };
 
     return (
@@ -28,12 +38,4 @@ export const LayoutProvider = ({ children }) => {
             {children}
         </LayoutContext.Provider>
     );
-};
-
-export const useLayout = () => {
-    const context = useContext(LayoutContext);
-    if (!context) {
-        throw new Error('useLayout must be used within a LayoutProvider');
-    }
-    return context;
 };

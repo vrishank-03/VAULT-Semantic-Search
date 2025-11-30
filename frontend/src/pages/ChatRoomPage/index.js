@@ -1,36 +1,35 @@
-// frontend/src/pages/ChatRoomPage/index.js (Corrected)
+// frontend/src/pages/ChatRoomPage/index.js
+// --------------------------------------------------------
+// [FIXED] Race Condition: Data fetching now waits for isAccessGranted state update
+// [FIXED] "Room 1" persisting: UI waits for non-null roomName
+// --------------------------------------------------------
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+import { deleteDocument } from '../../services/api';
+import { toast } from 'react-hot-toast';
 import { FiAlertTriangle, FiClock } from 'react-icons/fi';
 import { motion } from 'framer-motion';
 
-// Import New Hooks
+// --- COMPONENTS ---
+import ChatHeader from './components/ChatHeader';
+import MessageList from './components/MessageList';
+import ChatInput from './components/ChatInput';
+import DocumentLibraryModal from './components/DocumentLibraryModal';
+import ChatSearchModal from './components/ChatSearchModal';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import PdfViewer from '../../PdfViewer';
+
+// --- HOOKS ---
 import { useRoomAccess } from './hooks/useRoomAccess';
 import { useConversations } from './hooks/useConversations';
 import { useDocuments } from './hooks/useDocuments';
 import { useFileUpload } from './hooks/useFileUpload';
 import { useChatStream } from './hooks/useChatStream';
 
-// Import New Components
-import ChatHeader from './components/ChatHeader';
-import MessageList from './components/MessageList';
-import ChatInput from './components/ChatInput';
-import { getInitialMessages } from './utils/messageUtils';
-import DocumentLibraryModal from './components/DocumentLibraryModal'; // [NEW] Import the modal
-
-// Import Old Components
-import Toast from '../../Toast';
-import PdfViewer from '../../PdfViewer';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import ProcessingAnimation from '../../components/ProcessingAnimation';
-
-// [NEW] Import the delete function from the API
-import { deleteDocument } from '../../services/api'; 
-
-// --- JitAccessModal (Omitted for brevity, it's unchanged) ---
+// --- JIT ACCESS MODAL ---
 const JitAccessModal = ({ status, onGoBack }) => {
-    // ... same as before
     const getStatusContent = () => {
         switch (status) {
             case 'pending': return { icon: <FiClock className="text-yellow-500" size={48} />, title: "Access Pending", message: "Your request is pending approval." };
@@ -52,186 +51,204 @@ const JitAccessModal = ({ status, onGoBack }) => {
         </div>
     );
 };
-// --- End Modals ---
 
-
-function ChatRoomPage() {
+const ChatRoomPage = () => {
     const { roomId } = useParams();
+    const { user } = useAuth();
     const navigate = useNavigate();
-    
-    // --- Central State (Lifted from hooks) ---
-    const [toast, setToast] = useState(null);
-    const [input, setInput] = useState('');
+
+    // --- STATE ---
+    const [inputMessage, setInputMessage] = useState('');
     const [messages, setMessages] = useState([]);
-    const [isSearching, setIsSearching] = useState(false);
     const [activeConversationId, setActiveConversationId] = useState(null);
-    const mainInputRef = useRef(null); 
+    const [chatMode, setChatMode] = useState('STANDARD');
 
-    // --- [NEW] State for the Document Library Modal ---
+    // Modals
     const [isDocLibraryOpen, setIsDocLibraryOpen] = useState(false);
+    const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
 
-    // --- Custom Hooks ---
+    // Refs
+    const isSearchingRef = useRef(false);
+    const messagesEndRef = useRef(null);
+    const fileInputRef = useRef(null);
+
+    // --- HOOKS ---
     const { accessStatus, roomName, checkRoomAccess, setRoomName } = useRoomAccess(roomId);
+
+    // Derived state for safe fetching
     const isAccessGranted = accessStatus === 'granted';
 
     const { fetchConversations } = useConversations(
-        roomId, 
-        roomName, 
-        isAccessGranted, 
-        isSearching,
-        setMessages,
-        activeConversationId,
-        setActiveConversationId
-    );
-    
-    const { 
-        handleSearch, 
-        handleStopGeneration, 
-        handleEditMessage 
-    } = useChatStream(
-        roomId, 
-        activeConversationId, 
-        setActiveConversationId,
-        fetchConversations,
-        setToast,
-        setInput,
-        setMessages,
-        setIsSearching
+        roomId, roomName, isAccessGranted,
+        isSearchingRef,
+        setMessages, activeConversationId, setActiveConversationId
     );
 
     const {
         documents, fetchDocuments, pdfUrl, isPdfLoading, currentHighlight,
-        // [MODIFIED] We no longer need showDocuments/setShowDocuments from this hook
-        handleSourceClick, 
-        handleOpenDocument, closePdfViewer
-    } = useDocuments(roomId, isAccessGranted, setToast);
+        handleSourceClick, handleOpenDocument, closePdfViewer
+    } = useDocuments(roomId, isAccessGranted, toast);
 
-    const { isUploading, fileInputRef, handleFileUpload, handleStopUpload } = useFileUpload(
-        roomId, 
-        setToast, 
-        fetchDocuments // Pass in the fetcher to refresh the list on success
+    const { isUploading, handleFileUpload, handleStopUpload } = useFileUpload(roomId, toast, fetchDocuments);
+
+    const { handleSearch, handleStopGeneration, handleEditMessage } = useChatStream(
+        roomId, activeConversationId, setActiveConversationId, fetchConversations,
+        toast, setInputMessage, setMessages, isSearchingRef
     );
-    
-    // --- Initialization Effect (Unchanged) ---
-    useEffect(() => {
-        const initializeRoom = async () => {
-            const currentRoomName = await checkRoomAccess();
-            if (currentRoomName) {
-                setRoomName(currentRoomName);
-                setMessages(getInitialMessages(currentRoomName));
-                fetchDocuments();
-                fetchConversations();
-            }
-        };
-        initializeRoom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [roomId]); 
 
-    // --- Helper ---
+    // --- INITIALIZATION STEP 1: CHECK ACCESS ---
+    useEffect(() => {
+        checkRoomAccess();
+    }, [roomId, checkRoomAccess]);
+
+    // --- INITIALIZATION STEP 2: LOAD DATA (Only when access is confirmed) ---
+    useEffect(() => {
+        if (isAccessGranted) {
+            console.log('[ChatRoomPage] Access Granted. Fetching initial data...');
+            fetchDocuments();
+            fetchConversations();
+        }
+    }, [isAccessGranted, fetchDocuments, fetchConversations]);
+
+    // --- WELCOME MESSAGE LOGIC ---
+    useEffect(() => {
+        // Only set welcome message if we have access AND the real room name is loaded
+        if (isAccessGranted && roomName && messages.length === 0) {
+            // Avoid setting if we are waiting for history load (handled by useConversations)
+            // But if history is truly empty, useConversations will leave it empty, so we fill it here.
+            // We'll use a small timeout to let useConversations run first.
+            const timer = setTimeout(() => {
+                setMessages(prev => {
+                    if (prev.length === 0) {
+                        return [{
+                            sender: 'ai',
+                            text: `Welcome to **${roomName}**. I am ready to analyze your documents.`
+                        }];
+                    }
+                    return prev;
+                });
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [isAccessGranted, roomName]);
+
+
+    // --- HANDLERS ---
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    useEffect(() => { scrollToBottom(); }, [messages]);
+
+    const onSendMessage = (e) => {
+        e?.preventDefault();
+        handleSearch(inputMessage, chatMode);
+        setInputMessage('');
+    };
+
     const handleCopyToClipboard = (text) => {
         navigator.clipboard.writeText(text).then(() => {
-            setToast({ message: 'Copied to clipboard!', type: 'success' });
-        }, (err) => {
-            setToast({ message: 'Failed to copy text.', type: 'error' });
+            toast.success('Copied to clipboard!');
         });
     };
-    
-    const onEditMessage = (index) => {
-        handleEditMessage(index);
-        mainInputRef.current?.focus();
-    };
 
-    // --- [NEW] Delete Document Handler ---
-    const handleDeleteDocument = async (docId) => {
-        // Use a simple confirm dialog. For enterprise, use a dedicated ConfirmModal.
-        if (window.confirm('Are you sure you want to permanently delete this document? This is irreversible.')) {
+    const handleDeleteDocumentWrapper = async (docId) => {
+        if (window.confirm('Are you sure you want to permanently delete this document?')) {
             try {
                 await deleteDocument(docId);
-                setToast({ message: 'Document successfully deleted.', type: 'success' });
-                fetchDocuments(); // Refresh the document list
+                toast.success('Document deleted.');
+                fetchDocuments();
             } catch (err) {
-                console.error("Failed to delete document:", err);
-                setToast({ message: err.response?.data?.message || 'Failed to delete document.', type: 'error' });
+                toast.error('Failed to delete document.');
             }
         }
     };
 
-    // --- [NEW] View Document Handler (for Modal) ---
-    const handleViewDocument = (doc) => {
-        handleOpenDocument(doc.id, doc.name);
-        setIsDocLibraryOpen(false); // Close modal after clicking
-    };
+    const isThinking = isSearchingRef.current || (messages.length > 0 && messages[messages.length - 1].isLoading);
 
     return (
-        <>
-            {isUploading && <ProcessingAnimation onStopUpload={handleStopUpload} />}
-
-            <div className="flex flex-col h-full">
-                {/* --- Access Control Logic (Unchanged) --- */}
+        <div className="flex h-screen bg-[#1e1e1e] text-white overflow-hidden">
+            <div className="flex-1 flex flex-col h-full relative">
                 {!isAccessGranted ? (
                     <div className="flex-grow flex items-center justify-center relative">
-                        {accessStatus === 'checking' && <LoadingSpinner />}
-                        {accessStatus !== 'checking' && (
-                            <JitAccessModal status={accessStatus} onGoBack={() => navigate('/dashboard')} />
-                        )}
+                        {accessStatus === 'checking' ? <LoadingSpinner /> : <JitAccessModal status={accessStatus} onGoBack={() => navigate('/dashboard')} />}
                     </div>
                 ) : (
-                <>
-                    {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-                    
-                    {/* [MODIFIED] ChatHeader props are simplified */}
-                    <ChatHeader
-                        documentCount={documents.length}
-                        onShowDocuments={() => setIsDocLibraryOpen(true)}
-                    />
-                    
-                    <MessageList
-                        messages={messages}
-                        isSearching={isSearching}
-                        handleEditMessage={onEditMessage} 
-                        handleCopyToClipboard={handleCopyToClipboard}
-                        handleSourceClick={handleSourceClick}
-                    />
+                    <>
+                        {/* Ensure roomName is passed to Header */}
+                        <ChatHeader
+                            title={roomName}
+                            subtitle={chatMode === 'DEEP_RESEARCH' ? 'Deep Research Mode' : 'Standard Analysis'}
+                            documentCount={documents.length}
+                            onOpenLibrary={() => setIsDocLibraryOpen(true)}
+                            onShowSearch={() => setIsSearchModalOpen(true)}
+                            isUploading={isUploading}
+                        />
 
-                    <ChatInput
-                        input={input}
-                        setInput={setInput}
-                        isSearching={isSearching}
-                        isUploading={isUploading}
-                        handleSearch={handleSearch}
-                        handleStopGeneration={handleStopGeneration}
-                        handleFileUpload={handleFileUpload}
-                        fileInputRef={fileInputRef}
-                        mainInputRef={mainInputRef}
-                    />
-                </>
+                        <div className="flex-1 overflow-y-auto custom-scrollbar px-4">
+                            <MessageList
+                                messages={messages}
+                                handleSourceClick={handleSourceClick}
+                                isSearching={isThinking}
+                                handleEditMessage={handleEditMessage}
+                                handleCopyToClipboard={handleCopyToClipboard}
+                            />
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        <div className="w-full bg-transparent pb-4">
+                            <ChatInput
+                                inputMessage={inputMessage}
+                                setInputMessage={setInputMessage}
+                                handleSendMessage={onSendMessage}
+                                isLoading={isThinking}
+                                isUploading={isUploading}
+                                fileInputRef={fileInputRef}
+                                handleFileUpload={handleFileUpload}
+                                handleStopUpload={handleStopUpload}
+                                chatMode={chatMode}
+                                setChatMode={setChatMode}
+                                onStopGeneration={handleStopGeneration}
+                            />
+                        </div>
+                    </>
                 )}
             </div>
 
-            {/* --- PDF Viewer Modal (Unchanged) --- */}
+            {/* --- MODALS --- */}
+            {isDocLibraryOpen && (
+                <DocumentLibraryModal
+                    isOpen={isDocLibraryOpen}
+                    roomId={roomId}
+                    documents={documents}
+                    onClose={() => setIsDocLibraryOpen(false)}
+                    onView={(doc) => { handleOpenDocument(doc.id, doc.name); setIsDocLibraryOpen(false); }}
+                    onDelete={handleDeleteDocumentWrapper}
+                />
+            )}
+
+            {isSearchModalOpen && (
+                <ChatSearchModal
+                    isOpen={isSearchModalOpen}
+                    onClose={() => setIsSearchModalOpen(false)}
+                    setToast={toast}
+                />
+            )}
+
             {(isPdfLoading || pdfUrl) && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[60]">
                     {isPdfLoading ? (
-                        <div className="text-white text-lg flex flex-col items-center">
+                        <div className="text-white flex flex-col items-center">
                             <LoadingSpinner />
-                            <span className="mt-2">Loading secure document...</span>
+                            <span className="mt-4 text-sm font-medium">Decrypting Document...</span>
                         </div>
                     ) : (
                         <PdfViewer fileUrl={pdfUrl} onClose={closePdfViewer} highlight={currentHighlight} />
                     )}
                 </div>
             )}
-
-            {/* --- [NEW] Document Library Modal --- */}
-            <DocumentLibraryModal
-                isOpen={isDocLibraryOpen}
-                onClose={() => setIsDocLibraryOpen(false)}
-                documents={documents}
-                onView={handleViewDocument}
-                onDelete={handleDeleteDocument}
-            />
-        </>
+        </div>
     );
-}
+};
 
 export default ChatRoomPage;

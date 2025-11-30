@@ -1,900 +1,427 @@
-const sqlite3 = require('sqlite3').verbose();
-const { ChromaClient } = require('chromadb');
+// backend/database.js - ENTERPRISE SANITIZATION ADDED
+
+const { Pool } = require('pg'); 
 require('dotenv').config();
 const crypto = require('crypto');
-const logger = require('./utils/logger'); // [WORKER_FIX] Use the logger
+const logger = require('./utils/logger'); 
 
-const DB_FILE = 'vault.db';
-let db = null; // [WORKER_FIX] Initialize db as null
+let pool = null; 
 
-const chromaClient = new ChromaClient({
-    path: `http://${process.env.CHROMA_HOST}:${process.env.CHROMA_PORT}`,
-});
-
-// [WORKER_FIX] getDb is now a singleton initializer
-const getDb = () => {
-    if (!db) {
-        logger.info('getDb', 'Database connection not found. Creating new connection...');
-        db = new sqlite3.Database(DB_FILE, (err) => {
-            if (err) {
-                logger.error('getDb', 'FATAL: Error opening database:', err.message);
-                throw err; 
-            }
-            logger.info('getDb', 'Connected to the SQLite database.');
-        });
-        
-        db.run('PRAGMA journal_mode = WAL;', (err) => {
-            if (err) {
-                logger.warn('getDb', 'Failed to enable WAL mode. Concurrency might be limited.', err.message);
-            } else {
-                logger.info('getDb', 'WAL (Write-Ahead Logging) mode enabled for SQLite.');
-            }
-        });
-    }
-    return db;
+// --- CONFIGURATION ---
+const PG_CONFIG = {
+    user: process.env.PG_USER,
+    host: process.env.PG_HOST,
+    database: process.env.PG_DATABASE,
+    password: process.env.PG_PASSWORD,
+    port: process.env.PG_PORT || 5432,
+    max: 20, 
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
 };
 
-// [WORKER_FIX] initializeDatabase now *uses* getDb
-const initializeDatabase = () => {
-    return new Promise((resolve, reject) => {
-        logger.info('DB_INIT', 'Ensuring database connection...');
-        const dbInstance = getDb(); // This will create the connection
-        
-        logger.info('DB_INIT', 'Database connection ensured. Starting table serialization...');
-        dbInstance.serialize(() => {
-            // --- Users Table [MODIFIED] ---
-            logger.info('DB_INIT', 'Attempting to create_users_table (with manager_id)...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    is_email_verified INTEGER DEFAULT 0,
-                    email_verification_token TEXT,
-                    password_reset_token TEXT,
-                    password_reset_expires INTEGER,
-                    picture_url TEXT,
-                    role TEXT NOT NULL DEFAULT 'User',
-                    status TEXT NOT NULL DEFAULT 'pending_email_verification',
-                    product_id INTEGER,
-                    manager_id INTEGER,
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
-                    FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_users_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', "'users' table verified/created.");
-            });
+// --- CORE ROLES ---
+const CORE_ROLES = [
+    { key: 'CTO', default_display: 'CTO (Super Admin)', level: 1, manager_key: null },
+    { key: 'PO', default_display: 'Product Owner', level: 2, manager_key: 'CTO' },
+    { key: 'Admin', default_display: 'Administrator', level: 3, manager_key: 'PO' },
+    { key: 'User', default_display: 'Standard User', level: 4, manager_key: 'Admin' },
+];
 
-            // --- Products Table [PHASE 1.B MODIFIED] ---
-            logger.info('DB_INIT', 'Attempting to create_products_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS products (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_name TEXT NOT NULL UNIQUE,
-                    product_owner_name TEXT NOT NULL,
-                    product_owner_email TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_products_table:', err.message);
-                    return reject(err); 
-                } else {
-                    logger.info('DB_INIT_SUCCESS', 'products_table verified/created.');
-                }
-            });
-            
-            // --- Clients Table (For categorization) ---
-            logger.info('DB_INIT', 'Attempting to create_clients_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS clients (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-                    UNIQUE(product_id, name)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_clients_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'clients_table verified/created.');
-            });
-
-            // --- [BLOCK 5] NEW Admin/Client junction table ---
-            logger.info('DB_INIT', '[BLOCK_5] Attempting to create_admin_client_assignments_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS admin_client_assignments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER NOT NULL,
-                    client_id INTEGER NOT NULL,
-                    FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
-                    UNIQUE(admin_id, client_id)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', '[BLOCK_5] Failed to create_admin_client_assignments_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', '[BLOCK_5] admin_client_assignments_table verified/created.');
-            });
-            
-            // --- [REMOVED] user_client_access table ---
-            logger.info('DB_INIT', 'Dropping obsolete table user_client_access if it exists...');
-            dbInstance.run(`DROP TABLE IF EXISTS user_client_access`, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to drop user_client_access_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'Obsolete table user_client_access removed.');
-            });
-
-            // --- [JIT_FIX] MODIFIED Chat Rooms Table ---
-            logger.info('DB_INIT', 'Attempting to create_chat_rooms_table (with creator_id and room_code)...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS chat_rooms (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_id INTEGER NOT NULL,
-                    client_id INTEGER,
-                    creator_id INTEGER,
-                    name TEXT NOT NULL,
-                    color TEXT,
-                    password_hash TEXT,
-                    room_code TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
-                    FOREIGN KEY (creator_id) REFERENCES users(id) ON DELETE SET NULL
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_chat_rooms_table:', err.message);
-                    return reject(err);
-                } else {
-                    logger.info('DB_INIT_SUCCESS', 'chat_rooms_table verified/created.');
-                }
-            });
-
-            // --- [ROOM_FIX] NEW Many-to-Many Room/Client junction table ---
-            logger.info('DB_INIT', '[ROOM_FIX] Attempting to create_room_client_assignments_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_client_assignments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    client_id INTEGER NOT NULL,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
-                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
-                    UNIQUE(room_id, client_id)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', '[ROOM_FIX] Failed to create_room_client_assignments_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', '[ROOM_FIX] room_client_assignments_table verified/created.');
-            });
-
-            // --- [NEW] Room Admin Assignments Table (For PO -> Admin room sharing) ---
-            logger.info('DB_INIT', 'Attempting to create_room_admin_assignments_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_admin_assignments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    admin_id INTEGER NOT NULL,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
-                    FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE,
-                    UNIQUE(room_id, admin_id)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_room_admin_assignments_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'room_admin_assignments_table verified/created.');
-            });
-
-            // --- [NEW] Room PO Assignments Table (For CTO -> PO room sharing) ---
-            logger.info('DB_INIT', 'Attempting to create_room_po_assignments_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_po_assignments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    po_id INTEGER NOT NULL,
-                    is_unblocked INTEGER NOT NULL DEFAULT 0,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
-                    FOREIGN KEY (po_id) REFERENCES users(id) ON DELETE CASCADE,
-                    UNIQUE(room_id, po_id)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_room_po_assignments_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'room_po_assignments_table verified/created.');
-            });
-
-            // --- [BLOCK_2_NEW] Room User Assignments Table (For Admin -> User room sharing) ---
-            logger.info('DB_INIT', '[BLOCK_2] Attempting to create_room_user_assignments_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_user_assignments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    UNIQUE(room_id, user_id)
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', '[BLOCK_2] Failed to create_room_user_assignments_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', '[BLOCK_2] room_user_assignments_table verified/created.');
-            });
-
-            // --- [JIT_FIX] MODIFIED Room Access Requests Table (FOR ROOMS) ---
-            logger.info('DB_INIT', 'Attempting to create_room_access_requests_table (with JIT duration columns)...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_access_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    requester_id INTEGER NOT NULL,
-                    owner_id INTEGER NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    requested_duration_seconds INTEGER,
-                    approved_duration_seconds INTEGER,
-                    expires_at DATETIME,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
-                    FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_room_access_requests_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'room_access_requests_table verified/created.');
-            });
-
-            // --- [BLOCK 6] NEW Peer-to-Peer JIT Tables ---
-            logger.info('DB_INIT', '[BLOCK_6] Attempting to create_product_access_requests_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS product_access_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_id INTEGER NOT NULL,
-                    requester_id INTEGER NOT NULL,
-                    owner_id INTEGER NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    requested_duration_seconds INTEGER,
-                    approved_duration_seconds INTEGER,
-                    expires_at DATETIME,
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-                    FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', '[BLOCK_6] Failed to create_product_access_requests_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', '[BLOCK_6] product_access_requests_table verified/created.');
-            });
-
-            logger.info('DB_INIT', '[BLOCK_6] Attempting to create_client_access_requests_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS client_access_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    client_id INTEGER NOT NULL,
-                    requester_id INTEGER NOT NULL,
-                    owner_id INTEGER NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    requested_duration_seconds INTEGER,
-                    approved_duration_seconds INTEGER,
-                    expires_at DATETIME,
-                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
-                    FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', '[BLOCK_6] Failed to create_client_access_requests_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', '[BLOCK_6] client_access_requests_table verified/created.');
-            });
-
-            // --- [NEW] Room Session Logs Table ---
-            logger.info('DB_INIT', 'Attempting to create_room_session_logs_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS room_session_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    room_id INTEGER NOT NULL,
-                    login_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    logout_timestamp DATETIME,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_room_session_logs_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', 'room_session_logs_table verified/created.');
-            });
-
-            // --- [MODIFIED] Documents Table (Added room_id) ---
-            logger.info('DB_INIT', 'Attempting to create_documents_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS documents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    room_id INTEGER,
-                    name TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    uploaded_at TEXT NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE SET NULL
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_documents_table:', err.message);
-                    return reject(err);
-                }
-                logger.info('DB_INIT_SUCCESS', "'documents' table verified/created.");
-            });
-
-            // --- [MODIFIED] Conversations Table (Added room_id) ---
-            logger.info('DB_INIT', 'Attempting to create_conversations_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS conversations (
-                    conversation_id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    room_id INTEGER, 
-                    title TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_conversations_table:', err.message);
-                } else {
-                    logger.info('DB_INIT_SUCCESS', 'conversations_table verified/created.');
-                }
-            });
-
-
-            // --- Chat History Table (and final migration checks) ---
-            logger.info('DB_INIT', 'Attempting to create_chat_history_table...');
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS chat_history (
-                    message_id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    sender TEXT NOT NULL, -- 'user' or 'ai'
-                    message TEXT NOT NULL, -- The text content of the message
-                    results TEXT, -- NEW: Store JSON string of sources/results for AI messages
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
-                )
-            `, (err) => {
-                if (err) {
-                    logger.error('DB_INIT_ERROR', 'Failed to create_chat_history_table:', err.message);
-                } else {
-                    logger.info('DB_INIT_SUCCESS', 'chat_history_table verified/created.');
-                }
-
-                // --- [NEW] Start DB Alter block ---
-                logger.info('DB_ALTER', 'Checking if "users" RBAC columns exist...');
-                dbInstance.all("PRAGMA table_info(users)", (userPragmaErr, userColumns) => {
-                    if (userPragmaErr) {
-                        logger.error('DB_ALTER_ERROR', 'Could not get table info for users:', userPragmaErr.message);
-                        return reject(userPragmaErr);
-                    }
-
-                    const hasRole = userColumns.some(col => col.name === 'role');
-                    const hasStatus = userColumns.some(col => col.name === 'status');
-                    const hasProductId = userColumns.some(col => col.name === 'product_id');
-                    const hasManagerId = userColumns.some(col => col.name === 'manager_id'); 
-
-                    dbInstance.serialize(() => {
-                        // --- Users Table Migration ---
-                        if (!hasRole) {
-                            logger.info('DB_ALTER', 'Adding "role" column to "users" table...');
-                            dbInstance.run('ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT \'User\'', (alterErr) => {
-                                if (alterErr) return reject(alterErr);
-                                logger.info('DB_ALTER_SUCCESS', '"role" column added.');
-                            });
-                        } else {
-                            logger.info('DB_ALTER', '"role" column already exists.');
-                        }
-                        if (!hasStatus) {
-                            logger.info('DB_ALTER', 'Adding "status" column to "users" table...');
-                            dbInstance.run('ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT \'pending_email_verification\'', (alterErr) => {
-                                if (alterErr) return reject(alterErr);
-                                logger.info('DB_ALTER_SUCCESS', '"status" column added.');
-                            });
-                        } else {
-                            logger.info('DB_ALTER', '"status" column already. (Note: New users are `pending_email_verification` or `invited`)');
-                        }
-                        if (!hasProductId) {
-                            logger.info('DB_ALTER', 'Adding "product_id" column to "users" table...');
-                            dbInstance.run('ALTER TABLE users ADD COLUMN product_id INTEGER', (alterErr) => {
-                                if (alterErr) return reject(alterErr);
-                                logger.info('DB_ALTER_SUCCESS', '"product_id" column added.');
-                            });
-                        } else {
-                            logger.info('DB_ALTER', '"product_id" column already exists.');
-                        }
-                        if (!hasManagerId) { 
-                            logger.info('DB_ALTER', 'Adding "manager_id" column to "users" table...');
-                            dbInstance.run('ALTER TABLE users ADD COLUMN manager_id INTEGER', (alterErr) => {
-                                if (alterErr) return reject(alterErr);
-                                logger.info('DB_ALTER_SUCCESS', '"manager_id" column added.');
-                            });
-                        } else {
-                            logger.info('DB_ALTER', '"manager_id" column already exists.');
-                        }
-                        
-                        // --- Conversations Table Migration ---
-                        logger.info('DB_ALTER', 'Checking if "conversations.room_id" column exists...');
-                        dbInstance.all("PRAGMA table_info(conversations)", (convoPragmaErr, convoColumns) => {
-                            if (convoPragmaErr) return reject(convoPragmaErr);
-                            const hasRoomId = convoColumns.some(col => col.name === 'room_id');
-                            if (!hasRoomId) {
-                                logger.info('DB_ALTER', 'Adding "room_id" column to "conversations" table...');
-                                dbInstance.run('ALTER TABLE conversations ADD COLUMN room_id INTEGER', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '"room_id" column added.');
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '"room_id" column already exists.');
-                            }
-                        });
-                        
-                        // --- Documents Table Migration ---
-                        logger.info('DB_ALTER', 'Checking if "documents.room_id" column exists...');
-                        dbInstance.all("PRAGMA table_info(documents)", (docPragmaErr, docColumns) => {
-                            if (docPragmaErr) return reject(docPragmaErr);
-                            const hasRoomId = docColumns.some(col => col.name === 'room_id');
-                            if (!hasRoomId) {
-                                logger.info('DB_ALTER', 'Adding "room_id" column to "documents" table...');
-                                dbInstance.run('ALTER TABLE documents ADD COLUMN room_id INTEGER', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '"room_id" column added to documents.');
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '"documents.room_id" column already exists.');
-                            }
-                        });
-
-                        // --- [JIT_FIX] Chat Rooms Table Migration (ADD room_code) ---
-                        logger.info('DB_ALTER', 'Checking if "chat_rooms.client_id", "creator_id", and "room_code" columns exist...');
-                        dbInstance.all("PRAGMA table_info(chat_rooms)", (roomPragmaErr, roomColumns) => {
-                            if (roomPragmaErr) return reject(roomPragmaErr);
-                            const hasClientId = roomColumns.some(col => col.name === 'client_id');
-                            const hasCreatorId = roomColumns.some(col => col.name === 'creator_id');
-                            const hasRoomCode = roomColumns.some(col => col.name === 'room_code'); 
-                            
-                            if (!hasClientId) {
-                                logger.info('DB_ALTER', 'Adding "client_id" column to "chat_rooms" table...');
-                                dbInstance.run('ALTER TABLE chat_rooms ADD COLUMN client_id INTEGER', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '"client_id" column added to chat_rooms.');
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '"chat_rooms.client_id" column already exists.');
-                            }
-                            if (!hasCreatorId) { 
-                                logger.info('DB_ALTER', 'Adding "creator_id" column to "chat_rooms" table...');
-                                dbInstance.run('ALTER TABLE chat_rooms ADD COLUMN creator_id INTEGER', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '"creator_id" column added to chat_rooms.');
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '"chat_rooms.creator_id" column already exists.');
-                            }
-                            
-                            if (!hasRoomCode) {
-                                logger.info('DB_ALTER', '[JIT_FIX] Adding "room_code" column to "chat_rooms" table...');
-                                dbInstance.run('ALTER TABLE chat_rooms ADD COLUMN room_code TEXT', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '[JIT_FIX] "room_code" column added. Now backfilling...');
-                                    backfillRoomCodes(); 
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '[JIT_FIX] "room_code" column already exists. Checking for NULLs...');
-                                backfillRoomCodes(); 
-                            }
-                            
-                            dbInstance.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_room_code_unique ON chat_rooms (room_code);', (indexErr) => {
-                                if (indexErr) logger.error('DB_ALTER_ERROR', '[JIT_FIX] Failed to create unique index on room_code:', indexErr.message);
-                                else logger.info('DB_ALTER', '[JIT_FIX] Unique index on room_code verified.');
-                            });
-                        });
-
-                        // --- [PHASE 1.B] Products Table Migration ---
-                        logger.info('DB_ALTER', 'Checking if "products.status" column exists and matches new flow...');
-                        dbInstance.all("PRAGMA table_info(products)", (prodPragmaErr, prodColumns) => {
-                            if (prodPragmaErr) return reject(prodPragmaErr);
-                            
-                            const hasStatus = prodColumns.some(col => col.name === 'status');
-                            
-                            if (!hasStatus) {
-                                logger.info('DB_ALTER', '[PHASE 1.B] Adding "status" column to "products" table with DEFAULT \'pending\'...');
-                                dbInstance.run('ALTER TABLE products ADD COLUMN status TEXT NOT NULL DEFAULT \'pending\'', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    logger.info('DB_ALTER_SUCCESS', '[PHASE 1.B] "products.status" column added.');
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '[PHASE 1.B] "products.status" column already exists.');
-                                logger.info('DB_ALTER', '[PHASE 1.B] Updating old \'suspended\' product statuses to \'pending\' for new CTO approval flow...');
-                                dbInstance.run("UPDATE products SET status = 'pending' WHERE status = 'suspended'", function(updateErr) {
-                                    if (updateErr) return reject(updateErr);
-                                    if (this.changes > 0) {
-                                        logger.info('DB_ALTER_SUCCESS', `[PHASE 1.B] Migrated ${this.changes} 'suspended' products to 'pending'.`);
-                                    } else {
-                                        logger.info('DB_ALTER_SUCCESS', `[PHASE 1.B] No 'suspended' products needed migration.`);
-                                    }
-                                });
-                                
-                                // --- [PHASE 1.E] NEW MIGRATION ---
-                                logger.info('DB_ALTER', '[PHASE 1.E] Checking for confirmed products with invited POs...');
-                                dbInstance.run(`
-                                    UPDATE products SET status = 'awaiting_po_activation' 
-                                    WHERE status = 'confirmed' AND id IN (
-                                        SELECT product_id FROM users WHERE role = 'ProductOwner' AND status = 'invited'
-                                    )
-                                `, function(updateErr) {
-                                    if (updateErr) return reject(updateErr);
-                                    if (this.changes > 0) {
-                                        logger.info('DB_ALTER_SUCCESS', `[PHASE 1.E] Migrated ${this.changes} 'confirmed' products to 'awaiting_po_activation'.`);
-                                    } else {
-                                        logger.info('DB_ALTER_SUCCESS', `[PHASE 1.E] No products needed 'awaiting_po_activation' migration.`);
-                                    }
-                                });
-                            }
-                        });
-
-                        // --- [ROOM_FIX] Run new migration for room_client_assignments ---
-                        runRoomClientMigration(); 
-
-                        // --- [JIT_FIX] Chat History & Room Access Requests Migration (FINAL STEP) ---
-                        logger.info('DB_ALTER', 'Checking if chat_history.results column exists...');
-                        dbInstance.all("PRAGMA table_info(chat_history)", (pragmaErr, columns) => {
-                            if (pragmaErr) {
-                                logger.error('DB_ALTER_ERROR', 'Could not get table info for chat_history:', pragmaErr.message);
-                                return reject(pragmaErr); 
-                            }
-                            const resultsColumnExists = columns.some(col => col.name === 'results');
-                            if (!resultsColumnExists) {
-                                logger.info('DB_ALTER', 'Adding "results" column to chat_history table...');
-                                dbInstance.run('ALTER TABLE chat_history ADD COLUMN results TEXT', (alterErr) => {
-                                    if (alterErr) return reject(alterErr);
-                                    else logger.info('DB_ALTER_SUCCESS', '"results" column added successfully.');
-                                    
-                                    runRoomAccessRequestsMigration(resolve, reject);
-                                });
-                            } else {
-                                logger.info('DB_ALTER', '"results" column already exists.');
-                                runRoomAccessRequestsMigration(resolve, reject);
-                            }
-                        });
-                    });
-                });
-            });
-        });
-    });
-};
-
-
-
-// --- [JIT_FIX] NEW HELPER FUNCTION FOR MIGRATION ---
-const generateUniqueCode = (existingCodesSet) => {
-    let code;
-    let isUnique = false;
-    while (!isUnique) {
-        code = Math.floor(100000 + Math.random() * 900000).toString();
-        if (!existingCodesSet.has(code)) {
-            isUnique = true;
-            existingCodesSet.add(code); 
-        }
-    }
-    return code;
-};
-
-
-const backfillRoomCodes = () => {
-    const dbInstance = getDb();
-    logger.info('JIT_MIGRATE', 'Checking for existing room codes...');
-    dbInstance.all('SELECT room_code FROM chat_rooms WHERE room_code IS NOT NULL', (err, existingRows) => {
-        if (err) {
-            logger.error('JIT_MIGRATE_ERROR', 'Could not query existing room codes:', err.message);
-            return;
-        }
-        
-        const existingCodes = new Set(existingRows.map(r => r.room_code));
-        logger.info('JIT_MIGRATE', `Found ${existingCodes.size} existing codes.`);
-
-        dbInstance.all('SELECT id FROM chat_rooms WHERE room_code IS NULL', (err, roomsToUpdate) => {
-            if (err) {
-                logger.error('JIT_MIGRATE_ERROR', 'Could not find rooms to backfill:', err.message);
-                return;
-            }
-            
-            if (roomsToUpdate.length === 0) {
-                logger.info('JIT_MIGRATE', 'No rooms need a code backfill.');
-                return;
-            }
-
-            logger.info('JIT_MIGRATE', `Backfilling ${roomsToUpdate.length} rooms with new codes...`);
-            let completed = 0;
-            const stmt = dbInstance.prepare('UPDATE chat_rooms SET room_code = ? WHERE id = ?', (prepErr) => {
-                if (prepErr) {
-                    logger.error('JIT_MIGRATE_ERROR', 'Failed to prepare statement:', prepErr.message);
-                    return;
-                }
-                roomsToUpdate.forEach((room) => {
-                    const newCode = generateUniqueCode(existingCodes);
-                    stmt.run(newCode, room.id, (updateErr) => {
-                        if (updateErr) {
-                            logger.error('JIT_MIGRATE_ERROR', `Failed to update room ${room.id} with code ${newCode}:`, updateErr.message);
-                        }
-                        completed++;
-                        if (completed === roomsToUpdate.length) {
-                            logger.info('JIT_MIGRATE_SUCCESS', `Finished backfilling ${completed} rooms.`);
-                            stmt.finalize();
-                        }
-                    });
-                });
-            });
-        });
-    });
-};
-
-
-const runRoomAccessRequestsMigration = (resolve, reject) => {
-    const dbInstance = getDb();
-    logger.info('DB_ALTER', '[JIT_FIX] Checking if "room_access_requests" JIT columns exist...');
-    dbInstance.all("PRAGMA table_info(room_access_requests)", (pragmaErr, columns) => {
-        if (pragmaErr) {
-            logger.error('DB_ALTER_ERROR', '[JIT_FIX] Could not get table info for room_access_requests:', pragmaErr.message);
-            return reject(pragmaErr);
-        }
-        
-        const hasReqDuration = columns.some(col => col.name === 'requested_duration_seconds');
-        const hasAppDuration = columns.some(col => col.name === 'approved_duration_seconds');
-
-        const addReqDuration = (callback) => {
-            if (!hasReqDuration) {
-                logger.info('DB_ALTER', '[JIT_FIX] Adding "requested_duration_seconds" column...');
-                dbInstance.run('ALTER TABLE room_access_requests ADD COLUMN requested_duration_seconds INTEGER', (alterErr) => {
-                    if (alterErr) return reject(alterErr);
-                    logger.info('DB_ALTER_SUCCESS', '[JIT_FIX] "requested_duration_seconds" column added.');
-                    callback();
-                });
-            } else {
-                logger.info('DB_ALTER', '[JIT_FIX] "requested_duration_seconds" column already exists.');
-                callback();
-            }
-        };
-
-        const addAppDuration = (callback) => {
-            if (!hasAppDuration) {
-                logger.info('DB_ALTER', '[JIT_FIX] Adding "approved_duration_seconds" column...');
-                dbInstance.run('ALTER TABLE room_access_requests ADD COLUMN approved_duration_seconds INTEGER', (alterErr) => {
-                    if (alterErr) return reject(alterErr);
-                    logger.info('DB_ALTER_SUCCESS', '[JIT_FIX] "approved_duration_seconds" column added.');
-                    callback();
-                });
-            } else {
-                logger.info('DB_ALTER', '[JIT_FIX] "approved_duration_seconds" column already exists.');
-                callback();
-            }
-        };
-
-        addReqDuration(() => {
-            addAppDuration(() => {
-                logger.info('DB_INIT', 'Database initialization complete.');
-                resolve(); 
-            });
-        });
-    });
-};
-
-
-const runRoomClientMigration = () => {
-    const dbInstance = getDb();
-    logger.info('ROOM_FIX_MIGRATE', 'Checking if chat_rooms.client_id column exists for migration...');
-    dbInstance.all("PRAGMA table_info(chat_rooms)", (pragmaErr, columns) => {
-        if (pragmaErr) {
-            logger.error('ROOM_FIX_MIGRATE_ERROR', 'Could not get table info for chat_rooms:', pragmaErr.message);
-            return;
-        }
-
-        const hasClientId = columns.some(col => col.name === 'client_id');
-        if (!hasClientId) {
-            logger.info('ROOM_FIX_MIGRATE', 'chat_rooms.client_id column not found. Skipping migration.');
-            return;
-        }
-
-        logger.info('ROOM_FIX_MIGRATE', 'Found client_id column. Finding rooms to migrate...');
-        dbInstance.all("SELECT id, client_id FROM chat_rooms WHERE client_id IS NOT NULL", (err, rooms) => {
-            if (err) {
-                logger.error('ROOM_FIX_MAGRATE_ERROR', 'Could not query rooms for migration:', err.message);
-                return;
-            }
-            if (rooms.length === 0) {
-                logger.info('ROOM_FIX_MIGRATE', 'No rooms found with old client_id. No migration needed.');
-                return;
-            }
-
-            logger.info('ROOM_FIX_MIGRATE', `Found ${rooms.length} rooms to migrate to new junction table...`);
-            let completed = 0;
-            const stmt = dbInstance.prepare('INSERT OR IGNORE INTO room_client_assignments (room_id, client_id) VALUES (?, ?)', (prepErr) => {
-                if (prepErr) {
-                    logger.error('ROOM_FIX_MIGRATE_ERROR', 'Failed to prepare migration statement:', prepErr.message);
-                    return;
-                }
-                rooms.forEach((room) => {
-                    stmt.run(room.id, room.client_id, (runErr) => {
-                        if (runErr) {
-                            logger.error('ROOM_FIX_MIGRATE_ERROR', `Failed to migrate room ${room.id}:`, runErr.message);
-                        }
-                        completed++;
-                        if (completed === rooms.length) {
-                            logger.info('ROOM_FIX_MIGRATE_SUCCESS', `Finished migrating ${completed} room-client assignments.`);
-                            stmt.finalize();
-                        }
-                    });
-                });
-            });
-        });
-    });
-};
-
-// [GHOST_BUG_FIX] NEW: Extracted async Chroma operations
-const saveToChroma = async (documentId, userId, roomId, documentName, chunksWithVectors) => {
-    logger.info('DB_SAVE_CHROMA', `Getting or creating Chroma collection 'documents' for doc ${documentId}.`);
-    const collection = await chromaClient.getOrCreateCollection({ name: "documents" });
-    
-    const ids = chunksWithVectors.map((_, i) => `user_${userId}_doc_${documentId}_chunk_${i}`);
-    const metadatas = chunksWithVectors.map((chunk, i) => ({
-        userId: Number(userId),
-        documentId: Number(documentId),
-        roomId: Number(roomId), 
-        chunkIndex: i,
-        documentName,
-        // pageNumber now comes from the parser.py payload
-        pageNumber: chunk.page_number 
-    }));
-
-    logger.info('DB_SAVE_CHROMA', `Adding ${chunksWithVectors.length} chunks to Chroma for doc ${documentId}...`);
-    await collection.add({
-        ids,
-        embeddings: chunksWithVectors.map(c => c.vector),
-        documents: chunksWithVectors.map(c => c.text),
-        metadatas
-    });
-    
-    logger.info('DB_SAVE_CHROMA_SUCCESS', `Saved ${chunksWithVectors.length} chunks to ChromaDB for doc ${documentId}.`);
-};
-
-
-// [GHOST_BUG_FIX] This function is now refactored to be transactional.
-const saveDocumentChunks = async (userId, documentName, filePath, chunksWithVectors, roomId = null) => {
-    const db = getDb();
-    
-    // Step 1: Save to SQLite (Promisified)
-    logger.info('DB_SAVE_DOC', `Saving doc metadata with room_id: ${roomId}`);
-    const documentId = await new Promise((resolve, reject) => {
-        const uploadedAt = new Date().toISOString();
-        const sql = 'INSERT INTO documents (user_id, name, file_path, uploaded_at, room_id) VALUES (?, ?, ?, ?, ?)';
-        const params = [userId, documentName, filePath, uploadedAt, roomId];
-        
-        db.run(sql, params, function(err) {
-            if (err) {
-                logger.error('DB_SAVE_DOC', 'Failed to save document metadata to SQLite', err);
-                reject(err);
-            } else {
-                resolve(this.lastID);
-            }
-        });
-    });
-    
-    logger.info('DB_SAVE_DOC', `Document metadata saved to SQLite with ID: ${documentId} for user ID: ${userId}`);
-    
-    // Step 2: If no chunks, we're done
-    if (chunksWithVectors.length === 0) {
-        logger.warn('DB_SAVE_DOC', `No chunks to save to Chroma for document ${documentId}.`);
-        return { documentId, chunks: 0 };
-    }
-    
-    // Step 3: Save to ChromaDB (with Transactional Rollback)
-    try {
-        await saveToChroma(documentId, userId, roomId, documentName, chunksWithVectors);
-        return { documentId, chunks: chunksWithVectors.length };
-    } catch (chromaErr) {
-        // Rollback on Chroma failure
-        logger.error('DB_SAVE_DOC_ERROR', `Failed to save chunks to Chroma for doc ${documentId}:`, chromaErr);
-        
+const getPool = () => {
+    if (!pool) {
+        logger.info('getPool', 'Initializing PostgreSQL connection pool...');
         try {
-            await deleteDocumentById(documentId);
-            logger.info('DB_SAVE_DOC_ROLLBACK', `Rolled back SQLite entry for doc ID: ${documentId}`);
-        } catch (rollbackErr) {
-            logger.error('DB_SAVE_DOC_ROLLBACK_FATAL', `CRITICAL: Chroma save failed AND SQLite rollback failed for doc ID: ${documentId}.`, rollbackErr);
+            pool = new Pool(PG_CONFIG);
+            pool.on('error', (err) => {
+                logger.error('PG_POOL_ERROR', 'Unexpected error on idle client:', err.message);
+            });
+        } catch (err) {
+            logger.error('getPool', 'FATAL: Error creating pool:', err.message);
+            throw err;
         }
-        
-        throw chromaErr; // Re-throw the original error for the worker
+    }
+    return pool;
+};
+
+const query = (text, params) => {
+    const dbPool = getPool();
+    const safeParams = params?.map(p => {
+        if (typeof p === 'string' && p.length > 100) return `${p.substring(0, 50)}...`;
+        if (Array.isArray(p)) return `[Array(${p.length})]`;
+        return p;
+    });
+    logger.debug('PG_QUERY', `Executing: ${text.substring(0, 100)}...`, { params: safeParams });
+    return dbPool.query(text, params);
+};
+
+// --- TRANSACTION UTILITY ---
+const executeTransaction = async (callback) => {
+    const client = await getPool().connect();
+    try {
+        await client.query('BEGIN');
+        const result = await callback(client);
+        await client.query('COMMIT');
+        return result;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        logger.error('TRANSACTION_FAILED', 'Rollback due to error:', error.message);
+        throw error;
+    } finally {
+        client.release();
     }
 };
 
+// --- UTILS ---
+const generateRoomCode = () => crypto.randomBytes(3).toString('hex').toUpperCase(); 
 
-const updateConversationTitle = (conversationId, newTitle) => {
-    return new Promise((resolve, reject) => {
-        logger.info('DB_UPDATE_TITLE', `Attempting to update title for conversation ${conversationId} to "${newTitle}"`);
-        const db = getDb();
-        const sql = `UPDATE conversations SET title = ? WHERE conversation_id = ?`;
-        logger.info('DB_UPDATE_TITLE_DB', `Executing SQL: ${sql} with params: [${newTitle}, ${conversationId}]`);
-
-        db.run(sql, [newTitle, conversationId], function(err) {
-            if (err) {
-                logger.error('DB_UPDATE_TITLE_ERROR', 'Failed to update conversation title:', err.message);
-                reject(err);
-            } else if (this.changes === 0) {
-                 logger.warn('DB_UPDATE_TITLE_WARN', `No conversation found with ID ${conversationId} to update title.`);
-                 resolve({ changes: 0 });
-            } else {
-                logger.info('DB_UPDATE_TITLE_SUCCESS', `Successfully updated title for conversation ${conversationId}. Rows affected: ${this.changes}`);
-                resolve({ changes: this.changes });
-            }
-        });
-    });
+const backfillRoomCodes = async () => {
+    logger.info('DB_ALTER', '[Backfill] Checking for NULL room_codes...');
+    try {
+        const client = await getPool().connect();
+        const res = await client.query('SELECT id FROM chat_rooms WHERE room_code IS NULL');
+        if (res.rows.length > 0) {
+             logger.info('DB_ALTER', `Backfilling ${res.rows.length} rooms...`);
+             for (const row of res.rows) {
+                let unique = false;
+                let newCode;
+                while (!unique) {
+                    newCode = generateRoomCode();
+                    const check = await client.query('SELECT 1 FROM chat_rooms WHERE room_code = $1', [newCode]);
+                    if (check.rowCount === 0) unique = true;
+                }
+                await client.query('UPDATE chat_rooms SET room_code = $1 WHERE id = $2', [newCode, row.id]);
+             }
+             logger.info('DB_ALTER_SUCCESS', `Backfill complete.`);
+        }
+        client.release();
+    } catch (error) {
+        logger.error('DB_ALTER_ERROR', 'Backfill failed:', error.message);
+    }
 };
 
-
-const deleteDocumentById = (docId) => {
-    return new Promise((resolve, reject) => {
-        logger.info('DB_DELETE_DOC', `Attempting to delete doc ${docId} from SQLite.`);
-        const db = getDb();
-        const sql = `DELETE FROM documents WHERE id = ?`;
-
-        db.run(sql, [docId], function(err) {
-            if (err) {
-                logger.error('DB_DELETE_DOC_ERROR', `Failed to delete doc ${docId} from SQLite:`, err.message);
-                return reject(err);
-            }
-            if (this.changes === 0) {
-                logger.warn('DB_DELETE_DOC_WARN', `No document found with ID ${docId} to delete from SQLite.`);
-            } else {
-                logger.info('DB_DELETE_DOC_SUCCESS', `Successfully deleted doc ${docId} from SQLite. Rows: ${this.changes}`);
-            }
-            resolve({ changes: this.changes });
-        });
-    });
+const seedRoleDefinitions = async (client) => {
+    logger.info('DB_INIT', 'Seeding roles...');
+    for (const role of CORE_ROLES) {
+        const queryText = `
+            INSERT INTO role_definitions (role_key, display_name, hierarchy_level, default_manager_key)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (role_key) DO UPDATE 
+            SET hierarchy_level = EXCLUDED.hierarchy_level, 
+                default_manager_key = EXCLUDED.default_manager_key;
+        `;
+        await client.query(queryText, [role.key, role.default_display, role.level, role.manager_key]);
+    }
 };
 
+// --- INITIALIZATION ---
+const initializeDatabase = async () => {
+    const dbPool = getPool(); 
+    const client = await dbPool.connect();
+    try {
+        logger.info('DB_INIT', 'Starting Schema Initialization...');
+        
+        await client.query('CREATE EXTENSION IF NOT EXISTS vector'); 
+        await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm'); 
+        
+        const createTable = async (name, schema) => {
+            await client.query(schema);
+            logger.info('DB_INIT', `Table '${name}' verified.`);
+        };
+        
+        // 1. Roles
+        await createTable('role_definitions', `
+            CREATE TABLE IF NOT EXISTS role_definitions (
+                role_key TEXT PRIMARY KEY,               
+                display_name TEXT NOT NULL UNIQUE,      
+                hierarchy_level INTEGER NOT NULL UNIQUE, 
+                default_manager_key TEXT                 
+            )
+        `);
+        await seedRoleDefinitions(client);
+
+        // 2. Products
+        await createTable('products', `
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                product_name TEXT NOT NULL UNIQUE,
+                product_owner_name TEXT NOT NULL,
+                product_owner_email TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // 3. Users
+        await createTable('users', `
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                is_email_verified BOOLEAN DEFAULT FALSE,
+                email_verification_token TEXT,
+                password_reset_token TEXT,
+                password_reset_expires BIGINT,
+                picture_url TEXT,
+                role TEXT NOT NULL DEFAULT 'User' REFERENCES role_definitions(role_key), 
+                status TEXT NOT NULL DEFAULT 'pending_email_verification',
+                product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                manager_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+            )
+        `);
+        
+        // Role Migration
+        logger.info('DB_MIGRATE', 'Checking for legacy role names...');
+        for (const role of CORE_ROLES) {
+            try {
+                await client.query(`UPDATE users SET role = $1 WHERE role = $2`, [role.key, role.default_display]);
+            } catch (migErr) {}
+        }
+        
+        // 4. Clients
+        await createTable('clients', `
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(product_id, name)
+            )
+        `);
+
+        // 5. Assignments
+        await createTable('admin_client_assignments', `
+            CREATE TABLE IF NOT EXISTS admin_client_assignments (
+                id SERIAL PRIMARY KEY,
+                admin_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                UNIQUE(admin_id, client_id)
+            )
+        `);
+        
+        // 6. Chat Rooms
+        await createTable('chat_rooms', `
+            CREATE TABLE IF NOT EXISTS chat_rooms (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+                creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                name TEXT NOT NULL,
+                color TEXT,
+                password_hash TEXT,
+                room_code TEXT UNIQUE, 
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        
+        // 7-10. Room Assignments
+        const assignmentTables = ['room_client_assignments', 'room_admin_assignments', 'room_po_assignments', 'room_user_assignments'];
+        const idCols = ['client_id', 'admin_id', 'po_id', 'user_id'];
+        const refs = ['clients(id)', 'users(id)', 'users(id)', 'users(id)'];
+
+        for (let i = 0; i < assignmentTables.length; i++) {
+             await createTable(assignmentTables[i], `
+                CREATE TABLE IF NOT EXISTS ${assignmentTables[i]} (
+                    id SERIAL PRIMARY KEY,
+                    room_id INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                    ${idCols[i]} INTEGER NOT NULL REFERENCES ${refs[i]} ON DELETE CASCADE,
+                    ${assignmentTables[i] === 'room_po_assignments' ? 'is_unblocked BOOLEAN DEFAULT FALSE,' : ''}
+                    UNIQUE(room_id, ${idCols[i]})
+                )
+            `);
+        }
+
+        // 11. Room Access Requests (Room JIT)
+        await createTable('room_access_requests', `
+            CREATE TABLE IF NOT EXISTS room_access_requests (
+                id SERIAL PRIMARY KEY,
+                room_id INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                requested_duration_seconds INTEGER,
+                approved_duration_seconds INTEGER,
+                expires_at TIMESTAMP WITH TIME ZONE
+            )
+        `);
+
+        // 12. Product Access Requests (Peer JIT)
+        await createTable('product_access_requests', `
+            CREATE TABLE IF NOT EXISTS product_access_requests (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                requested_duration_seconds INTEGER,
+                approved_duration_seconds INTEGER,
+                expires_at TIMESTAMP WITH TIME ZONE
+            )
+        `);
+
+        // 13. Client Access Requests (Peer JIT)
+        await createTable('client_access_requests', `
+            CREATE TABLE IF NOT EXISTS client_access_requests (
+                id SERIAL PRIMARY KEY,
+                client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                requested_duration_seconds INTEGER,
+                approved_duration_seconds INTEGER,
+                expires_at TIMESTAMP WITH TIME ZONE
+            )
+        `);
+
+        // 14. Room Session Logs (Audit)
+        await createTable('room_session_logs', `
+            CREATE TABLE IF NOT EXISTS room_session_logs (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                room_id INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                login_timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                logout_timestamp TIMESTAMP WITH TIME ZONE
+            )
+        `);
+
+        // 15. Documents
+        await createTable('documents', `
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+                room_id INTEGER REFERENCES chat_rooms(id) ON DELETE SET NULL,
+                name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        
+        // 16. Document Chunks (pgvector)
+        await createTable('document_chunks', `
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id SERIAL PRIMARY KEY,
+                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                room_id INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+                chunk_id TEXT NOT NULL, 
+                content TEXT NOT NULL,
+                page_number INTEGER,
+                embedding VECTOR(${process.env.EMBEDDING_DIMENSION || 384}), 
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(document_id, chunk_id)
+            )
+        `);
+        
+        // 17. Conversations
+        await createTable('conversations', `
+            CREATE TABLE IF NOT EXISTS conversations (
+                conversation_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                room_id INTEGER REFERENCES chat_rooms(id) ON DELETE CASCADE, 
+                title TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // 18. Chat History (pg_trgm)
+        await createTable('chat_history', `
+            CREATE TABLE IF NOT EXISTS chat_history (
+                message_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+                sender TEXT NOT NULL, 
+                message TEXT NOT NULL, 
+                results JSONB, 
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        
+        // 19. Indexes
+        await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_chat_message ON chat_history USING GIN (message gin_trgm_ops)`);
+
+        await backfillRoomCodes(); 
+        logger.info('DB_INIT_FINAL', 'All PostgreSQL schemas and extensions verified.');
+
+    } catch (err) {
+        logger.error('DB_INIT_FATAL', 'Schema Initialization Failed:', err.message);
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+// --- ATOMIC SAVE FUNCTION (ENTERPRISE SANITIZATION) ---
+async function saveDocumentChunks(userId, originalName, filePath, chunksWithVectors, roomId) {
+    logger.info('saveDocumentChunks', `[PG_TX_START] Atomic save for: ${originalName}`);
+    
+    // [SANITIZATION] Filter out chunks that are null, undefined, empty strings, or just whitespace.
+    // This prevents the "null value in column content" error from PostgreSQL.
+    const chunksToInsert = chunksWithVectors.filter(c => {
+        const hasVector = c.vector && c.vector.length > 0;
+        const hasContent = c.content && typeof c.content === 'string' && c.content.trim().length > 0;
+        
+        if (!hasContent && hasVector) {
+            logger.warn('saveDocumentChunks', `[SANITIZATION] Dropping chunk ${c.id} (Valid Vector, NULL/Empty Content).`);
+        }
+        
+        return hasVector && hasContent;
+    });
+    
+    logger.info('saveDocumentChunks', `[SANITIZATION] ${chunksWithVectors.length} chunks in -> ${chunksToInsert.length} valid chunks out.`);
+
+    return executeTransaction(async (client) => {
+        const docRes = await client.query(
+            `INSERT INTO documents (user_id, room_id, name, file_path) VALUES ($1, $2, $3, $4) RETURNING id`,
+            [userId, roomId, originalName, filePath]
+        );
+        const documentId = docRes.rows[0].id;
+        
+        if (chunksToInsert.length > 0) {
+            const chunkValues = [];
+            const chunkPlaceholders = [];
+            let idx = 1;
+            
+            chunksToInsert.forEach((chunk, i) => {
+                const chunkId = `${documentId}-${i}-${crypto.randomBytes(4).toString('hex')}`;
+                const vecStr = `[${chunk.vector.join(',')}]`;
+                chunkValues.push(chunkId, documentId, roomId, chunk.content, chunk.page_number, vecStr);
+                chunkPlaceholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4}, $${idx+5})`);
+                idx += 6;
+            });
+
+            const insertSql = `
+                INSERT INTO document_chunks (chunk_id, document_id, room_id, content, page_number, embedding) 
+                VALUES ${chunkPlaceholders.join(', ')}
+            `;
+            await client.query(insertSql, chunkValues);
+        } else {
+            logger.warn('saveDocumentChunks', '[WARNING] Document saved but NO valid chunks were extracted (likely empty or image-only PDF).');
+        }
+        
+        return { documentId };
+    });
+}
+
+// --- EXPORTS ---
+const deleteDocumentById = async (docId) => {
+    return query('DELETE FROM documents WHERE id = $1', [docId]);
+}
+
+const updateConversationTitle = async (conversationId, title) => {
+    return query('UPDATE conversations SET title = $1 WHERE conversation_id = $2', [title, conversationId]);
+}
 
 module.exports = {
+    getPool, 
+    query, 
     initializeDatabase,
-    getDb,
+    executeTransaction, 
     saveDocumentChunks,
+    deleteDocumentById,
     updateConversationTitle,
-    chromaClient,
-    deleteDocumentById 
+    CORE_ROLES, 
 };

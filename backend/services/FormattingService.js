@@ -5,44 +5,54 @@ const SERVICE_NAME = 'FormattingService';
 
 /**
  * Formats the raw LLM answer and builds the source list.
+ * Maps [Source: doc.pdf, Page 1] -> [1] and aggregates metadata.
  */
 async function formatAnswer(rawAnswer, relevantSources) {
-    logger.info(SERVICE_NAME, 'Formatting raw answer and building source list...');
+    // [ATOMIC_LOGGING] Log the raw input for debugging
+    logger.debug(SERVICE_NAME, 'Formatting raw answer...', { rawLength: rawAnswer.length });
     
+    // 1. Build a Lookup Map for Sources
+    // Key format must match the string generated in RAGPipelineService
     const sourceMap = new Map();
     for (const source of relevantSources) {
-        // [METADATA_BUG_FIX]
-        // Use 'documentId' and 'pageNumber' (camelCase) to match database.js
-        const key = `Document ID ${source.metadata.documentId}, Page ${source.metadata.pageNumber}`;
+        // Use the NORMALIZED metadata structure
+        const docName = source.metadata.documentName;
+        const pageNum = source.metadata.pageNumber;
+        const key = `${docName}|${pageNum}`;
         
         if (!sourceMap.has(key)) {
             sourceMap.set(key, {
                 id: source.metadata.documentId,
-                name: source.metadata.documentName,
-                page: source.metadata.pageNumber,
+                name: docName,
+                page: pageNum,
+                // Keep raw text for potential UI tooltip expansion
+                preview: source.text ? source.text.substring(0, 100) : "No text available"
             });
         }
     }
 
-    const citationRegex = /\[Source from Document ID (\d+), Page (\d+)\]/g;
+    // 2. Regex to find citations in the LLM output
+    // Matches: [Source: file.pdf, Page 12] or [Source: file.pdf, Page: 12]
+    const citationRegex = /\[Source:\s*([^,\]]+),\s*Page:?\s*(\d+)\]/gi;
+    
     let finalAnswerText = rawAnswer;
     const finalSources = new Map();
     let sourceCounter = 1;
 
-    finalAnswerText = rawAnswer.replace(citationRegex, (match, docId, pageNum) => {
-        // [METADATA_BUG_FIX]
-        // Use 'documentId' and 'pageNumber' (camelCase) keys
-        const key = `Document ID ${docId}, Page ${pageNum}`;
+    // 3. Replace Text Citations with Numbers [1]
+    finalAnswerText = finalAnswerText.replace(citationRegex, (match, docName, pageNum) => {
+        const cleanDocName = docName.trim();
+        const key = `${cleanDocName}|${pageNum}`;
         
         if (sourceMap.has(key)) {
             const source = sourceMap.get(key);
             
             let sourceNumber;
             if (finalSources.has(key)) {
-                sourceNumber = Array.from(finalSources.values()).find(s => 
-                    s.id === source.id && s.page === source.page
-                ).number;
+                // Reuse number if already cited
+                sourceNumber = finalSources.get(key).number;
             } else {
+                // Assign new number
                 sourceNumber = sourceCounter++;
                 finalSources.set(key, {
                     number: sourceNumber,
@@ -52,21 +62,26 @@ async function formatAnswer(rawAnswer, relevantSources) {
             
             return `[${sourceNumber}]`;
         } else {
-            logger.warn(SERVICE_NAME, `LLM hallucinated a source: ${match}. Removing it.`);
+            // Fallback: If LLM hallucinated a filename slightly, try to find by page number matching in valid sources
+            // (Strict mode: currently we remove it to prevent fake citations)
+            logger.warn(SERVICE_NAME, `[CITATION_MISMATCH] LLM cited '${cleanDocName}' pg ${pageNum} but it was not in context. Removing.`);
             return ""; 
         }
     });
 
-    finalAnswerText = finalAnswerText.replace(/(\s+\[)/g, ' [')
-                                     .replace(/\[\s+/g, '[')
-                                     .replace(/\s+\]/g, ']')
-                                     .replace(/\[\]/g, '')
-                                     .replace(/\s+\./g, '.')
-                                     .replace(/\s+,/g, ',');
+    // 4. Cosmetic Cleanup
+    finalAnswerText = finalAnswerText
+        .replace(/(\s+\[)/g, ' [')    // Normalise spaces before brackets
+        .replace(/\[\s+/g, '[')       // Remove space inside bracket
+        .replace(/\s+\]/g, ']')       // Remove space before closing bracket
+        .replace(/\[\]/g, '')         // Remove empty citations
+        .replace(/\s+\./g, '.')       // Fix floating periods
+        .replace(/\s+,/g, ',');       // Fix floating commas
 
+    // 5. Sort sources by their appearance order [1], [2], [3]
     const sortedSources = Array.from(finalSources.values()).sort((a, b) => a.number - b.number);
     
-    logger.info(SERVICE_NAME, `Formatting complete. Found ${sortedSources.length} unique sources.`);
+    logger.info(SERVICE_NAME, `Formatting complete. Mapped ${sortedSources.length} unique sources.`);
     
     return {
         answer: finalAnswerText,
@@ -79,16 +94,12 @@ async function formatAnswer(rawAnswer, relevantSources) {
  */
 async function formatMetadataAnswer(naturalLanguageAnswer, sqlResult) {
     logger.info(SERVICE_NAME, 'Formatting metadata answer...');
-
-    const payload = {
+    return {
         answer: naturalLanguageAnswer,
         sources: [], 
         metadata: sqlResult 
     };
-
-    return payload;
 }
-
 
 module.exports = {
     formatAnswer,

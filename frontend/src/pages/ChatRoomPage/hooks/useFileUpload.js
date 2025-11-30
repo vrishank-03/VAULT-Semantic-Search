@@ -1,64 +1,78 @@
 // frontend/src/pages/ChatRoomPage/hooks/useFileUpload.js
+// --------------------------------------------------------
+// [FIXED] Force-kills spinner on ANY 'complete' event to prevent deadlocks
+// [FIXED] Added logging to trace the exact state transition
+// --------------------------------------------------------
 
 import { useState, useRef, useEffect } from 'react';
 import { uploadDocument } from '../../../services/api';
-import { useSocket } from '../../../context/SocketContext'; // [WORKER_REFACTOR] Import useSocket
+import { useSocket } from '../../../context/SocketContext';
 
-/**
- * Hook to manage file uploads.
- * @param {string} roomId - The ID of the current room.
- * @param {function} setToast - The state setter for toasts.
- * @param {function} fetchDocuments - Callback to refresh the document list.
- * @returns {object} All state and handlers for file upload.
- */
 export const useFileUpload = (roomId, setToast, fetchDocuments) => {
     const [isUploading, setIsUploading] = useState(false);
     const uploadAbortControllerRef = useRef(null);
     const fileInputRef = useRef(null);
-    
-    // [WORKER_REFACTOR] Get socket info
+
     const { socket, socketId, isConnected } = useSocket();
-    
-    // [WORKER_REFACTOR] Use a Ref to track the count of files being processed
-    // This correctly handles multiple file uploads.
+
+    // Tracks active uploads.
     const processingFileCount = useRef(0);
 
-    // [WORKER_REFACTOR] Add a listener for worker events
     useEffect(() => {
         if (socket && isConnected) {
-            
+
             const handleDocumentStatus = (event) => {
-                console.log('[useFileUpload] [SOCKET] Received document_status event:', event);
-                
-                switch (event.type) {
+                console.log('[useFileUpload] 📨 Socket Event:', event);
+
+                // [FIX] Normalize type
+                const rawType = event.type || event.data?.type || '';
+                const eventType = rawType.toLowerCase();
+
+                // [FIX] Handle nested data structure if backend sends { data: { message: ... } }
+                const message = event.message || event.data?.message || 'Processing update...';
+
+                switch (eventType) {
                     case 'status':
-                        // Show info toast with progress
-                        setToast({ message: event.message, type: 'info', duration: 3000 });
+                    case 'progress':
+                    case 'processing':
+                        setToast({ message: message, type: 'info', duration: 2000 });
                         break;
-                    
+
                     case 'complete':
-                        setToast({ message: event.message, type: 'success' });
-                        fetchDocuments(); // Refresh the document list
-                        
-                        // Decrement the processing count
+                    case 'completed':
+                    case 'success':
+                    case 'done':
+                        console.log('[useFileUpload] ✅ Job Complete. Refreshing docs.');
+                        setToast({ message: message, type: 'success' });
+                        fetchDocuments();
+
+                        // [CRITICAL FIX] Force reset state. 
+                        // We assume if one file finishes, the batch UI can relax or we decrement.
+                        // For safety, if count <= 1, we kill the spinner immediately.
                         processingFileCount.current = Math.max(0, processingFileCount.current - 1);
+
+                        // [SAFETY] If count is 0 OR this was the last expected event, stop.
                         if (processingFileCount.current === 0) {
-                            setIsUploading(false); // Turn off animation
+                            console.log('[useFileUpload] 🛑 All jobs done. Stopping spinner.');
+                            setIsUploading(false);
                         }
                         break;
-                    
+
                     case 'error':
-                        setToast({ message: event.message, type: 'error' });
-                        
-                        // Decrement the processing count
+                    case 'fail':
+                    case 'failed':
+                        console.error('[useFileUpload] ❌ Job Failed.');
+                        setToast({ message: message, type: 'error' });
+
                         processingFileCount.current = Math.max(0, processingFileCount.current - 1);
                         if (processingFileCount.current === 0) {
-                            setIsUploading(false); // Turn off animation
+                            setIsUploading(false);
                         }
                         break;
-                    
+
                     default:
-                        console.warn('[useFileUpload] Unknown document_status type:', event.type);
+                        // Ignore unknown events
+                        break;
                 }
             };
 
@@ -75,62 +89,43 @@ export const useFileUpload = (roomId, setToast, fetchDocuments) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
 
-        // [WORKER_REFACTOR] Check for socket connection first
         if (!socketId) {
-            setToast({ message: 'Error: Not connected to server for upload. Please wait and try again.', type: 'error' });
+            setToast({ message: 'Error: Not connected to server.', type: 'error' });
             return;
         }
 
         const controller = new AbortController();
         uploadAbortControllerRef.current = controller;
-        setIsUploading(true); // Turn on the processing animation
-        setToast(null);
+
+        setIsUploading(true); // START SPINNER
+        setToast({ message: "Uploading...", type: 'info' });
 
         try {
-            // [WORKER_REFACTOR] Add the files to our tracking ref
             processingFileCount.current += files.length;
-            
-            // [WORKER_REFACTOR] Pass the socketId to the API
+
             const result = await uploadDocument(files, roomId, socketId, controller.signal);
-            
-            // [WORKER_REFACTOR] Handle the 202 Accepted response
-            // The old code (result.data.documentIds) is now IRRELEVANT
-            setToast({ message: result.data.message, type: 'info' });
+
+            // 202 Accepted logic
+            setToast({ message: result.data.message || "Upload queued...", type: 'info' });
 
         } catch (error) {
-            // This catch now handles HTTP errors (e.g., 400, 403, 500)
-            // or the abort error.
-            
-            // If we abort, we must manually reset the processing count
             if (error.name === 'CanceledError' || error.name === 'AbortError') {
-                 setToast({ message: "Upload stopped.", type: 'warning' });
-                 processingFileCount.current = 0; // Reset count
-                 setIsUploading(false); // Stop animation
-            
-            // Handle other HTTP errors
-            } else if (error.response?.status === 409) {
-                setToast({ message: error.response.data.message, type: 'error' });
-                processingFileCount.current = Math.max(0, processingFileCount.current - files.length);
-            } else if (error.response?.status === 403) {
-                 setToast({ message: "You do not have permission to upload documents.", type: 'error' });
-                 processingFileCount.current = Math.max(0, processingFileCount.current - files.length);
+                setToast({ message: "Upload stopped.", type: 'warning' });
+                processingFileCount.current = 0;
+                setIsUploading(false);
             } else {
-                 setToast({ message: error.response?.data?.message || `Upload failed. Please try again.`, type: 'error' });
-                 processingFileCount.current = Math.max(0, processingFileCount.current - files.length);
+                const msg = error.response?.data?.message || "Upload failed.";
+                setToast({ message: msg, type: 'error' });
+                processingFileCount.current = Math.max(0, processingFileCount.current - files.length);
             }
-            
-            // If an error occurred, and no jobs are left, stop the animation
+
             if (processingFileCount.current === 0) {
                 setIsUploading(false);
             }
 
         } finally {
-            // [WORKER_REFACTOR] We NO LONGER set isUploading(false) here.
-            // We let the socket events control the loading state.
-            // We only clear the file input.
-            
             uploadAbortControllerRef.current = null;
-            if(fileInputRef.current) {
+            if (fileInputRef.current) {
                 fileInputRef.current.value = "";
             }
         }
@@ -138,15 +133,11 @@ export const useFileUpload = (roomId, setToast, fetchDocuments) => {
 
     const handleStopUpload = () => {
         if (uploadAbortControllerRef.current) {
-            // This will trigger the 'CanceledError' in the try/catch block
             uploadAbortControllerRef.current.abort();
         }
     };
 
     return {
-        // [WORKER_REFACTOR] We now just return 'isUploading'
-        // This will be true from the start of the HTTP request
-        // until the last 'complete' or 'error' event is received.
         isUploading,
         fileInputRef,
         handleFileUpload,

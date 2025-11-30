@@ -1,185 +1,320 @@
 // backend/services/GenerationService.js
+// --------------------------------------------------------
+// [LOGGING] Enhanced with Stream Flow Tracking
+// --------------------------------------------------------
 
-const OpenAI = require('openai');
+const OpenAI = require("openai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Anthropic = require('@anthropic-ai/sdk');
 const logger = require('../utils/logger');
+require('dotenv').config();
+
+// Import Prompt Templates
 const {
-    getQueryClassifierPrompt,
+    getTransformQueryPrompt,
     getRerankPrompt,
     getFinalAnswerPrompt,
     getMetadataAnswerPrompt,
-    getTitleGenerationPrompt,
+    getTitleGenerationPrompt
 } = require('../utils/promptTemplates');
-require('dotenv').config();
 
 const SERVICE_NAME = 'GenerationService';
 
-const groq = new OpenAI({
-    baseURL: 'https://api.groq.com/openai/v1',
-    apiKey: process.env.GROQ_API_KEY,
+// --- 1. CLIENT INITIALIZATION ---
+
+// Client A: Groq (Standard Workhorse - Tier 1)
+const groqClient = new OpenAI({
+    baseURL: process.env.FAST_LLM_BASE_URL,
+    apiKey: process.env.FAST_LLM_API_KEY
 });
 
-const DEFAULT_MODEL = 'llama-3.1-8b-instant'; 
-const DEEP_THINK_MODEL = 'llama-3.3-70b-versatile'; 
+// Client B: Google Gemini (Deep Reader - Tier 2)
+const genAI = process.env.GOOGLE_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_API_KEY) : null;
+const googleModel = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
 
-function selectModel(modelName = 'auto', isDeepThink = false) {
-    if (modelName !== 'auto') {
-        logger.debug(SERVICE_NAME, `User selected specific model: ${modelName}`);
-        return modelName;
+// Client C: Anthropic (Deep Thinker - Tier 3)
+const anthropicClient = process.env.ANTHROPIC_API_KEY ? new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY
+}) : null;
+
+
+/**
+ * [ROUTER] Selects the best AI for the job.
+ */
+function getClientConfig(mode) {
+    // 1. SEQUENTIAL READ -> GOOGLE GEMINI
+    if (mode === 'SEQUENTIAL' || mode === 'DEEP_READ') {
+        if (!googleModel) {
+            logger.warn(SERVICE_NAME, "Google Key missing! Falling back to Groq.");
+            return { type: 'groq', client: groqClient, model: process.env.FAST_LLM_MODEL, maxTokens: 2048 };
+        }
+        // Google handles tokens dynamically, but we aim for long context
+        return { type: 'google', client: googleModel, maxTokens: 8192 };
     }
-    if (isDeepThink) {
-        logger.debug(SERVICE_NAME, `Auto-selecting "Deep Think" model: ${DEEP_THINK_MODEL}`);
-        return DEEP_THINK_MODEL;
+
+    // 2. DEEP THINK -> ANTHROPIC CLAUDE
+    if (mode === 'DEEP_THINK') {
+        if (!anthropicClient) {
+            logger.warn(SERVICE_NAME, "Anthropic Key missing! Falling back to Groq.");
+            return { type: 'groq', client: groqClient, model: process.env.FAST_LLM_MODEL, maxTokens: 2048 };
+        }
+        return { type: 'anthropic', client: anthropicClient, model: 'claude-3-5-sonnet-20240620', maxTokens: 4096 };
     }
-    logger.debug(SERVICE_NAME, `Auto-selecting default model: ${DEFAULT_MODEL}`);
-    return DEFAULT_MODEL;
+
+    // 3. STANDARD -> GROQ
+    return {
+        type: 'groq',
+        client: groqClient,
+        model: process.env.FAST_LLM_MODEL || "llama-3.1-8b-instant",
+        maxTokens: 1024 // Keep short for standard chat
+    };
 }
 
-async function* generateStreamingResponse(promptOrMessages, model, temperature = 0.5, max_tokens = null) {
-    logger.debug(SERVICE_NAME, `Calling Groq (Streaming) with model: ${model}`);
+// --- 2. UNIFIED STREAMING ENGINE ---
+
+async function* generateStreamingResponse(messages, mode, temperature = 0.3) {
+    const config = getClientConfig(mode);
+    logger.info(SERVICE_NAME, `[STREAM_START] Routing '${mode}' request to provider: ${config.type.toUpperCase()}`);
+
+    let chunkCount = 0;
+    let firstChunkLogged = false;
+
     try {
-        const messages = Array.isArray(promptOrMessages)
-            ? promptOrMessages
-            : [{ role: 'user', content: promptOrMessages }];
+        // --- OPTION A: GOOGLE GEMINI (Robust Concatenation) ---
+        if (config.type === 'google') {
+            // Google works best with a single prompt string for context-heavy tasks
+            const systemContent = messages.find(m => m.role === 'system')?.content || "";
+            const userContent = messages.find(m => m.role === 'user')?.content || "";
+            const combinedPrompt = `${systemContent}\n\n----------------\n\n${userContent}`.trim();
 
-        const options = {
-            messages: messages,
-            model: model,
-            temperature: temperature,
-            stream: true,
-        };
-        if (max_tokens) {
-            options.max_tokens = max_tokens;
-        }
+            const result = await config.client.generateContentStream(combinedPrompt);
 
-        const stream = await groq.chat.completions.create(options);
-        
-        for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || "";
-            if (content) {
-                yield content;
+            for await (const chunk of result.stream) {
+                const chunkText = chunk.text();
+                if (chunkText) {
+                    if (!firstChunkLogged) {
+                        logger.debug(SERVICE_NAME, `[STREAM_FLOW] Provider ${config.type} yielded FIRST chunk.`);
+                        firstChunkLogged = true;
+                    }
+                    chunkCount++;
+                    yield chunkText;
+                }
             }
         }
-        logger.debug(SERVICE_NAME, `Groq stream finished for model: ${model}`);
+        // --- OPTION B: ANTHROPIC ---
+        else if (config.type === 'anthropic') {
+            const stream = await config.client.messages.create({
+                model: config.model,
+                max_tokens: config.maxTokens,
+                temperature: temperature,
+                messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content })),
+                system: messages.find(m => m.role === 'system')?.content || "",
+                stream: true,
+            });
+
+            for await (const chunk of stream) {
+                if (chunk.type === 'content_block_delta') {
+                    if (!firstChunkLogged) {
+                        logger.debug(SERVICE_NAME, `[STREAM_FLOW] Provider ${config.type} yielded FIRST chunk.`);
+                        firstChunkLogged = true;
+                    }
+                    chunkCount++;
+                    yield chunk.delta.text;
+                }
+            }
+        }
+        // --- OPTION C: GROQ (OpenAI Compatible) ---
+        else {
+            const stream = await config.client.chat.completions.create({
+                messages: messages,
+                model: config.model,
+                max_tokens: config.maxTokens,
+                temperature: temperature,
+                stream: true,
+            });
+
+            for await (const chunk of stream) {
+                const content = chunk.choices[0]?.delta?.content || "";
+                if (content) {
+                    if (!firstChunkLogged) {
+                        logger.debug(SERVICE_NAME, `[STREAM_FLOW] Provider ${config.type} yielded FIRST chunk.`);
+                        firstChunkLogged = true;
+                    }
+                    chunkCount++;
+                    yield content;
+                }
+            }
+        }
+
+        logger.debug(SERVICE_NAME, `[STREAM_END] Provider ${config.type} finished. Total chunks: ${chunkCount}`);
 
     } catch (error) {
-        logger.error(SERVICE_NAME, `Groq (Streaming) API Error: ${error.message}`, error);
-        throw new Error("Failed to generate streaming content from Groq API.");
+        logger.error(SERVICE_NAME, `[STREAM_ERROR] Provider '${config.type}' failed: ${error.message}`, error);
+        // Return a safe fallback message to the UI
+        yield `System Alert: The AI provider (${config.type}) is currently unavailable. Please try again in a moment.`;
     }
 }
 
-async function generateSingleResponse(promptOrMessages, model, temperature = 0.2, max_tokens = 1024) {
-    logger.debug(SERVICE_NAME, `Calling Groq (Single) with model: ${model}`);
-    let fullResponse = "";
+/**
+ * Non-streaming helper.
+ */
+async function generateSingleResponse(messages, mode = 'STANDARD') {
+    let fullText = "";
     try {
-        const stream = generateStreamingResponse(promptOrMessages, model, temperature, max_tokens);
+        const stream = generateStreamingResponse(messages, mode, 0.1);
         for await (const chunk of stream) {
-            fullResponse += chunk;
+            fullText += chunk;
         }
-        logger.debug(SERVICE_NAME, `Groq (Single) successful. Output: "${fullResponse.substring(0, 50)}..."`);
-        return fullResponse;
-
-    } catch (error) {
-        logger.error(SERVICE_NAME, `Groq (Single) API Error: ${error.message}`, error);
-        throw new Error("Failed to generate single response from Groq API.");
-    }
-}
-
-// --- 1. Query Classifier (Agent Brain) ---
-async function classifyQuery(userQuery, userRole, docList) {
-    logger.info(SERVICE_NAME, 'Generating query classification...');
-    const prompt = getQueryClassifierPrompt(userQuery, userRole, docList);
-    const rawOutput = await generateSingleResponse(prompt, DEFAULT_MODEL, 0.1, 1024); // Increased tokens for long doc lists
-    
-    try {
-        const jsonStringMatch = rawOutput.match(/\{[\s\S]*\}/);
-        if (!jsonStringMatch) {
-            throw new Error("No JSON object found in classifier output.");
-        }
-        const classification = JSON.parse(jsonStringMatch[0]);
-        
-        // Ensure all keys are present
-        const validatedClassification = {
-            queryType: classification.queryType || 'GENERAL',
-            rephrasedQuery: classification.rephrasedQuery || userQuery,
-            sql: classification.sql || null,
-            documentFilter: classification.documentFilter || null // [SCOPED_SEARCH_FIX]
-        };
-
-        logger.info(SERVICE_NAME, 'Query classification successful:', validatedClassification);
-        return validatedClassification;
+        return fullText;
     } catch (e) {
-        logger.error(SERVICE_NAME, `Failed to parse classifier JSON: ${e.message}. Raw: ${rawOutput}`);
-        
-        // [SCOPED_SEARCH_FIX] Add documentFilter: null to the fallback
-        return {
-            queryType: "VECTOR",
-            rephrasedQuery: userQuery,
-            sql: null,
-            documentFilter: null
-        };
+        logger.error(SERVICE_NAME, `[SINGLE_RESP_ERROR] ${e.message}`);
+        return "";
     }
 }
 
-// --- 2. Re-rank Chunks ---
-async function rerankChunks(query, chunks) {
-    logger.info(SERVICE_NAME, 'Generating re-ranked indices...');
-    const prompt = getRerankPrompt(query, chunks);
-    const rawOutput = await generateSingleResponse(prompt, DEFAULT_MODEL, 0.1, 256);
-    
-    logger.debug(SERVICE_NAME, `Re-ranker Raw Output: ${rawOutput}`);
+// --- 3. AGENT LOGIC ---
+
+async function classifyQuery(userQuery, userRole, currentMode) {
+    let docFilter = null;
+    const quoteMatch = userQuery.match(/"([^"]+)"/);
+    const fileMention = userQuery.match(/(?:in|from|about)\s+(?:the\s+)?(?:document|file|report)\s+([A-Za-z0-9_\-\.]+)/i);
+
+    if (quoteMatch) docFilter = quoteMatch[1];
+    else if (fileMention) docFilter = fileMention[1];
+
+    let queryType = 'VECTOR_RAG';
+    const lower = userQuery.toLowerCase();
+
+    if (lower.includes('select *') || lower.includes('show me logs')) queryType = 'SQL_METADATA';
+    else if (['hi', 'hello', 'help'].includes(lower.trim())) queryType = 'LLM';
+
+    let chatMode = currentMode;
+    if (lower.includes('think') || lower.includes('reason')) chatMode = 'DEEP_THINK';
+
+    let actionType = null;
+    if (lower.includes('create tasks') || lower.includes('asana')) {
+        actionType = 'CREATE_TASKS';
+        queryType = 'ACTION';
+    }
+
+    return { queryType, chatMode, documentFilter: docFilter, actionType, sql: null };
+}
+
+async function transformQuery(query, candidateDocNames, mode) {
+    if (mode === 'STANDARD') return query;
+    const messages = getTransformQueryPrompt(query, candidateDocNames);
+    const rephrased = await generateSingleResponse(messages, 'STANDARD');
+    return rephrased.replace(/^"|"$/g, '').trim() || query;
+}
+
+async function rerankChunks(query, chunks, mode) {
+    if (chunks.length <= 5) return chunks.map((_, i) => i);
+
+    const rawPrompt = getRerankPrompt(query, chunks);
+    let messages = [];
+
+    // [FIX] Wrap string prompt into array format
+    if (typeof rawPrompt === 'string') {
+        messages = [
+            { role: "system", content: "You are a relevance ranker. Return ONLY a JSON array of indices." },
+            { role: "user", content: rawPrompt }
+        ];
+    } else {
+        messages = rawPrompt;
+    }
+
     try {
-        const jsonStringMatch = rawOutput.match(/\[[\s\S]*?\]/s);
-        if (jsonStringMatch) {
-            return JSON.parse(jsonStringMatch[0]);
-        }
-        throw new Error("No JSON array found in re-ranker output.");
+        // Use STANDARD mode (Groq) for speed
+        const response = await generateSingleResponse(messages, 'STANDARD');
+        const matches = response.match(/\[.*?\]/);
+        return matches ? JSON.parse(matches[0]) : [0, 1, 2, 3, 4];
     } catch (e) {
-        logger.warn(SERVICE_NAME, `Could not parse re-ranker JSON, using fallback. Error: ${e.message}`);
-        return [0, 1, 2].slice(0, chunks.length);
+        logger.warn(SERVICE_NAME, `[RERANK_FAIL] ${e.message}. Fallback to default.`);
+        return [0, 1, 2, 3, 4]; // Fallback
     }
 }
 
-// --- 3. Generate Final RAG Answer (STREAMING) ---
-function streamFinalAnswer(context, query, modelName, isDeepThink) {
-    logger.info(SERVICE_NAME, `Generating final answer (Streaming, DeepThink: ${isDeepThink})...`);
-    const messages = getFinalAnswerPrompt(context, query, isDeepThink);
-    const model = selectModel(modelName, isDeepThink);
-    return generateStreamingResponse(messages, model, 0.5, 2048); 
+async function executeMath(expression, mode) {
+    try {
+        const cleanExpr = expression.replace(/```/g, '').replace(/javascript/g, '').trim();
+        return Function('"use strict";return (' + cleanExpr + ')')();
+    } catch (e) { return null; }
 }
 
-// --- 4. Generate Metadata Answer (STREAMING) ---
-function streamMetadataAnswer(query, sqlResultJson, modelName) {
-    logger.info(SERVICE_NAME, 'Generating metadata answer (Streaming)...');
-    const prompt = getMetadataAnswerPrompt(query, sqlResultJson);
-    const model = selectModel(modelName, false);
-    return generateStreamingResponse(prompt, model, 0.5, 1024);
+async function extractMathExpression(query, sources) { return null; }
+
+// --- 4. FINAL SYNTHESIS ---
+
+async function* streamFinalAnswer(context, query, chatMode, mathResults) {
+    logger.info(SERVICE_NAME, `[SYNTHESIS] Generating answer via ${chatMode} mode.`);
+
+    const templateOutput = getFinalAnswerPrompt(context, query, chatMode, mathResults);
+    let messages = [];
+
+    if (typeof templateOutput === 'string') {
+        messages = [
+            { role: "system", content: templateOutput },
+            { role: "user", content: `User Query: ${query}` }
+        ];
+    } else if (Array.isArray(templateOutput)) {
+        messages = templateOutput;
+    } else {
+        yield "Internal Prompt Error.";
+        return;
+    }
+
+    const stream = generateStreamingResponse(messages, chatMode, 0.2);
+    for await (const chunk of stream) {
+        yield chunk;
+    }
 }
 
-// --- 5. Generate Title (SINGLE) ---
+async function* streamMetadataAnswer(query, data, mode) {
+    const rawPromptString = getMetadataAnswerPrompt(query, data, mode);
+    const messages = [
+        { role: "system", content: "You are a SQL Data Reporter." },
+        { role: "user", content: rawPromptString }
+    ];
+    const stream = generateStreamingResponse(messages, mode);
+    for await (const chunk of stream) {
+        yield chunk;
+    }
+}
+
 async function generateTitle(userMessage, aiMessage) {
-    logger.info(SERVICE_NAME, 'Generating conversation title...');
-    const prompt = getTitleGenerationPrompt(userMessage, aiMessage);
+    logger.info(SERVICE_NAME, '[TITLE] Generating conversation title...');
+
+    const rawPrompt = getTitleGenerationPrompt(userMessage, aiMessage);
+    let messages = [];
+
+    if (typeof rawPrompt === 'string') {
+        messages = [
+            { role: "system", content: "You are a helpful assistant. Generate a short, 3-5 word title for this chat." },
+            { role: "user", content: rawPrompt }
+        ];
+    } else if (Array.isArray(rawPrompt)) {
+        messages = rawPrompt;
+    } else {
+        messages = [{ role: "user", content: `Generate a title for this chat:\nUser: ${userMessage}\nAI: ${aiMessage}` }];
+    }
+
     try {
-        const rawTitle = await generateSingleResponse(prompt, DEFAULT_MODEL, 0.5, 15);
-        
-        let generatedTitle = rawTitle.trim().replace(/^"|"$/g, '');
-        if (generatedTitle.length === 0) {
-            generatedTitle = "Chat Summary";
-            logger.warn(SERVICE_NAME, 'Generated title was empty, using fallback.');
-        }
-        
-        logger.info(SERVICE_NAME, `Generated Title: "${generatedTitle}"`);
-        return generatedTitle;
-    } catch (titleGenError) {
-        logger.error(SERVICE_NAME, 'Failed to generate title', titleGenError);
-        return "Chat Summary";
+        const title = await generateSingleResponse(messages, 'STANDARD');
+        return title.trim().replace(/^"|"$/g, '') || "New Chat";
+    } catch (error) {
+        logger.error(SERVICE_NAME, `[TITLE_FAIL] ${error.message}`);
+        return "New Chat";
     }
 }
 
 module.exports = {
     classifyQuery,
+    transformQuery,
     rerankChunks,
+    extractMathExpression,
+    executeMath,
     streamFinalAnswer,
     streamMetadataAnswer,
-    generateTitle,
+    generateStreamingResponse,
+    generateTitle
 };
