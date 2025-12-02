@@ -32,7 +32,7 @@ VAULT is a **production-grade AI platform** that delivers enterprise RAG capabil
 This diagram represents the current production-oriented target architecture for the VAULT platform.  
 It reflects the live system components where implemented, and the planned scalability layers designed to support growth.
 
-> **Note:** Other components are currently the evolving as the platform continues to develop.
+> **Note:** Other components are currently evolving as the platform continues to develop.
 
 ![VAULT Architecture](docs/architecture.png)
 -----
