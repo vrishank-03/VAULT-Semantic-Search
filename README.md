@@ -1,5 +1,20 @@
 # VAULT: Enterprise AI Platform (Developer Reference)
 
+## Documentation Index
+
+1. [Executive Summary](#executive-summary)
+2. [System Architecture](#system-architecture)
+3. [Core Architecture & Design](#2-core-architecture--design)
+4. [Enterprise RAG Pipeline](#22-the-enterprise-rag-pipeline)
+5. [Technical Innovation & Architecture](#3-technical-innovation--architecture)
+6. [Local Development Setup](#4-local-development-setup)
+7. [API Reference](#5-api-reference)
+8. [Performance Characteristics](#6-performance-characteristics)
+9. [File Structure](#7-file-structure)
+10. [Troubleshooting](#8-troubleshooting)
+11. [Deployment Notes](#9-deployment-notes)
+
+
 ## **Executive Summary**
 
 VAULT is a **production-grade AI platform** that delivers enterprise RAG capabilities at scale. The system features a sophisticated **hybrid retrieval engine**, **real-time streaming**, and **intelligent document processing** with cloud fallbacks.
@@ -11,6 +26,15 @@ VAULT is a **production-grade AI platform** that delivers enterprise RAG capabil
 - Handles real-time streaming with cancellation and progress tracking
 - Supports three distinct AI modes for different use cases
 
+-----
+## System Architecture
+
+This diagram represents the current production-oriented target architecture for the VAULT platform.  
+It reflects the live system components where implemented, and the planned scalability layers designed to support growth.
+
+> **Note:** Other components are currently the evolving as the platform continues to develop.
+
+![VAULT Architecture](docs/architecture.png)
 -----
 
 ## 1. Purpose
