@@ -1,9 +1,15 @@
-// backend/services/ChatHistoryService.js - OPTIMIZED for PostgreSQL and pg_trgm Fuzzy Search
+// backend/services/ChatHistoryService.js - MERGED & ROBUST
+// --------------------------------------------------------
+// [ROLE] Manages conversation state and message persistence.
+// [MERGE] Retains all original robust logic (Transactions, Title Gen).
+// [FIX] Adds 'saveMessage' (singular) export for searchService compatibility.
+// --------------------------------------------------------
 
-const { query, executeTransaction } = require('../database'); 
+const { query, executeTransaction } = require('../database');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
-const GenerationService = require('./GenerationService'); // Ensure this import exists
+// Ensure GenerationService is required for Title Generation
+const GenerationService = require('./GenerationService');
 
 const SERVICE_NAME = 'ChatHistoryService';
 
@@ -16,8 +22,8 @@ const updateConversationTitle = async (conversationId, newTitle) => {
 };
 
 /**
- * Saves user and AI messages to the database within a transaction (safe).
- * [CRITICAL FIX] Handles 'null' conversationId by creating a new conversation on the fly.
+ * [EXISTING - ROBUST] Saves user and AI messages to the database within a transaction.
+ * Handles 'null' conversationId by creating a new conversation on the fly.
  */
 async function saveMessages(conversationId, userId, userMessage, aiMessage, aiResultsPayload) {
     logger.info(SERVICE_NAME, `[SAVE] Saving messages. Requested ConvoID: ${conversationId}`);
@@ -29,22 +35,23 @@ async function saveMessages(conversationId, userId, userMessage, aiMessage, aiRe
             // 1. Handle New Conversation (null or 'null' string)
             if (!targetConvoId || targetConvoId === 'null') {
                 logger.info(SERVICE_NAME, '[SAVE] No valid conversation ID. Creating new conversation...');
-                
-                // Generate a Title (Async, but we await it to insert the row cleanly)
+
+                // Generate a Title
                 let title = "New Chat";
                 try {
                     title = await GenerationService.generateTitle(userMessage, aiMessage);
                 } catch (e) {
                     logger.warn(SERVICE_NAME, '[SAVE] Title generation failed, using default.');
                 }
-                
+
                 const newConvoId = uuidv4();
-                
+
                 // Insert new conversation row
-                // NOTE: Assuming 'room_id' is 1 for now. Ideally, pass roomId to this function.
+                // NOTE: Assuming 'room_id' is 1 if not provided. ideally context should provide this.
+                // We use a safe fallback query here.
                 const createSql = `INSERT INTO conversations (conversation_id, user_id, title, room_id) VALUES ($1, $2, $3, $4) RETURNING conversation_id`;
                 const convoRes = await client.query(createSql, [newConvoId, userId, title, 1]);
-                
+
                 targetConvoId = convoRes.rows[0].conversation_id;
                 logger.info(SERVICE_NAME, `[SAVE] Created new conversation: ${targetConvoId}`);
             }
@@ -56,19 +63,40 @@ async function saveMessages(conversationId, userId, userMessage, aiMessage, aiRe
 
             // 3. Save AI Message
             const aiMessageId = uuidv4();
+            // JSON stringify logic is handled by client/adapter if needed, but explicit here is safe
             const resultsJson = aiResultsPayload ? JSON.stringify(aiResultsPayload) : null;
             const aiSql = `INSERT INTO chat_history (message_id, conversation_id, sender, message, results) VALUES ($1, $2, 'ai', $3, $4)`;
             await client.query(aiSql, [aiMessageId, targetConvoId, aiMessage, resultsJson]);
-            
+
             logger.info(SERVICE_NAME, `[SAVE] Transaction complete. Messages saved to ${targetConvoId}`);
-            
-            // 4. Return the ID so the controller/frontend knows (if needed)
+
             return targetConvoId;
         });
 
     } catch (dbError) {
         logger.error(SERVICE_NAME, "[FATAL] Failed during message saving", dbError);
-        // We log but do NOT throw, to prevent crashing the response stream if history fails.
+    }
+}
+
+/**
+ * [NEW - ADAPTER] Saves a single message.
+ * This function is required by 'searchService.js' which saves messages individually.
+ */
+async function saveMessage(conversationId, sender, message, results = null) {
+    const messageId = uuidv4();
+
+    // SQLite/PG Adapter safe handling
+    const safeResults = results ? (typeof results === 'object' ? JSON.stringify(results) : results) : null;
+
+    try {
+        await query(
+            `INSERT INTO chat_history (message_id, conversation_id, sender, message, results) VALUES ($1, $2, $3, $4, $5)`,
+            [messageId, conversationId, sender, message, safeResults]
+        );
+        logger.info(SERVICE_NAME, `[SAVE_SINGLE] Saved '${sender}' message for ${conversationId}`);
+        return { message_id: messageId };
+    } catch (err) {
+        logger.error(SERVICE_NAME, `[SAVE_SINGLE_ERROR] Failed to save message: ${err.message}`);
     }
 }
 
@@ -86,7 +114,7 @@ async function createConversation(userId, roomId) {
     try {
         const res = await query(sql, params);
         logger.info(SERVICE_NAME, `[CREATE] Conversation ${conversationId} created.`);
-        return res.rows[0]; 
+        return res.rows[0];
     } catch (err) {
         logger.error(SERVICE_NAME, '[CREATE] Failed to insert new conversation', err);
         throw new Error('Failed to create conversation in database.');
@@ -106,7 +134,6 @@ async function getConversations(userId, roomId) {
 
     try {
         const res = await query(sql, params);
-        logger.info(SERVICE_NAME, `[FETCH] Found ${res.rows.length} conversations.`);
         return res.rows || [];
     } catch (err) {
         logger.error(SERVICE_NAME, '[FETCH] Failed to fetch conversations', err);
@@ -126,7 +153,7 @@ async function getConversationHistory(userId, conversationId) {
 
         if (verifyRes.rows.length === 0) {
             logger.warn(SERVICE_NAME, `[HISTORY] User ${userId} attempted to access unauthorized convo ${conversationId}.`);
-            throw new Error('Access denied'); 
+            throw new Error('Access denied');
         }
 
         const historySql = `SELECT message_id, sender, message, results, timestamp 
@@ -145,13 +172,12 @@ async function getConversationHistory(userId, conversationId) {
                     messageData.results = (typeof msg.results === 'string') ? JSON.parse(msg.results) : msg.results;
                 } catch (parseError) {
                     logger.error(SERVICE_NAME, `[HISTORY] Failed to parse results JSON for msg ${msg.message_id}`);
-                    messageData.results = null; 
+                    messageData.results = null;
                 }
             }
             return messageData;
         });
 
-        logger.info(SERVICE_NAME, `[HISTORY] Found ${history.length} messages.`);
         return history;
 
     } catch (err) {
@@ -166,20 +192,18 @@ async function getConversationHistory(userId, conversationId) {
  */
 async function deleteConversation(userId, conversationId) {
     logger.info(SERVICE_NAME, `[DELETE] Initiating deletion for convo ${conversationId} (User: ${userId})`);
-    
+
     const sql = `
         DELETE FROM conversations 
         WHERE conversation_id = $1 AND user_id = $2
         RETURNING conversation_id;
     `;
-    
+
     try {
         const res = await query(sql, [conversationId, userId]);
         if (res.rowCount === 0) {
-            logger.warn(SERVICE_NAME, `[DELETE] No conversation found or user ${userId} denied deletion permission.`);
             return { success: false, message: 'Conversation not found or access denied.' };
         }
-        logger.info(SERVICE_NAME, `[DELETE] Successfully deleted conversation ${conversationId}.`);
         return { success: true, message: 'Conversation deleted successfully.' };
     } catch (err) {
         logger.error(SERVICE_NAME, `[DELETE] Failed to delete conversation ${conversationId}`, err);
@@ -188,7 +212,7 @@ async function deleteConversation(userId, conversationId) {
 }
 
 /**
- * Searches chat history using PostgreSQL's pg_trgm.
+ * Searches chat history using PostgreSQL's pg_trgm logic.
  */
 async function searchChatHistory(userId, searchTerm) {
     logger.info(SERVICE_NAME, `[SEARCH] Initiating fuzzy search for user ${userId} with term: "${searchTerm}"`);
@@ -218,10 +242,10 @@ async function searchChatHistory(userId, searchTerm) {
             score DESC, ch.timestamp DESC
         LIMIT 50;
     `;
-    
+
     try {
         const res = await query(sql, [userId, searchTerm]);
-        
+
         const groupedResults = res.rows.reduce((acc, row) => {
             if (!acc[row.conversation_id]) {
                 acc[row.conversation_id] = {
@@ -249,7 +273,8 @@ async function searchChatHistory(userId, searchTerm) {
 }
 
 module.exports = {
-    saveMessages,
+    saveMessages,        // Plural (Original Robust)
+    saveMessage,         // Singular (New Adapter for searchService)
     createConversation,
     getConversations,
     getConversationHistory,
