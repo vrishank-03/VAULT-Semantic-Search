@@ -1,4 +1,3 @@
----
 # VAULT: Enterprise AI RAG Platform
 
 > **Production-grade, multi-tenant RAG platform with hybrid search, long-context LLMs, and enterprise-style access control.**
