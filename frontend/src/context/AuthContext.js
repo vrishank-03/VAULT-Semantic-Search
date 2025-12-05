@@ -1,6 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-// 1. --- Import getUserInfo to verify the token ---
-import { loginUser, signupUser, googleLogin, getUserInfo } from '../services/api';
+import { loginUser, signupUser, getUserInfo } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -9,91 +8,89 @@ export const AuthProvider = ({ children }) => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    // 2. --- This function is now more robust ---
-    // It will verify the token by fetching user data, ensuring the session is valid.
     const verifyAuth = useCallback(async () => {
+        console.log('[AUTH_FLOW] verifyAuth() initiated.');
+        
+        // 1. Check for token existence
         const token = localStorage.getItem('token');
-        if (token) {
-            try {
-                const userInfo = await getUserInfo();
-                if (userInfo) {
-                    setUser(userInfo);
-                    setIsAuthenticated(true);
-                } else {
-                    // This can happen if the token is invalid/expired
-                    localStorage.removeItem('token');
-                    setUser(null);
-                    setIsAuthenticated(false);
-                }
-            } catch (error) {
-                console.error("Auth verification failed:", error);
-                localStorage.removeItem('token');
-                setUser(null);
-                setIsAuthenticated(false);
-            }
-        } else {
+        
+        if (!token) {
+            console.log('[AUTH_FLOW] No token found in localStorage. Stopping.');
             setIsAuthenticated(false);
             setUser(null);
+            setIsLoading(false);
+            return;
         }
-        setIsLoading(false);
+
+        // 2. Token exists, try to validate with backend
+        console.log('[AUTH_FLOW] Token found. Verifying with backend...');
+        try {
+            // This call will trigger api.js. 
+            // If it returns 401, api.js throws error, we catch it here.
+            const userInfo = await getUserInfo();
+            
+            if (userInfo) {
+                console.log('[AUTH_FLOW] Verification Success. User:', userInfo.email);
+                setUser(userInfo);
+                setIsAuthenticated(true);
+            } else {
+                throw new Error('Empty user info returned');
+            }
+        } catch (error) {
+            // [CIRCUIT_BREAKER]
+            // If verification fails (401, 403, Network), we MUST assume invalid token
+            // and clear it to prevent infinite loops.
+            console.error("[AUTH_FLOW] Verification Failed:", error.message);
+            
+            console.log('[AUTH_FLOW] Clearing invalid token to prevent retry loop.');
+            localStorage.removeItem('token');
+            setUser(null);
+            setIsAuthenticated(false);
+        } finally {
+            setIsLoading(false);
+            console.log('[AUTH_FLOW] verifyAuth() complete.');
+        }
     }, []);
 
+    // Run verifyAuth ONLY once on mount
     useEffect(() => {
         verifyAuth();
     }, [verifyAuth]);
 
     const login = async (credentials) => {
+        console.log('[AUTH_FLOW] Login initiated...');
         const response = await loginUser(credentials);
         const { data } = response;
+        
         if (data && data.token) {
+            console.log('[AUTH_FLOW] Login successful. Token received.');
             localStorage.setItem('token', data.token);
-            // 3. --- Set the user object on login ---
-            setUser({ id: data.id, email: data.email, pictureUrl: data.pictureUrl });
-            setIsAuthenticated(true);
+            
+            // Immediately fetch user info to populate context
+            try {
+                const userInfo = await getUserInfo();
+                setUser(userInfo);
+                setIsAuthenticated(true);
+            } catch (fetchErr) {
+                console.error('[AUTH_FLOW] Login succeeded but fetching profile failed:', fetchErr);
+                localStorage.removeItem('token');
+                throw fetchErr;
+            }
         }
         return response;
     };
 
     const register = async (email, password) => {
-        const response = await signupUser({ email, password });
-        return response;
+        console.log('[AUTH_FLOW] Registration initiated...');
+        return await signupUser({ email, password });
     };
-
-    // --- MODIFICATIONS BELOW ---
-
-    const loginWithGoogle = async (credentialResponse, pictureUrl) => { // <-- 1. MODIFIED SIGNATURE
-        console.log("[LOG] AuthContext: loginWithGoogle triggered."); // <-- 2. ADDED LOG
-        console.log("[LOG] AuthContext: Picture URL received:", pictureUrl); // <-- 3. ADDED LOG
-
-        // 4. MODIFIED API CALL to pass the pictureUrl
-        const response = await googleLogin(credentialResponse.credential, pictureUrl); 
-        
-        console.log("[LOG] AuthContext: API call to googleLogin service finished."); // <-- 5. ADDED LOG
-        
-        const { data } = response;
-        if (data && data.token) {
-            console.log("[LOG] AuthContext: Token received. Storing in localStorage."); // <-- 6. ADDED LOG
-            localStorage.setItem('token', data.token);
-            
-            // 3. --- Set the user object on Google login ---
-            console.log("[LOG] AuthContext: Calling getUserInfo() to refresh user state."); // <-- 7. ADDED LOG
-            const userInfo = await getUserInfo(); // Fetch full user info including picture
-            if (userInfo) {
-                console.log("[LOG] AuthContext: User info received:", userInfo); // <-- 8. ADDED LOG
-                setUser(userInfo);
-            }
-            setIsAuthenticated(true);
-            console.log("[LOG] AuthContext: Authentication complete. User is set."); // <-- 9. ADDED LOG
-        }
-        return response;
-    };
-
-    // --- END OF MODIFICATIONS ---
 
     const logout = () => {
+        console.log('[AUTH_FLOW] Manual Logout.');
         localStorage.removeItem('token');
         setUser(null);
         setIsAuthenticated(false);
+        window.location.replace('/login'); // Clean redirect
     };
 
     const value = {
@@ -103,7 +100,6 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         register,
-        loginWithGoogle, 
     };
 
     return (
@@ -113,7 +109,6 @@ export const AuthProvider = ({ children }) => {
     );
 };
 
-// Custom hook to use the AuthContext
 export const useAuth = () => {
     return useContext(AuthContext);
 };

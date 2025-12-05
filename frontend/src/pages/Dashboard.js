@@ -1,537 +1,495 @@
-import React, { useState, useEffect, useRef } from 'react';
-// --- MODIFIED IMPORT: Added getConversationHistory ---
-import { uploadDocument, search, getDocument, getUserInfo, getDocuments, createNewConversation, getConversations, getConversationHistory } from '../services/api';
-import { useAuth } from '../context/AuthContext';
-import PdfViewer from '../PdfViewer';
-import ReactMarkdown from 'react-markdown';
-import { FiPaperclip, FiSend, FiChevronDown, FiChevronUp, FiCopy, FiSquare, FiEdit2 } from 'react-icons/fi';
-import Toast from '../Toast';
-import Sidebar from '../components/Sidebar';
-import ThemeToggleButton from '../components/ThemeToggleButton';
-import { motion } from 'framer-motion';
-import ProcessingAnimation from '../components/ProcessingAnimation';
-import ThinkingAnimation from '../components/ThinkingAnimation';
-import logo from '../assets/logo.png';
+// frontend/src/pages/Dashboard.js
+// Corrected Refactor
 
-const getInitialMessages = () => {
-    return [{ sender: 'ai', text: 'Welcome to VAULT. Upload a document or ask me a question about your knowledge base.' }];
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+    approveRoomRequest,
+    rejectRoomRequest,
+    revokeRequest,
+    requestAccess,
+    editRequest,
+    rejectProduct,
+    deleteProduct,
+    getIncomingPeerRequests,
+    getOutgoingPeerRequests,
+    respondToPeerRequest
+} from '../services/api';
+import Toast from '../Toast';
+import LoadingSpinner from '../components/LoadingSpinner';
+
+// New Refactored Imports
+import { useDashboardData } from '../components/dashboard/hooks/useDashboardData';
+import { useProductManagement } from '../components/dashboard/hooks/useProductManagement';
+import DashboardHeader from '../components/dashboard/DashboardHeader';
+import DashboardTabs from '../components/dashboard/DashboardTabs'; // We will use this again
+import PendingProductsSection from '../components/dashboard/sections/PendingProductsSection';
+import ManageProductsSection from '../components/dashboard/sections/ManageProductsSection';
+import ProductCardsSection from '../components/dashboard/sections/ProductCardsSection';
+import ClientCardsSection from '../components/dashboard/sections/ClientCardsSection';
+import RoomCardsSection from '../components/dashboard/sections/RoomCardsSection';
+import OutgoingRequestsSection from '../components/dashboard/sections/OutgoingRequestsSection';
+import OutgoingPeerRequestsSection from '../components/dashboard/sections/OutgoingPeerRequestsSection';
+
+// Modals
+import UserManagementModal from '../components/modals/UserManagementModal';
+import CreateRoomModal from '../components/modals/CreateRoomModal';
+import IncomingJitModal from '../components/modals/IncomingJitModal';
+import IncomingPeerJitModal from '../components/modals/IncomingPeerJitModal';
+import RequestAccessModal from '../components/modals/RequestAccessModal';
+import ConfirmModal from '../components/modals/ConfirmModal';
+
+// --- [NEW] Import layout context and icons for *correct* sidebar ---
+import { useLayout } from '../context/LayoutContext';
+import { FiUsers, FiPlusSquare, FiPenTool, FiBell, FiShare2 } from 'react-icons/fi'; // Corrected Icons
+
+// Animation Variants
+const modalBackdropVariants = {
+    hidden: { opacity: 0 },
+    visible: { opacity: 1 },
 };
 
+const modalContentVariants = {
+    hidden: { opacity: 0, scale: 0.95 },
+    visible: { opacity: 1, scale: 1, transition: { delay: 0.1, ease: 'easeOut', duration: 0.2 } },
+    exit: { opacity: 0, scale: 0.95, transition: { ease: 'easeIn', duration: 0.15 } },
+};
+
+const tabContentVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.3, ease: 'easeInOut' } },
+    exit: { opacity: 0, y: -10, transition: { duration: 0.2, ease: 'easeInOut' } },
+};
+
+
 function Dashboard() {
-    const [messages, setMessages] = useState(getInitialMessages);
-    const [input, setInput] = useState('');
-    const [isSearching, setIsSearching] = useState(false);
-    const [isUploading, setIsUploading] = useState(false);
-
-    const [activeConversationId, setActiveConversationId] = useState(null);
-    const [conversations, setConversations] = useState([]);
-
-    const [pdfUrl, setPdfUrl] = useState(null);
-    const [isPdfLoading, setIsPdfLoading] = useState(false);
-    const [currentHighlight, setCurrentHighlight] = useState(null);
-
-    const [toast, setToast] = useState(null);
-    const messagesEndRef = useRef(null);
-    const fileInputRef = useRef(null);
-
-    const searchAbortControllerRef = useRef(null);
-    const uploadAbortControllerRef = useRef(null);
-
-    const mainInputRef = useRef(null);
-
     const { user } = useAuth();
+    const [toast, setToast] = useState(null);
+    const [currentTab, setCurrentTab] = useState('browse');
 
-    const [documents, setDocuments] = useState([]);
-    const [showDocuments, setShowDocuments] = useState(false);
+    // --- [NEW] Get setSidebarContent from useLayout ---
+    const { setSidebarContent } = useLayout();
 
-    const fetchDocuments = async () => {
-        try {
-            const response = await getDocuments();
-            setDocuments(response.data);
-        } catch (error) {
-            console.error("Failed to fetch documents:", error);
-            setToast({ message: 'Could not load your document list.', type: 'error' });
+    // --- [All states unchanged] ---
+    const [isRoomModalOpen, setIsRoomModalOpen] = useState(false);
+    const [isUserManagementModalOpen, setIsUserManagementModalOpen] = useState(false);
+    const [isRequestAccessModalOpen, setIsRequestAccessModalOpen] = useState(false);
+    const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+    const [isConfirmingAction, setIsConfirmingAction] = useState(false);
+    const [confirmationState, setConfirmationState] = useState(null);
+    const [isIncomingRoomJitModalOpen, setIsIncomingRoomJitModalOpen] = useState(false);
+    const [isIncomingPeerJitModalOpen, setIsIncomingPeerJitModalOpen] = useState(false);
+    
+    const getInitialView = () => {
+        if (!user) return { level: 'loading' };
+        if (user.role === 'CTO' || user.role === 'ProductOwner') {
+            return { level: 'products', product: null, client: null };
         }
-    };
-
-    const fetchConversations = async () => {
-        console.log("[LOG] Dashboard: Attempting to fetch conversations...");
-        try {
-            const response = await getConversations();
-            setConversations(response.data);
-            console.log(`[LOG] Dashboard: Successfully fetched ${response.data.length} conversations.`);
-        } catch (error) {
-            console.error("[LOG] Dashboard: Failed to fetch conversations:", error);
-            setToast({ message: 'Could not load your chat history.', type: 'error' });
+        if (user.role === 'Administrator') {
+            return { level: 'clients', product: { id: user.product_id, product_name: user.productName }, client: null };
         }
+        return { level: 'rooms', product: null, client: null };
     };
+    const [viewState, setViewState] = useState(getInitialView());
 
+    // --- [Custom Hooks unchanged] ---
+    const {
+        isLoading,
+        products,
+        pendingProducts,
+        incomingRoomRequests,
+        outgoingRoomRequests,
+        pendingUsers,
+        incomingPeerRequests,
+        outgoingPeerRequests,
+        refreshData
+    } = useDashboardData(setToast);
+
+    const {
+        editingProductId,
+        editFormData,
+        handleApproveProduct,
+        handleEditClick,
+        handleEditCancel,
+        handleEditFormChange,
+        handleEditSave
+    } = useProductManagement(setToast, refreshData);
+
+    // --- [Badge Counts - unchanged] ---
+    const incomingRoomRequestsCount = incomingRoomRequests.filter(r => r.status === 'pending').length;
+    const incomingPeerRequestsCount = (incomingPeerRequests.productRequests?.length || 0) + (incomingPeerRequests.clientRequests?.length || 0);
+    const outgoingRoomRequestsCount = outgoingRoomRequests.filter(r => r.status === 'pending').length;
+    const outgoingPeerRequestsCount = outgoingPeerRequests.filter(r => r.status === 'pending').length;
+
+    // --- [MODIFIED] useEffect to set the CORRECT sidebar content (Action Buttons) ---
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
+        const linkClass = "flex items-center w-full px-3 py-3 text-sm font-medium text-left text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-md transition-colors duration-150";
+        
+        // This content is the action buttons, as you wanted.
+        setSidebarContent(
+            <div className="flex flex-col space-y-2">
+                {/* --- User-specific button --- */}
+                {user?.role === 'User' && (
+                    <button onClick={() => setIsRequestAccessModalOpen(true)} className={linkClass}>
+                        <FiPenTool className="mr-3 flex-shrink-0" size={18} />
+                        <span className="truncate">Request Room Access</span>
+                    </button>
+                )}
 
-    useEffect(() => {
-        fetchDocuments();
-        fetchConversations();
-    }, []);
+                {/* --- Admin / Owner / CTO buttons --- */}
+                {user?.role !== 'User' && (
+                    <button onClick={() => setIsRoomModalOpen(true)} className={linkClass}>
+                        <FiPlusSquare className="mr-3 flex-shrink-0" size={18} />
+                        <span className="truncate">Create Room</span>
+                    </button>
+                )}
 
-    const handleSearch = async (e) => {
-        e.preventDefault();
-        console.log("[LOG] Dashboard: handleSearch triggered.");
-        if (!input.trim() || isSearching) return;
+                {(user?.role === 'CTO' || user?.role === 'Administrator' || user?.role === 'ProductOwner') && (
+                    <>
+                        <button onClick={() => setIsUserManagementModalOpen(true)} className={linkClass}>
+                            <FiUsers className="mr-3 flex-shrink-0" size={18} />
+                            <span className="truncate">Manage Users</span>
+                            {pendingUsers.length > 0 && (
+                                <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                    {pendingUsers.length}
+                                </span>
+                            )}
+                        </button>
+                        
+                        <button onClick={() => setIsIncomingRoomJitModalOpen(true)} className={linkClass}>
+                            <FiBell className="mr-3 flex-shrink-0" size={18} /> {/* Corrected Icon */}
+                            <span className="truncate">Room JIT</span>
+                            {incomingRoomRequestsCount > 0 && (
+                                <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                    {incomingRoomRequestsCount}
+                                </span>
+                            )}
+                        </button>
+                    </>
+                )}
 
-        console.log("[LOG] Dashboard: Creating new Search AbortController.");
-        const controller = new AbortController();
-        searchAbortControllerRef.current = controller;
+                {(user?.role === 'ProductOwner' || user?.role === 'Administrator') && (
+                    <button onClick={() => setIsIncomingPeerJitModalOpen(true)} className={linkClass}>
+                        <FiShare2 className="mr-3 flex-shrink-0" size={18} /> {/* Corrected Icon */}
+                        <span className="truncate">Peer JIT</span>
+                        {incomingPeerRequestsCount > 0 && (
+                            <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold text-white bg-red-500 rounded-full">
+                                {incomingPeerRequestsCount}
+                            </span>
+                        )}
+                    </button>
+                )}
+            </div>
+        );
+        // Clean up sidebar content when component unmounts
+        return () => setSidebarContent(null);
+    }, [
+        setSidebarContent, 
+        user, 
+        pendingUsers.length, 
+        incomingRoomRequestsCount, 
+        incomingPeerRequestsCount,
+        setIsRoomModalOpen,
+        setIsRequestAccessModalOpen,
+        setIsUserManagementModalOpen,
+        setIsIncomingRoomJitModalOpen,
+        setIsIncomingPeerJitModalOpen
+    ]);
 
-        const userMessage = { sender: 'user', text: input };
-        const currentHistory = [...messages, userMessage];
-        // Add "Thinking..." immediately for responsiveness
-        setMessages([...currentHistory, { sender: 'ai', text: 'Thinking...', isLoading: true }]);
 
-        const currentInput = input;
-        setInput('');
-        setIsSearching(true);
-
-        let convoId = activeConversationId; // Use a local variable
-
-        try {
-             // Check if it's the first message of a new chat session (not just a new convo)
-            if (!convoId) {
-                console.log("[LOG] Dashboard: No active conversation. Creating a new one first...");
-                const response = await createNewConversation();
-                convoId = response.data.conversation_id;
-                setActiveConversationId(convoId); // Update state *after* successful creation
-                console.log(`[LOG] Dashboard: New conversation automatically created with ID: ${convoId}`);
-                fetchConversations(); // Refresh list in sidebar
-            }
-
-            console.log(`[LOG] Dashboard: Calling search() API for Convo ID: ${convoId} with signal.`);
-            const result = await search(currentInput, currentHistory, convoId, controller.signal);
-
-            const responseData = result.data;
-            if (!responseData || typeof responseData.answer === 'undefined') {
-                throw new Error("Invalid response structure from server.");
-            }
-
-            console.log("[LOG] Dashboard: Search successful. Got AI response.");
-            const aiResponse = { sender: 'ai', text: responseData.answer, results: responseData };
-             // Replace "Thinking..." with the actual response
-            setMessages(prev => [...prev.slice(0, -1), aiResponse]);
-
-        } catch (error) {
-            console.error("[LOG] Dashboard: Search encountered an error:", error);
-
-            // Handle abort specifically
-            if (error.name === 'CanceledError' || error.name === 'AbortError') {
-                console.log("[LOG] Dashboard: Search request was successfully aborted by user.");
-                const errorResponse = { sender: 'system', text: "Generation stopped." };
-                 // Replace "Thinking..." with the system message
-                setMessages(prev => [...prev.slice(0, -1), errorResponse]);
-            } else if (error.config && error.config.url.endsWith('/api/chat/new')) {
-                 // Handle failure to create the *initial* conversation
-                console.error("[LOG] Dashboard: CRITICAL: Failed to create initial conversation.");
-                setToast({ message: 'A new chat session could not be started. Please refresh.', type: 'error' });
-                 // Remove the user message and "Thinking..."
-                setMessages(prev => prev.slice(0, -2));
-            } else {
-                 // Generic error during search
-                const errorText = error.response?.data?.message || 'Sorry, I encountered an error.';
-                setToast({ message: errorText, type: 'error' });
-                const errorResponse = { sender: 'ai', text: "My apologies, I seem to have encountered a problem. Please try your question again in sometime." };
-                 // Replace "Thinking..." with the error message
-                setMessages(prev => [...prev.slice(0, -1), errorResponse]);
-            }
-        } finally {
-            console.log("[LOG] Dashboard: Search finalized. Cleaning up controller and state.");
-            setIsSearching(false);
-            searchAbortControllerRef.current = null;
-        }
-    };
-
-    const handleStopGeneration = () => {
-        console.log("[LOG] Dashboard: handleStopGeneration triggered.");
-        if (searchAbortControllerRef.current) {
-            searchAbortControllerRef.current.abort();
-            console.log("[LOG] Dashboard: Abort signal sent for search.");
-        } else {
-            console.warn("[LOG] Dashboard: Stop Generation clicked, but no Search AbortController found.");
-        }
-    };
-
-    const handleStopUpload = () => {
-        console.log("[LOG] Dashboard: handleStopUpload triggered.");
-        if (uploadAbortControllerRef.current) {
-            uploadAbortControllerRef.current.abort();
-            console.log("[LOG] Dashboard: Abort signal sent for upload.");
-        } else {
-            console.warn("[LOG] Dashboard: Stop Upload clicked, but no Upload AbortController found.");
-        }
-    };
-
-    const handleEditMessage = (messageIndex) => {
-        console.log(`[LOG] Dashboard: handleEditMessage triggered for index: ${messageIndex}`);
-        const messageToEdit = messages[messageIndex];
-
-        if (messageToEdit.sender !== 'user') {
-            console.warn(`[LOG] Dashboard: Edit attempt on non-user message index ${messageIndex}.`);
-            return;
-        }
-
-        console.log(`[LOG] Dashboard: Setting input to: "${messageToEdit.text}"`);
-        setInput(messageToEdit.text);
-
-        console.log(`[LOG] Dashboard: Rewinding message history to index ${messageIndex}.`);
-        setMessages(prevMessages => prevMessages.slice(0, messageIndex));
-
-        mainInputRef.current?.focus();
-    };
-
-    const handleFileUpload = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
-
-        console.log("[LOG] Dashboard: handleFileUpload triggered.");
-        const controller = new AbortController();
-        uploadAbortControllerRef.current = controller;
-        setIsUploading(true);
-        setToast(null);
-
-        try {
-            console.log("[LOG] Dashboard: Calling uploadDocument() API with signal.");
-            const result = await uploadDocument(files, controller.signal);
-            console.log("[LOG] Dashboard: Upload successful.");
-            setToast({ message: `Upload successful. ${result.data.documentIds.length} document(s) processed.`, type: 'success' });
-            fetchDocuments();
-        } catch (error) {
-            console.error("[LOG] Dashboard: Upload encountered an error:", error);
-            if (error.name === 'CanceledError' || error.name === 'AbortError') {
-                 console.log("[LOG] Dashboard: Upload request was successfully aborted by user.");
-                 setToast({ message: "Upload stopped.", type: 'warning' });
-            } else if (error.response && error.response.status === 409) {
-                console.warn("[LOG] Dashboard: Duplicate file upload detected.");
-                setToast({ message: error.response.data.error, type: 'error' });
-            } else {
-                console.error("[LOG] Dashboard: Generic upload failure.");
-                setToast({ message: `Upload failed. Please try again.`, type: 'error' });
-            }
-        } finally {
-            console.log("[LOG] Dashboard: Upload finalized. Cleaning up controller and state.");
-            setIsUploading(false);
-            uploadAbortControllerRef.current = null;
-            if(fileInputRef.current) {
-                fileInputRef.current.value = "";
-                console.log("[LOG] Dashboard: File input cleared.");
-            }
-        }
-    };
-
-    const handleSourceClick = async (source) => {
-        setIsPdfLoading(true);
-        setPdfUrl(null);
-        try {
-            const documentId = source.metadata.documentId;
-            const pdfBlob = await getDocument(documentId);
-            const url = URL.createObjectURL(pdfBlob);
-            setPdfUrl(url);
-            setCurrentHighlight(source.metadata && source.metadata.pageNumber ? {
-                pageNumber: source.metadata.pageNumber,
-                textToHighlight: source.text
-            } : null);
-        } catch (error) {
-            setToast({ message: 'Could not load the protected PDF.', type: 'error' });
-        } finally {
-            setIsPdfLoading(false);
-        }
-    };
-
-    const closePdfViewer = () => {
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-        setPdfUrl(null);
-        setCurrentHighlight(null);
-    };
-
-    const handleOpenDocument = async (documentId, documentName) => {
-        console.log(`[LOG] Dashboard: handleOpenDocument triggered for docId: ${documentId}, name: ${documentName}`);
-        setIsPdfLoading(true);
-        setPdfUrl(null);
-        setCurrentHighlight(null);
-        try {
-            console.log(`[LOG] Dashboard: Calling getDocument(${documentId})`);
-            const pdfBlob = await getDocument(documentId);
-            const url = URL.createObjectURL(pdfBlob);
-            console.log(`[LOG] Dashboard: PDF Blob URL created. Setting PDF URL.`);
-            setPdfUrl(url);
-        } catch (error) {
-            console.error("Failed to load document:", error);
-            setToast({ message: 'Could not load the document.', type: 'error' });
-        } finally {
-            console.log(`[LOG] Dashboard: Setting isPdfLoading to false.`);
-            setIsPdfLoading(false);
-        }
-    };
-
-    const handleCopyToClipboard = (text) => {
-        console.log(`[LOG] Dashboard: Attempting to copy text: "${text}"`);
-        if (!navigator.clipboard) {
-            console.error('[LOG] Dashboard: Clipboard API not available.');
-            setToast({ message: 'Clipboard API is not available in your browser.', type: 'error' });
-            return;
-        }
-        navigator.clipboard.writeText(text).then(() => {
-            console.log(`[LOG] Dashboard: Successfully copied to clipboard.`);
-            const toastMessage = `Copied "${text.length > 20 ? text.substring(0, 20) + '...' : text}" to clipboard!`;
-            setToast({ message: toastMessage, type: 'success' });
-        }, (err) => {
-            console.error('[LOG] Dashboard: Failed to copy text: ', err);
-            setToast({ message: 'Failed to copy text.', type: 'error' });
+    // --- [All handler functions unchanged] ---
+    const handleRejectProduct = (productId, productName) => {
+        setConfirmationState({
+            action: 'rejectProduct',
+            product: { id: productId, name: productName },
+            title: `Reject Product?`,
+            message: `Are you sure you want to reject and delete the product "${productName}"? This action cannot be undone.`,
+            confirmText: 'Reject & Delete',
+            confirmVariant: 'danger'
         });
+        setIsConfirmModalOpen(true);
     };
+    const handleDeleteProduct = (productId, productName) => {
+        setConfirmationState({
+            action: 'deleteProduct',
+            product: { id: productId, name: productName },
+            title: `PERMANENTLY DELETE Product?`,
+            message: `Are you sure you want to PERMANENTLY DELETE "${productName}"? This is a highly destructive action and will also delete all associated clients, rooms, and deactivate all users. This cannot be undone.`,
+            confirmText: 'Yes, Delete This Product',
+            confirmVariant: 'danger'
+        });
+        setIsConfirmModalOpen(true);
+    };
+    const onConfirmAction = async () => {
+        if (!confirmationState) return;
+        const { action, product } = confirmationState;
+        const { id, name } = product;
 
-    const handleNewChat = async () => {
-        console.log("[LOG] Dashboard: handleNewChat triggered.");
-        const hasUserMessages = messages.some(m => m.sender === 'user');
-
-        // Only prevent creating new chat if the *current* active chat has no user messages.
-        // If activeConversationId is null, it means we are in the initial state, allow creating one.
-        if (!hasUserMessages && activeConversationId !== null) {
-            console.log("[LOG] Dashboard: No user messages in current chat. No new chat created.");
-            return;
-        }
-
-        console.log("[LOG] Dashboard: Creating new conversation via API...");
+        setIsConfirmingAction(true);
         try {
-            const response = await createNewConversation();
-            const newConversation = response.data;
-            console.log("[LOG] Dashboard: Successfully created new conversation. ID:", newConversation.conversation_id);
-            setActiveConversationId(newConversation.conversation_id);
-            setMessages(getInitialMessages());
-            fetchConversations(); // Refresh list
-            setToast({ message: 'New chat created!', type: 'success' });
-        } catch (error) {
-            console.error("[LOG] Dashboard: Failed to create new conversation:", error);
-            setToast({ message: 'Could not create a new chat. Please try again.', type: 'error' });
+            if (action === 'rejectProduct') {
+                await rejectProduct(id);
+                setToast({ message: `Product "${name}" rejected and deleted.`, type: 'success' });
+                refreshData();
+            } else if (action === 'deleteProduct') {
+                await deleteProduct(id);
+                setToast({ message: `Product "${name}" has been permanently deleted.`, type: 'success' });
+                refreshData();
+            }
+            handleCloseConfirmModal();
+        } catch (err) {
+            setToast({ message: err.response?.data?.message || `Failed to ${action} product.`, type: 'error' });
+        } finally {
+            setIsConfirmingAction(false);
         }
     };
-
-    // --- NEW FUNCTION START: Handle selecting a conversation ---
-    const handleSelectConversation = async (selectedId) => {
-        console.log(`[LOG] Dashboard: handleSelectConversation triggered for ID: ${selectedId}`);
-
-        if (selectedId === activeConversationId) {
-            console.log("[LOG] Dashboard: Selected conversation is already active. No action needed.");
-            return; // Avoid unnecessary re-fetch
-        }
-
-        // Immediately update the active ID
-        setActiveConversationId(selectedId);
-        // Show loading state
-        setMessages([{ sender: 'system', text: 'Loading chat history...' }]);
-
-        try {
-            console.log(`[LOG] Dashboard: Calling getConversationHistory(${selectedId})...`);
-            const response = await getConversationHistory(selectedId);
-            const history = response.data;
-            console.log(`[LOG] Dashboard: Successfully fetched history with ${history.length} messages.`);
-
-            // If history is empty (e.g., a newly created chat that wasn't used), show welcome.
-            // Otherwise, show the fetched history.
-            setMessages(history.length > 0 ? history : getInitialMessages());
-
-        } catch (error) {
-            console.error(`[LOG] Dashboard: Failed to fetch history for conversation ${selectedId}:`, error);
-            setToast({ message: 'Could not load the selected chat history.', type: 'error' });
-            // Fallback to the initial welcome message on error
-            setMessages(getInitialMessages());
-             // Optionally reset activeConversationId if loading fails catastrophically?
-            // setActiveConversationId(null);
+    const handleCloseConfirmModal = () => {
+        setIsConfirmModalOpen(false);
+        setTimeout(() => setConfirmationState(null), 300);
+    };
+    const handleProductSelect = (product) => {
+        setViewState({ level: 'clients', product: product, client: null });
+    };
+    const handleClientSelect = (client) => {
+        setViewState({ level: 'rooms', product: viewState.product, client: client });
+    };
+    const handleGoBack = () => {
+        if (viewState.level === 'rooms') {
+            setViewState({ level: 'clients', product: viewState.product, client: null });
+        } else if (viewState.level === 'clients' && (user.role === 'CTO' || user.role === 'ProductOwner')) {
+            setViewState({ level: 'products', product: null, client: null });
         }
     };
-    // --- NEW FUNCTION END ---
+    const onRoomCreated = () => {
+        refreshData();
+        setViewState(getInitialView());
+        setToast({ message: 'Room created successfully!', type: 'success' });
+    };
+    const onUserManagementUpdate = (toastMessage) => {
+        setToast(toastMessage);
+    };
+    const onIncomingRequestUpdate = (toastMessage) => {
+        setToast(toastMessage);
+        refreshData();
+    };
+    const onRequestAccessUpdate = (toastMessage) => {
+        setToast(toastMessage);
+        refreshData();
+    };
+    const onPeerRequestUpdate = (toastMessage) => {
+        setToast(toastMessage);
+        refreshData();
+    };
 
+    // --- [renderBrowseContent function unchanged] ---
+    const renderBrowseContent = () => {
+        if (!user) return <LoadingSpinner />;
+        const { role } = user;
+        if (role === 'User') {
+            return <RoomCardsSection
+                user={user}
+                setToast={setToast}
+                refreshData={refreshData}
+            />;
+        }
+        if (role === 'Administrator') {
+            if (viewState.level === 'clients') {
+                return <ClientCardsSection
+                    product={viewState.product}
+                    onClientSelect={handleClientSelect}
+                    user={user}
+                    setToast={setToast}
+                />;
+            }
+            if (viewState.level === 'rooms') {
+                return <RoomCardsSection
+                    client={viewState.client}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                    refreshData={refreshData}
+                />;
+            }
+        }
+        if (role === 'CTO' || role === 'ProductOwner') {
+            if (viewState.level === 'products') {
+                return <ProductCardsSection
+                    products={products}
+                    onProductSelect={handleProductSelect}
+                    user={user}
+                    setToast={setToast}
+                />;
+            }
+            if (viewState.level === 'clients') {
+                return <ClientCardsSection
+                    product={viewState.product}
+                    onClientSelect={handleClientSelect}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                />;
+            }
+            if (viewState.level === 'rooms') {
+                return <RoomCardsSection
+                    client={viewState.client}
+                    onBack={handleGoBack}
+                    user={user}
+                    setToast={setToast}
+                    refreshData={refreshData}
+                />;
+            }
+        }
+        return <LoadingSpinner />;
+    };
 
     return (
-        <div className="flex h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300">
+        // --- [MODIFIED] Added padding to main div ---
+        // `pl-16` provides space for the hamburger button on mobile
+        // `pr-4 sm:pr-6 lg:pr-8` is standard padding for the right
+        // `pt-4 sm:pt-6 lg:pt-8` is standard padding for the top
+        <div className="p-4 sm:p-6 lg:p-8 pl-16"> 
+            {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+            
+            {/* --- [Modals - unchanged] --- */}
+            <AnimatePresence>
+                {isRoomModalOpen && (
+                    <CreateRoomModal
+                        isOpen={isRoomModalOpen}
+                        onClose={() => setIsRoomModalOpen(false)}
+                        onSuccess={onRoomCreated}
+                        backdropVariants={modalBackdropVariants}
+                        modalVariants={modalContentVariants}
+                    />
+                )}
+                
+                {isUserManagementModalOpen && (
+                    <UserManagementModal
+                        isOpen={isUserManagementModalOpen}
+                        onClose={() => setIsUserManagementModalOpen(false)}
+                        userRole={user?.role}
+                        onUpdate={onUserManagementUpdate}
+                    />
+                )}
 
-            {isUploading && <ProcessingAnimation onStopUpload={handleStopUpload} />}
+                {isIncomingRoomJitModalOpen && (
+                    <IncomingJitModal
+                        isOpen={isIncomingRoomJitModalOpen}
+                        onClose={() => setIsIncomingRoomJitModalOpen(false)}
+                        onUpdate={onIncomingRequestUpdate}
+                        requests={incomingRoomRequests}
+                        refreshRequests={refreshData}
+                        api={{ approveRoomRequest, rejectRoomRequest, revokeRequest }}
+                        backdropVariants={modalBackdropVariants}
+                        modalVariants={modalContentVariants}
+                    />
+                )}
+                
+                {isIncomingPeerJitModalOpen && (
+                    <IncomingPeerJitModal
+                        isOpen={isIncomingPeerJitModalOpen}
+                        onClose={() => setIsIncomingPeerJitModalOpen(false)}
+                        onUpdate={onPeerRequestUpdate}
+                        api={{ getIncomingPeerRequests, respondToPeerRequest }}
+                        backdropVariants={modalBackdropVariants}
+                        modalVariants={modalContentVariants}
+                    />
+                )}
 
-            {/* --- MODIFIED: Pass conversations list AND selection handler to Sidebar --- */}
-            <Sidebar
-                handleNewChat={handleNewChat}
-                conversations={conversations}
-                onSelectConversation={handleSelectConversation} // <-- Pass the handler
-            />
+                {isRequestAccessModalOpen && (
+                    <RequestAccessModal
+                        isOpen={isRequestAccessModalOpen}
+                        onClose={() => setIsRequestAccessModalOpen(false)}
+                        onSuccess={onRequestAccessUpdate}
+                        api={{ requestAccess, editRequest }}
+                        backdropVariants={modalBackdropVariants}
+                        modalVariants={modalContentVariants}
+                    />
+                )}
 
-            <div className="flex flex-col flex-grow relative">
-                {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-                <header className="absolute top-0 right-0 p-4 z-10 flex items-center gap-4">
-                    {documents.length > 0 && (
-                        <div className="relative">
-                            <button
-                                onClick={() => setShowDocuments(!showDocuments)}
-                                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gray-100 dark:bg-gray-800 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                            >
-                                Show Documents ({documents.length})
-                                {showDocuments ? <FiChevronUp /> : <FiChevronDown />}
-                            </button>
-                            {showDocuments && (
-                                <motion.div
-                                    initial={{ opacity: 0, y: -10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    className="absolute top-full right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-lg shadow-2xl border dark:border-gray-700 z-20"
-                                >
-                                    <table className="w-full text-sm text-left">
-                                        <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
-                                            <tr>
-                                                <th scope="col" className="px-4 py-3 w-12">No.</th>
-                                                <th scope="col" className="px-4 py-3">Document Name</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {documents.map((doc, index) => (
-                                                <tr key={doc.id} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 group">
-                                                    <td className="px-4 py-3">{index + 1}</td>
-                                                    <td className="px-4 py-3 font-medium">
-                                                        <div className="flex items-center justify-between">
-                                                            <span
-                                                                className="truncate cursor-pointer text-blue-600 dark:text-blue-400 hover:underline"
-                                                                onClick={() => handleOpenDocument(doc.id, doc.name)}
-                                                                title={`Click to open ${doc.name}`}
-                                                            >
-                                                                {doc.name}
-                                                            </span>
-                                                            <button
-                                                                onClick={() => handleCopyToClipboard(doc.name)}
-                                                                className="ml-2 p-1 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                                title={`Copy name "${doc.name}" to clipboard`}
-                                                            >
-                                                                <FiCopy size={14} />
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </motion.div>
-                            )}
-                        </div>
-                    )}
-                    <ThemeToggleButton />
-                </header>
-                <div className="flex-grow overflow-y-auto pt-20 pb-40 px-4 sm:px-6 lg:px-8">
-                    <div className="max-w-4xl mx-auto space-y-8">
-
-                        {messages.map((msg, index) => {
-                             // --- MODIFIED: Added check for 'system' message type during history load ---
-                            if (msg.sender === 'system') {
-                                return (
-                                    <motion.div
-                                        key={index} // Use index as key for system messages too
-                                        initial={{ opacity: 0, y: 10 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        transition={{ duration: 0.3 }}
-                                        className="flex justify-center items-center my-2"
-                                    >
-                                        <span className="text-sm text-gray-500 dark:text-gray-400 italic">
-                                            {msg.text} {/* Display loading/error text */}
-                                        </span>
-                                    </motion.div>
-                                );
-                            }
-
-                            const showLargeSpace = index > 0 && messages[index - 1].sender !== msg.sender;
-
-                            return (
-                                <motion.div
-                                    key={index} // Consider using msg.message_id if available and unique
-                                    initial={{ opacity: 0, y: 20 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ duration: 0.3 }}
-                                    className={`flex items-start gap-4 group ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} ${showLargeSpace ? 'mt-8' : 'mt-2'}`}
-                                >
-                                    {msg.sender === 'ai' && (
-                                        <img src={logo} alt="VAULT Logo" className="w-10 h-10 pt-1 flex-shrink-0" />
-                                    )}
-
-                                    {msg.sender === 'user' && !isSearching && (
-                                        <div className="flex items-center self-start pt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button onClick={() => handleEditMessage(index)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" title="Edit and resend"> <FiEdit2 size={16} /> </button>
-                                            <button onClick={() => handleCopyToClipboard(msg.text)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" title="Copy question"> <FiCopy size={16} /> </button>
-                                        </div>
-                                    )}
-
-                                    {msg.isLoading ? (
-                                        <ThinkingAnimation />
-                                    ) : (
-                                        <div className={`max-w-2xl px-6 py-4 rounded-3xl shadow-lg ${msg.sender === 'user' ? 'bg-blue-600 text-white rounded-br-lg' : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-lg'}`}>
-                                            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-2">
-                                                <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
-                                            </div>
-                                            {msg.results && Array.isArray(msg.results.sources) && msg.results.sources.length > 0 && (
-                                                <div className="mt-4 pt-3 border-t border-gray-200/20 dark:border-gray-700/50">
-                                                    <details>
-                                                        <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-gray-400 hover:underline">Show Sources ({msg.results.sources.length})</summary>
-                                                        <div className="mt-2 space-y-3">
-                                                            {msg.results.sources.map((source, i) => (
-                                                                <div key={i} className="p-3 bg-gray-100/50 dark:bg-gray-700/40 rounded-lg text-xs">
-                                                                    <p className="font-semibold text-blue-700 dark:text-blue-400 cursor-pointer hover:underline" onClick={() => handleSourceClick(source)}>
-                                                                        Source from: {source.metadata.documentName || `Doc ID ${source.metadata.documentId}`} {source.metadata.pageNumber && `(Page ${source.metadata.pageNumber})`}
-                                                                    </p>
-                                                                    <div className="mt-1 text-gray-600 dark:text-gray-400 italic line-clamp-2 overflow-wrap-break-word">
-                                                                        <ReactMarkdown>{`> ${source.text}`}</ReactMarkdown>
-                                                                    </div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </details>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {msg.sender === 'user' && (
-                                        user && user.pictureUrl ? (
-                                            <img src={user.pictureUrl} alt="User Avatar" className="w-10 h-10 rounded-full flex-shrink-0 shadow-lg pt-1" />
-                                        ) : (
-                                            <div className="w-10 h-10 rounded-full bg-gray-600 flex-shrink-0 shadow-lg flex items-center justify-center text-white font-semibold">
-                                                {user && user.email ? user.email.charAt(0).toUpperCase() : '?'}
-                                            </div>
-                                        )
-                                    )}
-                                    {msg.sender === 'ai' && !msg.isLoading && (
-                                        <button onClick={() => handleCopyToClipboard(msg.text)} className="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity pt-3" title="Copy response"> <FiCopy size={16} /> </button>
-                                    )}
-                                </motion.div>
-                            );
-                        })}
-                        <div ref={messagesEndRef} />
-                    </div>
-                </div>
-                <div className="absolute bottom-0 left-0 right-0 p-4 sm:p-6 lg:px-8 from-white dark:from-gray-900 to-transparent bg-gradient-to-t">
-                    <div className="max-w-4xl mx-auto">
-                        <form onSubmit={handleSearch} className="flex items-center p-2 bg-white dark:bg-gray-800/70 dark:backdrop-blur-lg rounded-full shadow-2xl border border-gray-200 dark:border-gray-700">
-                            <button type="button" onClick={() => fileInputRef.current.click()} className="p-3 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-full"> <FiPaperclip size={22} /> </button>
-                            <input id="file-upload" ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".pdf" />
-                            <input ref={mainInputRef} type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask VAULT" disabled={isSearching} className="flex-grow px-4 py-2 bg-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none" />
-                            {isSearching ? (
-                                <button type="button" onClick={handleStopGeneration} className="p-3 rounded-full text-gray-200 bg-gray-700 hover:bg-gray-600 transition-all duration-200 active:scale-90" title="Stop Generation"> <FiSquare size={22} /> </button>
-                            ) : (
-                                <button type="submit" disabled={!input.trim()} className="p-3 rounded-full text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-gray-600 transition-all duration-200 active:scale-90" title="Send Message"> <FiSend size={22} /> </button>
-                            )}
-                        </form>
-                    </div>
-                </div>
-            </div>
-            {(isPdfLoading || pdfUrl) && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-                    {isPdfLoading ? (
-                        <div className="text-white text-lg">Loading secure document...</div>
+                {isConfirmModalOpen && (
+                    <ConfirmModal
+                        isOpen={isConfirmModalOpen}
+                        onClose={handleCloseConfirmModal}
+                        onConfirm={onConfirmAction}
+                        isConfirming={isConfirmingAction}
+                        title={confirmationState?.title || "Are you sure?"}
+                        message={confirmationState?.message || ""}
+                        confirmText={confirmationState?.confirmText || "Confirm"}
+                        confirmVariant={confirmationState?.confirmVariant || "danger"}
+                    />
+                )}
+            </AnimatePresence>
+            
+            <div className="max-w-7xl mx-auto">
+                
+                {/* --- [MODIFIED] DashboardHeader no longer gets ANY button props --- */}
+                {/* This requires you to have updated DashboardHeader.js */}
+                <DashboardHeader
+                    user={user}
+                />
+                
+                {/* --- [CTO sections - unchanged] --- */}
+                {!isLoading && user?.role === 'CTO' && (
+                    <>
+                        <PendingProductsSection
+                            pendingProducts={pendingProducts}
+                            onApprove={handleApproveProduct}
+                            onReject={handleRejectProduct}
+                        />
+                        <ManageProductsSection
+                            allProducts={products}
+                            editingProductId={editingProductId}
+                            editFormData={editFormData}
+                            onEditClick={handleEditClick}
+                            onEditCancel={handleEditCancel}
+                            onEditChange={handleEditFormChange}
+                            onEditSave={handleEditSave}
+                            onDeleteProduct={handleDeleteProduct}
+                        />
+                    </>
+                )}
+                
+                {/* --- [RESTORED] Tabs are back in the main content area --- */}
+                {!isLoading && user && (
+                    <DashboardTabs
+                        currentTab={currentTab}
+                        setCurrentTab={setCurrentTab}
+                        browseTabName={user.role === 'User' ? 'My Rooms' : 'Browse'}
+                        outgoingRoomRequestCount={outgoingRoomRequestsCount}
+                        outgoingPeerRequestCount={outgoingPeerRequestsCount}
+                        showPeerJitTab={user.role === 'ProductOwner' || user.role === 'Administrator'}
+                        userRole={user.role}
+                    />
+                )}
+                
+                {/* --- [Tab Content - unchanged] --- */}
+                <AnimatePresence mode='wait'>
+                    {isLoading ? (
+                        <motion.div
+                            key="loader"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex justify-center items-center h-64"
+                        >
+                            <LoadingSpinner />
+                        </motion.div>
                     ) : (
-                        <PdfViewer fileUrl={pdfUrl} onClose={closePdfViewer} highlight={currentHighlight} />
+                        <motion.div
+                            key={`${currentTab}-${viewState.level}-${viewState.product?.id}-${viewState.client?.id}`}
+                            variants={tabContentVariants}
+                            initial="hidden"
+                            animate="visible"
+                            exit="exit"
+                        >
+                            {currentTab === 'browse' && renderBrowseContent()}
+                            {currentTab === 'outgoing_room' && <OutgoingRequestsSection outgoingRequests={outgoingRoomRequests} setToast={setToast} />}
+                            {currentTab === 'outgoing_peer' && <OutgoingPeerRequestsSection outgoingRequests={outgoingPeerRequests} userRole={user.role} setToast={setToast} api={{ getOutgoingPeerRequests }} />}
+                        </motion.div>
                     )}
-                </div>
-            )}
+                </AnimatePresence>
+            </div>
         </div>
     );
 }

@@ -1,187 +1,177 @@
-const { getDb } = require('../database');
-const { v4: uuidv4 } = require('uuid'); // We'll use UUID for unique IDs
+// backend/controllers/chatController.js - DIRECT LINK TO SEARCH SERVICE
+// --------------------------------------------------------
+// [REFACTOR] Bypasses RAGPipelineService to directly use the fixed searchService.
+// [COMPATIBILITY] Simulates Socket.io streaming events so Frontend accepts the response.
+// --------------------------------------------------------
+
+const { performRAG } = require('../searchService'); // Use the fixed service
+const ChatHistoryService = require('../services/ChatHistoryService');
+const logger = require('../utils/logger');
+
+const SERVICE_NAME = 'chatController';
 
 /**
- * Creates a new, empty conversation for a user.
+ * [MODIFIED] Handles the chat query by calling searchService directly.
+ * Simulates streaming events to maintain frontend compatibility.
  */
-const createConversation = (req, res) => {
-    // req.user is expected to be populated by authMiddleware
-    if (!req.user || !req.user.id) {
-        console.error('[CHAT_CTRL_ERROR] User not found in request. Check authMiddleware.');
-        return res.status(401).json({ error: 'User not authenticated' });
-    }
-
+exports.handleChatQuery = async (req, res) => {
+    const { roomId, conversationId } = req.params;
+    const { query, socketId, chatMode } = req.body;
     const userId = req.user.id;
-    const conversationId = uuidv4();
-    const title = "New Chat"; // We can make this editable later
+    const reqSocketServer = req.io;
 
-    console.log(`[CHAT_CTRL] Attempting to create new conversation for user ${userId}...`);
+    // Default to 'STANDARD' if mode is invalid
+    const validModes = ['STANDARD', 'DEEP_THINK', 'DEEP_RESEARCH'];
+    const finalChatMode = chatMode && validModes.includes(chatMode) ? chatMode : 'STANDARD';
 
-    try {
-        const db = getDb();
-        const sql = `INSERT INTO conversations (conversation_id, user_id, title) VALUES (?, ?, ?)`;
+    logger.info(SERVICE_NAME, `[START] POST /${roomId}/${conversationId} for user ${userId}`);
 
-        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${conversationId}, ${userId}, ${title}]`);
-
-        db.run(sql, [conversationId, userId, title], function(err) {
-            if (err) {
-                console.error('[CHAT_CTRL_DB_ERROR] Failed to insert new conversation:', err.message);
-                return res.status(500).json({ error: 'Failed to create conversation' });
-            }
-
-            console.log(`[CHAT_CTRL_SUCCESS] Conversation created with ID: ${conversationId} for user: ${userId}. Rows affected: ${this.changes}`);
-
-            // Return the new conversation object to the frontend
-            res.status(201).json({
-                conversation_id: conversationId,
-                user_id: userId,
-                title: title,
-                created_at: new Date().toISOString() // Send back the new object
-            });
-        });
-
-    } catch (error) {
-        console.error('[CHAT_CTRL_FATAL] Unhandled error in createConversation:', error.message);
-        res.status(500).json({ error: 'Server error' });
-    }
-};
-
-/**
- * Fetches all conversations for the logged-in user.
- */
-const getConversations = (req, res) => {
-    // req.user is expected to be populated by authMiddleware
-    if (!req.user || !req.user.id) {
-        console.error('[CHAT_CTRL_ERROR] User not found in request. Check authMiddleware.');
-        return res.status(401).json({ error: 'User not authenticated' });
+    // --- 1. Validation ---
+    if (!query || !socketId || !reqSocketServer) {
+        return res.status(400).json({ message: 'Missing required query or streaming context.' });
     }
 
-    const userId = req.user.id;
-    console.log(`[CHAT_CTRL] Attempting to fetch conversations for user ${userId}...`);
-
-    try {
-        const db = getDb();
-        const sql = `SELECT conversation_id, title, created_at FROM conversations WHERE user_id = ? ORDER BY created_at DESC`;
-
-        console.log(`[CHAT_CTRL_DB] Executing SQL: ${sql} with params: [${userId}]`);
-
-        db.all(sql, [userId], (err, rows) => {
-            if (err) {
-                console.error('[CHAT_CTRL_DB_ERROR] Failed to fetch conversations:', err.message);
-                return res.status(500).json({ error: 'Failed to fetch conversations' });
-            }
-
-            const conversations = rows || [];
-            console.log(`[CHAT_CTRL_SUCCESS] Found ${conversations.length} conversations for user: ${userId}.`);
-
-            // Return the list of conversations
-            res.status(200).json(conversations);
-        });
-
-    } catch (error) {
-        console.error('[CHAT_CTRL_FATAL] Unhandled error in getConversations:', error.message);
-        res.status(500).json({ error: 'Server error' });
-    }
-};
-
-
-/**
- * Fetches the message history for a specific conversation, ensuring user owns it.
- */
-const getConversationHistory = (req, res) => {
-    if (!req.user || !req.user.id) {
-        console.error('[CHAT_CTRL_ERROR] User not found in request. Check authMiddleware.');
-        return res.status(401).json({ error: 'User not authenticated' });
-    }
-    if (!req.params.conversationId) {
-        console.error('[CHAT_CTRL_ERROR] Conversation ID missing from request parameters.');
-        return res.status(400).json({ error: 'Conversation ID is required' });
+    const socket = reqSocketServer.sockets.sockets.get(socketId);
+    if (!socket) {
+        return res.status(404).json({ message: 'Client socket not found. Please reconnect.' });
     }
 
-    const userId = req.user.id;
-    const { conversationId } = req.params;
-    console.log(`[CHAT_CTRL] Attempting to fetch history for conversation ${conversationId} for user ${userId}...`);
+    const responseEventName = `chat_response_${conversationId}`;
 
-    try {
-        const db = getDb();
+    // --- 2. Send Immediate HTTP 202 (Accepted) ---
+    // This tells the frontend "We got it, listen to the socket now"
+    res.status(202).json({
+        message: 'Query received. Processing...',
+        eventName: responseEventName
+    });
 
-        // 1. Verify ownership
-        const verifySql = `SELECT user_id FROM conversations WHERE conversation_id = ? AND user_id = ?`;
-        console.log(`[CHAT_CTRL_DB] Executing Verify SQL: ${verifySql} with params: [${conversationId}, ${userId}]`);
+    // --- 3. Async Execution (The "Pipeline") ---
+    // We run this in the background so the HTTP request completes fast
+    (async () => {
+        try {
+            logger.info(SERVICE_NAME, `[ASYNC] Starting RAG for convo ${conversationId}...`);
 
-        db.get(verifySql, [conversationId, userId], (verifyErr, row) => {
-            if (verifyErr) {
-                console.error('[CHAT_CTRL_DB_ERROR] Failed during ownership verification:', verifyErr.message);
-                return res.status(500).json({ error: 'Database error during verification' });
-            }
-            if (!row) {
-                console.warn(`[CHAT_CTRL_WARN] User ${userId} attempted to access unauthorized conversation ${conversationId}.`);
-                return res.status(403).json({ error: 'Access denied to this conversation' });
-            }
+            // Notify Frontend: "We are thinking..."
+            socket.emit(responseEventName, { type: 'start' });
+            socket.emit(responseEventName, { type: 'thinking', data: 'Searching documents...' });
 
-            console.log(`[CHAT_CTRL_DB] Ownership verified for conversation ${conversationId}. Fetching history...`);
+            // A. Perform RAG (Retrieval + Generation)
+            // This calls our new Node-side logic in searchService.js
+            const result = await performRAG(userId, query, [], conversationId, roomId);
 
-            // --- MODIFICATION START ---
-            // 2. Fetch history including the 'results' column
-            const historySql = `SELECT message_id, sender, message, results, timestamp FROM chat_history WHERE conversation_id = ? ORDER BY timestamp ASC`;
-            // --- MODIFICATION END ---
-            console.log(`[CHAT_CTRL_DB] Executing History SQL: ${historySql} with params: [${conversationId}]`);
-
-            db.all(historySql, [conversationId], (historyErr, messages) => {
-                if (historyErr) {
-                    console.error('[CHAT_CTRL_DB_ERROR] Failed to fetch chat history:', historyErr.message);
-                    return res.status(500).json({ error: 'Failed to fetch chat history' });
-                }
-
-                // --- MODIFICATION START: Parse results ---
-                const history = (messages || []).map(msg => {
-                    const messageData = {
-                        // Map database columns to the frontend's expected format
-                        sender: msg.sender,
-                        text: msg.message
-                        // Add message_id or timestamp if needed later
-                    };
-
-                    // If it's an AI message and has results data, try parsing it
-                    if (msg.sender === 'ai' && msg.results) {
-                        try {
-                            const parsedResults = JSON.parse(msg.results);
-                            // Add the parsed results object to the message data
-                            messageData.results = parsedResults;
-                            // Optionally, ensure the structure matches what frontend expects
-                            // e.g., if frontend expects `results.sources`, ensure it exists
-                            if (!messageData.results.sources) {
-                                console.warn(`[CHAT_CTRL_WARN] Parsed results for msg ${msg.message_id} missing 'sources' key.`);
-                                // You might want to default it to an empty array
-                                // messageData.results.sources = [];
-                            }
-                        } catch (parseError) {
-                            console.error(`[CHAT_CTRL_ERROR] Failed to parse results JSON for message ${msg.message_id}:`, parseError.message);
-                            // Decide how to handle parse errors:
-                            // Option 1: Send null/undefined for results
-                            messageData.results = null;
-                            // Option 2: Send an error indicator?
-                            // messageData.resultsError = 'Could not load sources';
-                        }
-                    }
-                    return messageData;
+            // B. Simulate Streaming (Send the full answer as one chunk)
+            // Since we aren't streaming token-by-token, we send the whole block.
+            // The frontend should append this chunk to the UI.
+            if (result.answer) {
+                socket.emit(responseEventName, {
+                    type: 'chunk',
+                    data: result.answer
                 });
-                // --- MODIFICATION END ---
+            }
 
-                console.log(`[CHAT_CTRL_SUCCESS] Found ${history.length} messages (with results parsing attempted) for conversation: ${conversationId}.`);
-                res.status(200).json(history);
+            // C. Finish
+            logger.info(SERVICE_NAME, `[ASYNC] RAG Complete. Sending done signal.`);
+            socket.emit(responseEventName, {
+                type: 'done',
+                data: { sources: result.sources || [] }
             });
-        });
 
+        } catch (error) {
+            logger.error(SERVICE_NAME, `[FATAL] RAG failed for convo ${conversationId}:`, error.message);
+            socket.emit(responseEventName, {
+                type: 'error',
+                data: { message: 'An error occurred while processing your request.' }
+            });
+        }
+    })();
+};
+
+/**
+ * [EXISTING] Creates a new, empty conversation.
+ */
+exports.createConversation = async (req, res) => {
+    const { roomId } = req.params;
+    const userId = req.user.id;
+    logger.info(SERVICE_NAME, `POST /${roomId}/new for user ${userId}`);
+
+    try {
+        const newConversation = await ChatHistoryService.createConversation(userId, roomId);
+        res.status(201).json(newConversation);
     } catch (error) {
-        console.error('[CHAT_CTRL_FATAL] Unhandled error in getConversationHistory:', error.message);
-        res.status(500).json({ error: 'Server error' });
+        logger.error(SERVICE_NAME, `Failed to create conversation in room ${roomId}`, error);
+        res.status(500).json({ message: 'Error creating conversation.' });
     }
 };
 
+/**
+ * [EXISTING] Gets all conversations for the user in a specific room.
+ */
+exports.getConversations = async (req, res) => {
+    const { roomId } = req.params;
+    const userId = req.user.id;
 
-module.exports = {
-    createConversation,
-    getConversations,
-    getConversationHistory
+    try {
+        const conversations = await ChatHistoryService.getConversations(userId, roomId);
+        res.status(200).json(conversations);
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to get conversations`, error);
+        res.status(500).json({ message: 'Error fetching conversations.' });
+    }
+};
+
+/**
+ * [EXISTING] Gets the full message history for one conversation.
+ */
+exports.getConversationHistory = async (req, res) => {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        const history = await ChatHistoryService.getConversationHistory(userId, conversationId);
+        res.status(200).json(history);
+    } catch (error) {
+        if (error.message === 'Access denied') {
+            return res.status(403).json({ message: 'Access denied.' });
+        }
+        res.status(500).json({ message: 'Error fetching history.' });
+    }
+};
+
+/**
+ * [NEW] Deletes a conversation and all history.
+ */
+exports.deleteConversation = async (req, res) => {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        const result = await ChatHistoryService.deleteConversation(userId, conversationId);
+        if (!result.success) {
+            return res.status(404).json({ message: result.message });
+        }
+        res.status(204).send();
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to delete conversation ${conversationId}`, error);
+        res.status(500).json({ message: 'Error deleting conversation.' });
+    }
+};
+
+/**
+ * [NEW] Searches conversation history across all rooms for a user.
+ */
+exports.searchChatHistory = async (req, res) => {
+    const { q: searchTerm } = req.query;
+    const userId = req.user.id;
+
+    if (!searchTerm || searchTerm.length < 3) {
+        return res.status(400).json({ message: 'Search term must be at least 3 characters.' });
+    }
+
+    try {
+        const results = await ChatHistoryService.searchChatHistory(userId, searchTerm);
+        res.status(200).json(results);
+    } catch (error) {
+        logger.error(SERVICE_NAME, `Failed to run search for user ${userId}`, error);
+        res.status(500).json({ message: 'Error performing search.' });
+    }
 };

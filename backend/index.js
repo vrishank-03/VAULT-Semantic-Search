@@ -1,184 +1,273 @@
+// backend/index.js - ENTERPRISE BRIDGE VERSION
+// --------------------------------------------------------
+// [LOGGING] Atomic logs enabled for Redis Bridge and Socket.io
+// [FIXED] Explicit transports to match Frontend config
+// --------------------------------------------------------
+
+const dns = require('dns');
+// [NETWORK_FIX] Prefer IPv4 to prevent delay/timeout on some Node versions
+dns.setDefaultResultOrder('ipv4first');
+console.log('[LOG] [NETWORK_FIX] Set DNS default result order to "ipv4first".');
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path'); // --- THIS LINE IS NOW FIXED ---
+const path = require('path');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
+const fs = require('fs');
+const Redis = require('ioredis'); // [ENTERPRISE] Required for Pub/Sub
 require('dotenv').config();
 
-const { initializeDatabase, saveDocumentChunks, getDb } = require('./database.js');
-const { processDocument } = require('./documentProcessor.js');
+const http = require('http');
+const { Server } = require("socket.io");
+
+const QueueService = require('./services/QueueService.js');
+const logger = require('./utils/logger');
+const { initializeDatabase, query } = require('./database.js');
 const { performRAG } = require('./searchService.js');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const { protect } = require('./middleware/authMiddleware');
+const { protect, authorize } = require('./middleware/authMiddleware');
+
+// --- ROUTES IMPORTS ---
+const productRoutes = require('./routes/productRoutes');
+const roomRoutes = require('./routes/roomRoutes');
+const jitRequestRoutes = require('./routes/jitRequestRoutes');
+const clientRoutes = require('./routes/clientRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+
+// --- [BLOCK 4] SOCKET.IO SERVER ---
+const server = http.createServer(app);
+
+// [FIX] Added 'transports' to match frontend and prevent handshake closures
+const io = new Server(server, {
+    cors: {
+        origin: FRONTEND_URL, // Dynamic origin based on env
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        credentials: true
+    },
+    transports: ['websocket', 'polling'], // [CRITICAL] Match frontend config
+    pingTimeout: 60000, // Wait 60s before assuming dead (helps with long gen)
+    pingInterval: 25000
+});
+
+console.log('[LOG] [BLOCK_4] Socket.io server initialized with extended timeouts & transports.');
+
+// --- [ENTERPRISE FIX] REDIS SUBSCRIBER BRIDGE ---
+// This listens for messages from ANY worker (GenerationService, Pipeline, etc.)
+const redisSubscriber = new Redis({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379,
+});
+
+const NOTIFICATION_CHANNEL = 'socket-notifications';
+
+redisSubscriber.subscribe(NOTIFICATION_CHANNEL, (err, count) => {
+    if (err) console.error('[REDIS] 🔴 Failed to subscribe: %s', err.message);
+    else console.log(`[LOG] [BLOCK_4] 🟢 Subscribed to ${NOTIFICATION_CHANNEL}. Ready to bridge Workers.`);
+});
+
+redisSubscriber.on('message', (channel, message) => {
+    if (channel === NOTIFICATION_CHANNEL) {
+        try {
+            const parsed = JSON.parse(message);
+            const { targetSocketId, event, data } = parsed;
+
+            // Bridge: Redis -> Socket.io
+            // Only emit if the user is connected to THIS specific server instance
+            const socket = io.sockets.sockets.get(targetSocketId);
+
+            if (socket) {
+                socket.emit(event, data);
+                // [ATOMIC LOG] confirm relay
+                console.log(`[REDIS-BRIDGE] 🟢 Relaying event '${event}' to socket ${targetSocketId}`);
+            } else {
+                // This is normal in multi-instance, but in single-instance implies stale ID
+                // console.warn(`[REDIS-BRIDGE] 🟡 Socket ${targetSocketId} not found on this instance.`);
+            }
+        } catch (e) {
+            console.error('[REDIS-BRIDGE] 🔴 Error parsing message:', e);
+        }
+    }
+});
+
+// Initialize Queue Service 
+QueueService.init();
+
+// --------------------------------------------------
+
+io.on('connection', (socket) => {
+    console.log(`[LOG] [BLOCK_4] Socket.io: User connected: ${socket.id}`);
+
+    socket.on('disconnect', (reason) => {
+        console.log(`[LOG] [BLOCK_4] Socket.io: User disconnected: ${socket.id} Reason: ${reason}`);
+    });
+});
 
 // --- MIDDLEWARE ---
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+app.use(cors({
+    origin: FRONTEND_URL,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan('dev'));
 
-// --- NEW: SERVE STATIC FILES ---
-// This makes the 'storage' folder (where profile pics are) publicly accessible
-// A request to http://localhost:5000/storage/profile_images/user_1.jpg will now work
+// Attach IO to request (Legacy support, though QueueService is now decoupled)
+app.use((req, res, next) => {
+    req.io = io;
+    next();
+});
+
+// --- STATIC FILES ---
 app.use('/storage', express.static(path.join(__dirname, 'storage')));
-console.log(`[LOG] Serving static files from public path '/storage' mapped to: ${path.join(__dirname, 'storage')}`);
-// --- END NEW STATIC ---
 
-
-// --- FILE STORAGE ---
+// --- FILE STORAGE CONFIG ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'storage/'),
     filename: (req, file, cb) => {
+        const userId = req.user?.id || 'unknown';
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, `user_${req.user.id}_${uniqueSuffix}${path.extname(file.originalname)}`);
+        cb(null, `user_${userId}_${uniqueSuffix}${path.extname(file.originalname)}`);
     }
 });
 const upload = multer({ storage });
 
 // --- API ROUTES ---
+console.log('[LOG] Configuring API routes...');
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/jit', jitRequestRoutes);
+app.use('/api/clients', clientRoutes);
+app.use('/api/users', userRoutes);
 
-// --- MODIFIED /api/user ENDPOINT ---
-app.get('/api/user', protect, (req, res) => {
+
+// --- CORE USER ENDPOINT ---
+app.get('/api/user', protect, async (req, res) => {
     const userId = req.user.id;
-    const db = getDb();
-    
-    const sql = `SELECT id, email, picture_url FROM users WHERE id = ?`;
-    
-    db.get(sql, [userId], (err, user) => {
-        if (err) {
-            console.error(`Database error fetching user info for user ID ${userId}:`, err.message);
-            return res.status(500).json({ message: "Server error fetching user data." });
-        }
+
+    const sql = `
+        SELECT u.id, u.email, u.picture_url, u.role, u.product_id, p.product_name 
+        FROM users u
+        LEFT JOIN products p ON u.product_id = p.id
+        WHERE u.id = $1
+    `;
+
+    try {
+        const result = await query(sql, [userId]);
+        const user = result.rows[0];
+
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
 
-        // --- MODIFICATION: Construct Full Picture URL ---
-        // We must send the absolute URL to the frontend
-        // Your API_URL is 'http://localhost:5000/api', so we remove '/api' to get the base
         const baseUrl = process.env.API_URL ? process.env.API_URL.replace('/api', '') : `http://localhost:${PORT}`;
         const fullPictureUrl = user.picture_url ? `${baseUrl}${user.picture_url}` : null;
-        console.log(`[LOG] GET /api/user: Sending full picture URL: ${fullPictureUrl}`);
-        // --- END MODIFICATION ---
 
-        res.json({ 
-            id: user.id, 
-            email: user.email, 
-            pictureUrl: fullPictureUrl // <-- Send the full, absolute URL
+        res.json({
+            id: user.id,
+            email: user.email,
+            pictureUrl: fullPictureUrl,
+            role: user.role,
+            product_id: user.product_id,
+            productName: user.product_name
         });
+    } catch (err) {
+        console.error(`[ERROR] DB error fetching user ${userId}:`, err.message);
+        res.status(500).json({ message: "Server error fetching user data." });
+    }
+});
+
+
+// --- DOCUMENT UPLOAD (Protected) ---
+app.post('/api/documents/upload/:roomId', protect, authorize('Administrator', 'ProductOwner', 'CTO'), upload.array('documents', 10), async (req, res) => {
+    const { roomId } = req.params;
+    const userId = req.user.id;
+    const { socketId } = req.body;
+
+    if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded.' });
+
+    // Use the imported QueueService
+    const jobsAdded = [];
+    for (const file of req.files) {
+        const jobData = {
+            filePath: file.path,
+            originalName: file.originalname,
+            userId,
+            roomId,
+            socketId
+        };
+        await QueueService.addDocumentJob(jobData);
+        jobsAdded.push(jobData);
+    }
+
+    res.status(202).json({
+        message: `Upload received. ${jobsAdded.length} documents queued.`,
+        jobsQueued: jobsAdded.length
     });
 });
-// --- END OF MODIFIED /api/user ENDPOINT ---
 
-
-// --- PROTECTED ROUTES ---
-
-// UPDATED: Now checks for duplicate filenames before uploading
-app.post('/api/documents/upload', protect, upload.array('documents', 10), async (req, res) => {
-    if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ error: 'No files uploaded.' });
-    }
-    
-    const userId = req.user.id;
-    const db = getDb();
-    let documentIds = [];
-
-    try {
-        for (const file of req.files) {
-            // Check for duplicates before processing
-            const existingDoc = await new Promise((resolve, reject) => {
-                db.get('SELECT id FROM documents WHERE user_id = ? AND name = ?', [userId, file.originalname], (err, row) => {
-                    if (err) reject(err);
-                    resolve(row);
-                });
-            });
-
-            if (existingDoc) {
-                // If a duplicate is found, stop and return a 409 Conflict error
-                console.warn(`Upload stopped: User ${userId} tried to upload duplicate file "${file.originalname}".`);
-                return res.status(409).json({ error: `Duplicate file detected. The document named "${file.originalname}" already exists.` });
-            }
-
-            // If no duplicate, proceed with processing and saving
-            const chunksWithVectors = await processDocument(file.path);
-            const result = await saveDocumentChunks(userId, file.originalname, file.path, chunksWithVectors);
-            documentIds.push(result.documentId);
-        }
-        res.status(201).json({ message: `Success`, documentIds });
-    } catch (error) {
-        console.error(`Error during batch processing:`, error);
-        res.status(500).json({ error: 'A file could not be processed.', details: error.message });
-    }
-});
-
-// --- MODIFIED /api/search ENDPOINT ---
-app.post('/api/search', protect, async (req, res) => {
-    // 1. Destructure conversationId from the request body
+// --- SEARCH ---
+app.post('/api/search/:roomId', protect, async (req, res) => {
+    const { roomId } = req.params;
     const { query, history, conversationId } = req.body;
-    if (!query) return res.status(400).json({ error: 'Query is required.' });
-
-    // 2. Added log
-    console.log(`[LOG] /api/search: Received search for Convo ID: ${conversationId || 'null'}`);
-
     try {
-        // 3. Pass conversationId to performRAG
-        const ragResult = await performRAG(req.user.id, query, history, conversationId);
+        const ragResult = await performRAG(req.user.id, query, history, conversationId, roomId);
         res.status(200).json(ragResult);
     } catch (error) {
-        console.error('Error during RAG search:', error);
         res.status(500).json({ error: 'Failed to perform search.' });
     }
 });
-// --- END MODIFIED /api/search ENDPOINT ---
 
-app.get('/api/documents/:id', protect, (req, res) => {
+// --- DOWNLOAD ---
+app.get('/api/documents/download/:id', protect, async (req, res) => {
     const { id } = req.params;
-    const userId = req.user.id;
-    const db = getDb();
-    
-    // --- THIS LINE IS NOW FIXED (was user_user) ---
-    db.get('SELECT file_path FROM documents WHERE id = ? AND user_id = ?', [id, userId], (err, row) => {
-        if (err || !row) {
-            return res.status(404).json({ error: 'Document not found or access denied.' });
-        }
-        const resolvedPath = path.resolve(__dirname, row.file_path);
-        res.sendFile(resolvedPath);
-    });
+    try {
+        const result = await query('SELECT file_path FROM documents WHERE id = $1', [id]);
+        const row = result.rows[0];
+        if (!row) return res.status(404).json({ error: 'Document not found.' });
+        res.sendFile(path.resolve(__dirname, row.file_path));
+    } catch (err) {
+        res.status(500).json({ error: 'DB Error' });
+    }
 });
 
-// NEW: Endpoint to get a list of all documents for the logged-in user
-app.get('/api/documents', protect, (req, res) => {
-    const userId = req.user.id;
-    const db = getDb();
-
-    const sql = `SELECT id, name FROM documents WHERE user_id = ? ORDER BY uploaded_at DESC`;
-
-    db.all(sql, [userId], (err, rows) => {
-        if (err) {
-            console.error(`Database error fetching documents for user ID ${userId}:`, err.message);
-            return res.status(500).json({ message: "Server error fetching documents." });
-        }
-        res.json(rows || []);
-    });
+// --- LIST DOCS ---
+app.get('/api/documents/list/:roomId', protect, async (req, res) => {
+    const { roomId } = req.params;
+    try {
+        const result = await query('SELECT id, name FROM documents WHERE room_id = $1 ORDER BY uploaded_at DESC', [roomId]);
+        res.json(result.rows || []);
+    } catch (err) {
+        res.status(500).json({ error: 'DB Error' });
+    }
 });
 
+// --- GLOBAL ERROR SAFETY ---
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    // Application specific logging, throwing an error, or other logic here
+});
 
-// --- SERVER START ---
+// --- START ---
 initializeDatabase()
     .then(() => {
-        app.listen(PORT, () => {
-            console.log(`Backend server is running on http://localhost:${PORT}`);
+        server.listen(PORT, () => {
+            console.log(`[LOG] [BLOCK_4] Backend running on http://localhost:${PORT}`);
         });
     })
     .catch(err => {
-        console.error("Failed to initialize database:", err);
+        console.error("[FATAL] Database init failed:", err);
         process.exit(1);
     });
