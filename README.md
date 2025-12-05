@@ -1,315 +1,452 @@
-# VAULT: Enterprise AI Platform (Developer Reference)
+---
+# VAULT: Enterprise AI RAG Platform
 
-## Documentation Index
+> **Production-grade, multi-tenant RAG platform with hybrid search, long-context LLMs, and enterprise-style access control.**
+
+---
+
+## Table of Contents
 
 1. [Executive Summary](#executive-summary)
 2. [System Architecture](#system-architecture)
 3. [Core Architecture & Design](#2-core-architecture--design)
-4. [Enterprise RAG Pipeline](#22-the-enterprise-rag-pipeline)
-5. [Technical Innovation & Architecture](#3-technical-innovation--architecture)
-6. [Local Development Setup](#4-local-development-setup)
-7. [API Reference](#5-api-reference)
-8. [Performance Characteristics](#6-performance-characteristics)
-9. [File Structure](#7-file-structure)
-10. [Troubleshooting](#8-troubleshooting)
-11. [Deployment Notes](#9-deployment-notes)
+4. [Enterprise RAG Pipeline](#3-enterprise-rag-pipeline)
+5. [Security & Access Control (RBAC)](#4-security--access-control-rbac)
+6. [Technical Innovation & Architecture](#5-technical-innovation--architecture)
+7. [Local Development Setup](#6-local-development-setup)
+8. [API Reference](#7-api-reference)
+9. [Performance Characteristics](#8-performance-characteristics)
+10. [File Structure](#9-file-structure)
+11. [Troubleshooting](#10-troubleshooting)
+12. [Deployment Notes](#11-deployment-notes)
 
+---
 
-## **Executive Summary**
+## Executive Summary
 
-VAULT is a **production-grade AI platform** that delivers enterprise RAG capabilities at scale. The system features a sophisticated **hybrid retrieval engine**, **real-time streaming**, and **intelligent document processing** with cloud fallbacks.
+**VAULT** is a production-oriented AI platform that delivers **enterprise RAG** capabilities:
 
-**Key Achievements:**
+* Hybrid retrieval engine (vector + keyword + sequential)
+* Long-document understanding with intelligent OCR + quality scoring
+* Real-time chat streaming with cancellation and progress tracking
+* Multiple AI “modes” tuned for different types of questions
 
-- Processes 100+ page documents with intelligent OCR quality scoring  
-- Implements hybrid search (vector + keyword + sequential) with intent detection
-- Handles real-time streaming with cancellation and progress tracking
-- Supports three distinct AI modes for different use cases
+The goal: give teams secure, isolated workspaces where they can upload confidential documents and query them with natural language — without sacrificing reliability, observability, or control.
 
------
+---
+
 ## System Architecture
 
-This diagram represents the current production-oriented target architecture for the VAULT platform.  
-It reflects the live system components where implemented, and the planned scalability layers designed to support growth.
+VAULT is built as a layered system:
+
+* **Client layer** – React SPA with streaming chat UI
+* **API gateway** – Node.js/Express + Socket.io + JWT/RBAC
+* **Message bus** – Redis for pub/sub and job queues
+* **Orchestrator & workers** – Node.js services coordinating RAG, jobs, and notifications
+* **Python microservices** – Parsing + embedding
+* **Data layer** – PostgreSQL (pgvector) + file storage
+* **External LLM APIs** – Groq (Llama 3.1), Google Gemini 1.5, Anthropic Claude
 
 > **Note:** Other components are currently evolving as the platform continues to develop.
 
 ![VAULT Architecture](docs/architecture.png)
------
+---
 
 ## 1. Purpose
 
-This document serves as the technical reference for **VAULT Enterprise AI Platform**, a multi-tenant RAG system designed for sensitive enterprise environments. 
+This repository is the **developer reference** for the VAULT Enterprise AI Platform.
 
-VAULT provides **secure, isolated workspaces** where teams can upload confidential documents and perform natural language queries with **production-grade reliability** and **intelligent fallback mechanisms**.
+* Multi-tenant RAG system for sensitive enterprise environments
+* Secure, isolated rooms/workspaces
+* Production-style behavior (async pipelines, retries, fallbacks, streaming, RBAC, etc.)
 
------
+If you’re contributing code or integrating VAULT into another system, this README is your map.
+
+---
 
 ## 2. Core Architecture & Design
 
-VAULT is a **distributed microservices platform** built on modern web technologies with enterprise-grade scalability and fault tolerance.
+VAULT is a **distributed microservices** platform built on modern web tech with an emphasis on:
 
-### 2.1. System Components
+* Scalability
+* Fault tolerance
+* Clear separation of concerns
 
-* **Frontend (React):** Modern, responsive SPA with real-time UI updates
-  - **Zinc-themed Enterprise UI:** Professional dark/light mode interface
-  - **Real-time Chat:** Token-by-token streaming with cancellation support
-  - **Document Library:** Advanced modal with search and file management
-  - **Conversation Management:** Delete, search, and organize chat history
+### 2.1 System Components
 
-* **Backend (Node.js/Express):** High-performance API gateway
-  - **JWT Authentication:** Secure token-based auth with role validation
-  - **Redis Pub/Sub:** Enterprise event bus for service decoupling
-  - **PostgreSQL Integration:** Full ACID compliance with vector operations
-  - **Async Controllers:** Non-blocking request handling with immediate 202 responses
+**Frontend (React SPA)**
 
-* **Databases & Storage:**
-  - **PostgreSQL (Primary):** Relational data with pgvector extension for embeddings
-  - **Redis:** Message broker for queues and real-time pub/sub
-  - **File Storage:** Local storage with proper cleanup procedures
+* Zinc-themed enterprise UI (dark/light)
+* Real-time chat with token-by-token streaming & cancellation
+* Document library with search and file management
+* Conversation management (search, delete, organize)
 
-* **AI/ML Services (Python Microservices):**
-  - **Parser API (Port 8002):** Enterprise document parsing with OCR quality scoring and Azure Document Intelligence fallback
-  - **Embedder API (Port 8001):** High-performance embedding service with in-memory model caching
+**Backend (Node.js/Express)**
 
-* **Background Processing:**
-  - **BullMQ Worker:** Distributed job processing with Redis
-  - **Queue Service:** Orchestrates document ingestion pipeline
-  - **Real-time Notifications:** WebSocket events for progress tracking
+* High-performance API gateway
+* **JWT auth** with role validation
+* **Redis Pub/Sub** for service decoupling
+* **PostgreSQL** with pgvector for embeddings
+* Async controllers that return `202 Accepted` quickly and push work to queues
 
-### 2.2. The Enterprise RAG Pipeline
+**Databases & Storage**
 
-VAULT's RAG system implements a **sophisticated multi-stage retrieval process** with intelligent routing and quality gates.
+* **PostgreSQL (primary)** – relational data + pgvector for embeddings
+* **Redis** – message broker for queues and real-time events
+* **File system storage** – document storage with cleanup of failed uploads
 
-**1. Document Ingestion (Async Pipeline)**
-```
+**AI / ML Services (Python microservices)**
+
+* **Parser API (port 8002)**
+
+  * OCR + layout parsing
+  * Quality scoring
+  * Azure Document Intelligence fallback when local OCR is low quality
+* **Embedder API (port 8001)**
+
+  * High-speed embedding service
+  * In-memory model caching
+
+**Background Processing**
+
+* **BullMQ worker** for distributed job processing
+* **QueueService** orchestrates the document ingestion pipeline
+* WebSocket events for live progress + status updates
+
+---
+
+## 3. Enterprise RAG Pipeline
+
+VAULT’s RAG stack is built as a multi-stage pipeline with routing + quality checks.
+
+### 3.1 Document Ingestion (Async)
+
+```text
 User Upload → Immediate 202 Response → Redis Queue → Worker Process
 ```
-- Files are processed asynchronously with real-time progress updates
-- **Intelligent Parsing:** Local OCR with Azure cloud fallback based on quality scoring
-- **Transactional Saves:** PostgreSQL operations with rollback on vector failures
-- **Memory Management:** Automatic cleanup of failed uploads
 
-**2. Hybrid Retrieval Engine**
-- **Query Classification:** AI-powered intent detection (VECTOR, SQL_METADATA, LLM, ACTION)
-- **Intent-Aware Routing:** Sequential reading for summarization vs hybrid search for Q&A
-- **Multi-Stage Search:**
-  - Vector similarity search (pgvector)
-  - Keyword search (pg_trgm similarity)
-  - Sequential reading for document summarization
-- **Reciprocal Rank Fusion:** Intelligent result merging and ranking
+* Files are processed **asynchronously** with real-time progress events
+* **Intelligent parsing**:
 
-**3. Multi-Mode Generation System**
-- **STANDARD:** Fast, efficient responses for simple queries
-- **DEEP_THINK:** Complex reasoning with chain-of-thought
-- **DEEP_RESEARCH:** Comprehensive analysis of long documents
-- **Mode Coordination:** Automatic mode switching based on retrieval results
+  * Local OCR first
+  * Azure cloud fallback if quality score is below threshold
+* **Transactional saves** in PostgreSQL (rollback if embedding/vector insert fails)
+* Automatic cleanup of failed uploads and partial state
 
-**4. Real-time Streaming & Citations**
-- Token-by-token streaming with WebSocket events
-- Interactive citation badges with hover previews
-- Math expression detection and execution
-- Conversation history with fuzzy search
+### 3.2 Hybrid Retrieval Engine
 
------
+* **Query classification** (intent detection) – e.g. `VECTOR`, `SQL_METADATA`, `LLM`, `ACTION`
+* **Intent-aware routing**:
 
-## 3. Technical Innovation & Architecture
+  * Sequential reading for summaries
+  * Hybrid search for Q&A
+* **Multi-stage search**:
 
-### 3.1. Database Architecture
+  * Vector similarity (`pgvector`)
+  * Keyword search (`pg_trgm` similarity)
+  * Sequential reading for document-level summarization
+* **Reciprocal Rank Fusion (RRF)** to merge vector + keyword rankings
+
+### 3.3 Multi-Mode Generation
+
+* **STANDARD** – fast responses for straightforward questions
+* **DEEP_THINK** – heavier reasoning / chain-of-thought style
+* **DEEP_RESEARCH** – long-document analysis and synthesis
+* Automatic mode switching based on retrieval context and query type
+
+### 3.4 Real-time Streaming & Citations
+
+* Token streaming over WebSockets
+* Citation badges with hover previews
+* Math expression detection and evaluation
+* Conversation history with fuzzy search
+
+---
+
+## 4. Security & Access Control (RBAC)
+
+VAULT implements a **hybrid RBAC model** that combines:
+
+* Static roles
+* Resource-level assignments
+* Just-In-Time (JIT) temporary access
+
+All of this is designed to follow **least privilege** by default.
+
+### 4.1 Static Role Hierarchy
+
+Enforced via middleware (e.g. `authorize('Admin')`):
+
+* **CTO (Super Admin)**
+
+  * Full system access: logs, global settings, user management, everything.
+* **Administrator**
+
+  * Manages users, client assignments, and room configuration **within their client scope**.
+* **ProductOwner (PO)**
+
+  * Manages specific products and their rooms.
+  * Can upload documents.
+  * No access to global/system-wide admin features.
+* **User (Standard)**
+
+  * Read-only by default.
+  * Only sees rooms they are explicitly assigned to.
+
+### 4.2 Contextual Resource Assignments
+
+Access is narrowed by database-level relationships:
+
+* **Room assignments** – `room_user_assignments` links users → rooms
+* **Product assignments** – `room_po_assignments` links POs → products/rooms
+* **Client isolation** – `admin_client_assignments` maps admins → clients
+
+Every query is filtered by these relationships so users only see the data they’re supposed to.
+
+### 4.3 Just-In-Time (JIT) Access
+
+For cases where someone needs **temporary** elevated access:
+
+1. **Request**
+
+   * User submits a JIT request via `jitRequestController.js`.
+2. **Approval**
+
+   * Admin or CTO reviews and approves/denies.
+3. **Expiry**
+
+   * Access is granted for a fixed time window (e.g. 4 hours).
+   * A scheduled job automatically revokes it when time is up.
+
+### 4.4 Security Layers (Summary)
+
+| Layer              | Mechanism        | Description                                                         |
+| ------------------ | ---------------- | ------------------------------------------------------------------- |
+| **Authentication** | JWT + middleware | `protect` middleware checks identity on every request.              |
+| **Authorization**  | Role guards      | Endpoint-level constraints (e.g. only POs can upload documents).    |
+| **Data scope**     | SQL filters      | `WHERE room_id IN (...)` etc., based on assignments and JIT grants. |
+| **Audit**          | Access logs      | Track JIT requests, approvals, and room access events.              |
+
+---
+
+## 5. Technical Innovation & Architecture
+
+### 5.1 Database Architecture
+
 ```sql
 -- PostgreSQL with pgvector extension
 document_chunks (
-    chunk_id SERIAL PRIMARY KEY,
-    content TEXT,
-    embedding VECTOR(384),  -- pgvector extension
-    document_id INTEGER,
-    room_id INTEGER,
-    page_number INTEGER
+    chunk_id     SERIAL PRIMARY KEY,
+    content      TEXT,
+    embedding    VECTOR(384),  -- pgvector extension
+    document_id  INTEGER,
+    room_id      INTEGER,
+    page_number  INTEGER
 );
 ```
 
-### 3.2. Hybrid Search Implementation
-```javascript
-// Reciprocal Rank Fusion for result merging
+### 5.2 Hybrid Search (RRF)
+
+```js
+// Reciprocal Rank Fusion for vector + keyword results
 const rankedResults = applyRRF(vectorResults, keywordResults, 60);
-// Returns: [{ chunk_id, content, metadata, rrfScore, methods: ['Vector','Keyword'] }]
+
+// Returns:
+// [{ chunk_id, content, metadata, rrfScore, methods: ['Vector', 'Keyword'] }]
 ```
 
-### 3.3. Intelligent Document Processing
+### 5.3 Intelligent Document Processing
+
 ```python
-# OCR Quality Scoring (0-100 points)
+# OCR Quality Scoring (0–100)
 def calculate_quality_score(local_chunks, file_path):
     score = 100
     # Penalize: empty content, OCR noise, size mismatches, low alphanumeric density
-    # Fallback to Azure Document Intelligence if score < threshold
+    # If score < threshold → fallback to Azure Document Intelligence
 ```
 
-### 3.4. Real-time Event System
-```javascript
-// Redis Pub/Sub for service decoupling
+### 5.4 Real-time Event System
+
+```js
+// Redis Pub/Sub for decoupled streaming
 redisPublisher.publish(NOTIFICATION_CHANNEL, JSON.stringify({
-    targetSocketId: socketId,
-    event: 'chat_response',
-    data: { type: 'chunk', data: token }
+  targetSocketId: socketId,
+  event: 'chat_response',
+  data: { type: 'chunk', data: token }
 }));
 ```
 
------
+---
 
-## 4. Local Development Setup
+## 6. Local Development Setup
 
 ### Prerequisites
-- **Node.js** 18+ 
-- **Python** 3.9-3.11
-- **PostgreSQL** 14+ with pgvector extension
-- **Redis** 6+ 
 
-### Step 1: Clone & Setup
+* **Node.js** 18+
+* **Python** 3.9–3.11
+* **PostgreSQL** 14+ with `pgvector` + `pg_trgm`
+* **Redis** 6+
+
+### 6.1 Clone & Install
+
 ```bash
 git clone https://github.com/vrishank-03/VAULT-Semantic-Search
 cd VAULT-Semantic-Search
 ```
 
-### Step 2: Backend Configuration
+#### Backend
+
 ```bash
 cd backend
 npm install
 
-# Environment setup
+# Environment
 cp .env.example .env
-# Configure: DATABASE_URL, REDIS_URL, JWT_SECRET, AZURE_FORM_*
+# Then set: DATABASE_URL, REDIS_URL, JWT_SECRET, AZURE_FORM_*
 ```
 
-### Step 3: Database Setup
+#### Database Extensions
+
 ```sql
--- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 ```
 
-### Step 4: Python Services
-```bash
-# Create virtual environment
-python -m venv ml_env
-source ml_env/bin/activate  # or .\ml_env\Scripts\activate on Windows
+#### Python Services
 
-# Install Python dependencies
+```bash
+python -m venv ml_env
+source ml_env/bin/activate        # Windows: .\ml_env\Scripts\activate
+
 pip install -r requirements.txt
 pip install "fastapi[standard]" "unstructured[local-inference]" "azure-ai-documentintelligence"
 ```
 
-### Step 5: Run Services
-**Terminal 1 - Database & Redis:**
+### 6.2 Run the Stack
+
+**Terminal 1 – PostgreSQL & Redis**
+
 ```bash
-# Ensure PostgreSQL and Redis are running
+# Make sure both services are running
 sudo service postgresql start
 redis-server
 ```
 
-**Terminal 2 - Embedder API:**
+**Terminal 2 – Embedder API**
+
 ```bash
 cd backend
 source ml_env/bin/activate
 python embedder.py
 ```
 
-**Terminal 3 - Parser API:**
+**Terminal 3 – Parser API**
+
 ```bash
-cd backend  
+cd backend
 source ml_env/bin/activate
 python parser.py
 ```
 
-**Terminal 4 - Main Server:**
+**Terminal 4 – Main Server**
+
 ```bash
 cd backend
 node index.js
 ```
 
-**Terminal 5 - Worker:**
+**Terminal 5 – Worker**
+
 ```bash
 cd backend
 node worker.js
 ```
 
-**Terminal 6 - Frontend:**
+**Terminal 6 – Frontend**
+
 ```bash
 cd frontend
 npm start
 ```
 
-### Step 6: Verify Installation
-1. Access `http://localhost:3000`
-2. Create account and upload a PDF
-3. Test chat functionality with real-time streaming
+### 6.3 Quick Smoke Test
 
------
+1. Open `http://localhost:3000`
+2. Create an account
+3. Upload a PDF
+4. Ask a question and verify streaming + citations
 
-## 5. API Reference
+---
 
-### Core Endpoints
+## 7. API Reference
 
-**Chat Operations:**
+### 7.1 Chat Operations
+
 ```http
 POST /api/chat/:roomId/:conversationId
-# Async streaming with 202 response + Socket.io events
+# Starts async streaming (202 + Socket.io events)
 
 GET /api/chat/search?q=term
 # Fuzzy search across conversation history
 
-DELETE /api/chat/:conversationId  
-# Delete conversation and all messages
+DELETE /api/chat/:conversationId
+# Delete a conversation and its messages
 ```
 
-**Document Management:**
+### 7.2 Document Management
+
 ```http
 POST /api/documents/upload/:roomId
-# Async processing with progress events
+# Async upload + processing, with progress events
 
 GET /api/documents/:roomId
-# List documents with metadata
+# List documents and metadata
 
 DELETE /api/documents/:documentId
-# Remove document and all vectors
+# Delete document + associated vectors
 ```
 
-### WebSocket Events
-```javascript
-// Chat Streaming
+### 7.3 WebSocket Events
+
+```js
+// Chat streaming
 socket.on('chat_response_' + conversationId, (data) => {
-  // data.type: 'status'|'chunk'|'final'|'error'
+  // data.type: 'status' | 'chunk' | 'final' | 'error'
 });
 
-// Document Processing  
+// Document processing
 socket.on('document_status', (data) => {
-  // data.type: 'status'|'complete'|'error'
+  // data.type: 'status' | 'complete' | 'error'
 });
 ```
 
------
+---
 
-## 6. Performance Characteristics
+## 8. Performance Characteristics
 
-### Document Processing
-- **Parsing:** 2-10 seconds per document (depending on size/complexity)
-- **Embedding:** ~100ms per chunk
-- **Upload Progress:** Real-time status updates
+**Document processing**
 
-### Query Performance  
-- **Vector Search:** < 100ms for typical queries
-- **Hybrid Search:** 200-500ms with re-ranking
-- **Streaming Response:** First token < 2 seconds
+* Parsing: **2–10 seconds** per document (size/complexity dependent)
+* Embedding: **~100 ms** per chunk
+* Upload progress: live WebSocket updates
 
-### Scalability
-- **PostgreSQL:** Supports 10M+ document chunks
-- **Redis:** Handles 10K+ concurrent WebSocket connections  
-- **Python Services:** Horizontal scaling ready
+**Query performance**
 
------
+* Vector search: **< 100 ms** for typical queries
+* Hybrid search: **200–500 ms** with re-ranking
+* First streamed token: usually **< 2 seconds**
 
-## 7. File Structure
+**Scalability**
 
-```
+* PostgreSQL handles **10M+ document chunks**
+* Redis can support **10K+ concurrent WebSocket connections**
+* Python microservices are horizontally scalable
+
+---
+
+## 9. File Structure
+
+```text
 backend/
 ├── services/
 │   ├── RAGPipelineService.js    # Hybrid retrieval orchestration
@@ -333,47 +470,48 @@ frontend/src/
 │   └── components/
 │       ├── ChatInput/           # Multi-mode input with attachments
 │       ├── MessageBubble/       # Streaming UI with citations
-│       └── DocumentLibraryModal/# Enterprise file management
+│       └── DocumentLibraryModal # Enterprise file management
 ├── context/
 │   ├── SocketContext.js         # WebSocket provider
 │   └── LayoutContext.js         # UI state management
 └── services/api.js              # API client with error handling
 ```
 
------
+---
 
-## 8. Troubleshooting
+## 10. Troubleshooting
 
-### Common Issues
+### Database
 
-**Database Connection:**
 ```bash
-# Ensure PostgreSQL is running with pgvector
+# Confirm extensions
 psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
 psql -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 ```
 
-**Python Services:**
+### Python Services
+
 ```bash
-# Check if services are running
 curl http://localhost:8001/health  # Embedder
 curl http://localhost:8002/health  # Parser
 ```
 
-**Redis Connection:**
+### Redis
+
 ```bash
-# Test Redis connectivity
-redis-cli ping  # Should return "PONG"
+redis-cli ping   # Expect: PONG
 ```
 
-**File Upload Issues:**
-- Check `/backend/storage` directory permissions
-- Verify file size limits in Multer configuration
-- Monitor worker process for processing errors
+### File Upload Issues
 
-### Performance Optimization
+* Check permissions on `backend/storage/`
+* Validate Multer file size limits
+* Watch `worker.js` logs for parsing/embedding errors
 
-**Database Indexing:**
+### Performance Tuning
+
+**Indexes:**
+
 ```sql
 CREATE INDEX CONCURRENTLY idx_document_chunks_embedding 
 ON document_chunks USING ivfflat (embedding vector_cosine_ops);
@@ -382,32 +520,38 @@ CREATE INDEX CONCURRENTLY idx_document_chunks_room
 ON document_chunks(room_id);
 ```
 
-**Cache Configuration:**
-- Redis connection pooling
-- Vector query result caching
-- Session storage optimization
+**Caching ideas:**
 
------
-
-## 9. Deployment Notes
-
-### Production Considerations
-- **PostgreSQL:** Connection pooling with PgBouncer
-- **Redis:** Cluster configuration for high availability  
-- **Python Services:** Gunicorn with multiple workers
-- **Node.js:** PM2 process management
-- **File Storage:** Cloud storage integration ready
-
-### Monitoring & Observability
-- Database query performance monitoring
-- Redis memory usage tracking
-- Python service health checks
-- WebSocket connection metrics
-
-### Security Hardening
-- JWT token rotation
-- API rate limiting
-- File upload sanitization
-- SQL injection prevention with parameterized queries
+* Redis connection pooling
+* Caching hot vector query results
+* Session storage optimization
 
 ---
+
+## 11. Deployment Notes
+
+### Production Considerations
+
+* PostgreSQL + **PgBouncer** for connection pooling
+* Redis in **cluster / HA** mode
+* Python services behind **Gunicorn** with multiple workers
+* Node.js under **PM2** or similar process manager
+* File storage pointed at cloud object storage (S3, etc.)
+
+### Monitoring & Observability
+
+* DB query metrics
+* Redis memory + connection usage
+* Health checks for Parser/Embedder APIs
+* WebSocket connection metrics
+
+### Security Hardening
+
+* JWT rotation
+* API rate limiting
+* File upload sanitization
+* Parameterized SQL everywhere to avoid injection
+
+---
+
+**License:** MIT
