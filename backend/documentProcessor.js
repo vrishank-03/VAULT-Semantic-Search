@@ -1,4 +1,9 @@
-// backend/documentProcessor.js
+// backend/documentProcessor.js - ENTERPRISE OCR ADAPTER
+// --------------------------------------------------------
+// [COMPONENT] Text Extraction Layer
+// [ROLE] Bridges the external Python OCR service (Port 8002) with Node.js.
+// [COMPATIBILITY] Outputs standardized text chunks ready for embedding.
+// --------------------------------------------------------
 
 const fs = require('fs');
 const axios = require('axios');
@@ -6,7 +11,7 @@ const FormData = require('form-data');
 const logger = require('./utils/logger');
 
 const SERVICE_NAME = 'DocumentProcessor';
-const PARSER_API_URL = 'http://127.0.0.1:8002/parse';
+const PARSER_API_URL = process.env.PARSER_API_URL || 'http://127.0.0.1:8002/parse';
 
 // --- [WIN_FIX] ENVIRONMENT OVERRIDE FOR TESSERACT ---
 // This forces the Node process (and any Python child processes) to see Tesseract
@@ -42,7 +47,7 @@ const normalizeChunks = (rawChunks, filename) => {
     return rawChunks.map((chunk, index) => {
         // 1. Map 'text' (Unstructured default) -> 'content' (DB requirement)
         let content = chunk.text || chunk.content || chunk.page_content || "";
-        
+
         // 2. Sanitize string (remove null bytes that break Postgres)
         content = content.replace(/\0/g, '').trim();
 
@@ -71,7 +76,7 @@ const normalizeChunks = (rawChunks, filename) => {
  */
 async function processDocument(filePath, originalName) {
     logger.info(SERVICE_NAME, `Calling Enterprise Parsing API for: ${originalName}`);
-    
+
     // 1. Validate File Existence
     if (!fs.existsSync(filePath)) {
         logger.error(SERVICE_NAME, `[FATAL] File not found at path: ${filePath}`);
@@ -102,7 +107,7 @@ async function processDocument(filePath, originalName) {
         } else {
             logger.info(SERVICE_NAME, `[SUCCESS] Normalized ${validChunks.length} chunks for downstream processing.`);
         }
-        
+
         return validChunks;
 
     } catch (error) {
@@ -112,9 +117,9 @@ async function processDocument(filePath, originalName) {
             logger.error(SERVICE_NAME, `FATAL: Cannot connect to Parser API (Port 8002). Is python parser.py running?`);
             throw new Error('Parsing service is offline.');
         }
-        
+
         const detail = error.response?.data?.detail || error.message;
-        
+
         // [WIN_FIX] Specific hint for Tesseract errors
         if (detail && (detail.includes("tesseract is not installed") || detail.includes("not in your PATH"))) {
             logger.error(SERVICE_NAME, "[WIN_FIX] Tesseract not found. Ensure TESSERACT_PATH_OVERRIDE is set in .env");
@@ -124,7 +129,7 @@ async function processDocument(filePath, originalName) {
         if (detail && detail.toLowerCase().includes('password')) {
             throw new Error("PasswordProtectedError");
         }
-        
+
         throw new Error(detail);
     }
 }

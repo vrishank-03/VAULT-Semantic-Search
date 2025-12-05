@@ -1,6 +1,7 @@
 // backend/services/GenerationService.js
 // --------------------------------------------------------
 // [LOGGING] Enhanced with Stream Flow Tracking
+// [ADAPTER] Added 'generateResponse' for searchService compatibility
 // --------------------------------------------------------
 
 const OpenAI = require("openai");
@@ -157,6 +158,7 @@ async function* generateStreamingResponse(messages, mode, temperature = 0.3) {
 
 /**
  * Non-streaming helper.
+ * Consumes the stream entirely and returns the full string.
  */
 async function generateSingleResponse(messages, mode = 'STANDARD') {
     let fullText = "";
@@ -243,7 +245,35 @@ async function executeMath(expression, mode) {
 
 async function extractMathExpression(query, sources) { return null; }
 
-// --- 4. FINAL SYNTHESIS ---
+// --- 4. FINAL SYNTHESIS & ADAPTERS ---
+
+/**
+ * [ADAPTER] Backward compatible RAG generation.
+ * This is the function searchService.js is trying to call.
+ */
+async function generateResponse(query, context, history) {
+    // 1. Prepare messages using the standard Prompt Template
+    // We pass 'STANDARD' mode by default for RAG answers to keep it fast
+    const chatMode = 'STANDARD';
+    const templateOutput = getFinalAnswerPrompt(context, query, chatMode, null);
+
+    let messages = [];
+
+    if (typeof templateOutput === 'string') {
+        messages = [
+            { role: "system", content: templateOutput },
+            // Inject history here if desired, or keep it simple for now
+            { role: "user", content: `User Query: ${query}` }
+        ];
+    } else if (Array.isArray(templateOutput)) {
+        messages = templateOutput;
+    } else {
+        return "Error: Could not generate prompt.";
+    }
+
+    // 2. Call the non-streaming helper
+    return await generateSingleResponse(messages, chatMode);
+}
 
 async function* streamFinalAnswer(context, query, chatMode, mathResults) {
     logger.info(SERVICE_NAME, `[SYNTHESIS] Generating answer via ${chatMode} mode.`);
@@ -316,5 +346,6 @@ module.exports = {
     streamFinalAnswer,
     streamMetadataAnswer,
     generateStreamingResponse,
-    generateTitle
+    generateTitle,
+    generateResponse
 };

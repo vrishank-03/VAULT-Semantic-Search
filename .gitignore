@@ -143,3 +143,4 @@ backend/uploads/
 backend/vault.db
 backend/.env
 backend/credentials.js
+backend/storage/

@@ -1,20 +1,24 @@
-// backend/database.js - ENTERPRISE SANITIZATION ADDED
+// backend/database.js - ENTERPRISE POSTGRES (NO-PLUGIN VERSION)
+// --------------------------------------------------------
+// [SCALABILITY] Uses PostgreSQL but replaces 'vector' extension 
+// with standard FLOAT8[] arrays to avoid Windows installation errors.
+// --------------------------------------------------------
 
-const { Pool } = require('pg'); 
+const { Pool } = require('pg');
 require('dotenv').config();
 const crypto = require('crypto');
-const logger = require('./utils/logger'); 
+const logger = require('./utils/logger');
 
-let pool = null; 
+let pool = null;
 
 // --- CONFIGURATION ---
 const PG_CONFIG = {
-    user: process.env.PG_USER,
-    host: process.env.PG_HOST,
-    database: process.env.PG_DATABASE,
-    password: process.env.PG_PASSWORD,
+    user: process.env.PG_USER || 'postgres',
+    host: process.env.PG_HOST || 'localhost',
+    database: process.env.PG_DATABASE || 'postgres',
+    password: process.env.PG_PASSWORD || 'root',
     port: process.env.PG_PORT || 5432,
-    max: 20, 
+    max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,
 };
@@ -72,7 +76,7 @@ const executeTransaction = async (callback) => {
 };
 
 // --- UTILS ---
-const generateRoomCode = () => crypto.randomBytes(3).toString('hex').toUpperCase(); 
+const generateRoomCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 
 const backfillRoomCodes = async () => {
     logger.info('DB_ALTER', '[Backfill] Checking for NULL room_codes...');
@@ -80,8 +84,8 @@ const backfillRoomCodes = async () => {
         const client = await getPool().connect();
         const res = await client.query('SELECT id FROM chat_rooms WHERE room_code IS NULL');
         if (res.rows.length > 0) {
-             logger.info('DB_ALTER', `Backfilling ${res.rows.length} rooms...`);
-             for (const row of res.rows) {
+            logger.info('DB_ALTER', `Backfilling ${res.rows.length} rooms...`);
+            for (const row of res.rows) {
                 let unique = false;
                 let newCode;
                 while (!unique) {
@@ -90,8 +94,8 @@ const backfillRoomCodes = async () => {
                     if (check.rowCount === 0) unique = true;
                 }
                 await client.query('UPDATE chat_rooms SET room_code = $1 WHERE id = $2', [newCode, row.id]);
-             }
-             logger.info('DB_ALTER_SUCCESS', `Backfill complete.`);
+            }
+            logger.info('DB_ALTER_SUCCESS', `Backfill complete.`);
         }
         client.release();
     } catch (error) {
@@ -115,19 +119,19 @@ const seedRoleDefinitions = async (client) => {
 
 // --- INITIALIZATION ---
 const initializeDatabase = async () => {
-    const dbPool = getPool(); 
+    const dbPool = getPool();
     const client = await dbPool.connect();
     try {
         logger.info('DB_INIT', 'Starting Schema Initialization...');
-        
-        await client.query('CREATE EXTENSION IF NOT EXISTS vector'); 
-        await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm'); 
-        
+
+        // [FIX] Removed 'vector' extension check to allow standard Postgres usage
+        await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+
         const createTable = async (name, schema) => {
             await client.query(schema);
             logger.info('DB_INIT', `Table '${name}' verified.`);
         };
-        
+
         // 1. Roles
         await createTable('role_definitions', `
             CREATE TABLE IF NOT EXISTS role_definitions (
@@ -169,15 +173,15 @@ const initializeDatabase = async () => {
                 manager_id INTEGER REFERENCES users(id) ON DELETE SET NULL
             )
         `);
-        
+
         // Role Migration
         logger.info('DB_MIGRATE', 'Checking for legacy role names...');
         for (const role of CORE_ROLES) {
             try {
                 await client.query(`UPDATE users SET role = $1 WHERE role = $2`, [role.key, role.default_display]);
-            } catch (migErr) {}
+            } catch (migErr) { }
         }
-        
+
         // 4. Clients
         await createTable('clients', `
             CREATE TABLE IF NOT EXISTS clients (
@@ -198,7 +202,7 @@ const initializeDatabase = async () => {
                 UNIQUE(admin_id, client_id)
             )
         `);
-        
+
         // 6. Chat Rooms
         await createTable('chat_rooms', `
             CREATE TABLE IF NOT EXISTS chat_rooms (
@@ -213,14 +217,14 @@ const initializeDatabase = async () => {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
         `);
-        
+
         // 7-10. Room Assignments
         const assignmentTables = ['room_client_assignments', 'room_admin_assignments', 'room_po_assignments', 'room_user_assignments'];
         const idCols = ['client_id', 'admin_id', 'po_id', 'user_id'];
         const refs = ['clients(id)', 'users(id)', 'users(id)', 'users(id)'];
 
         for (let i = 0; i < assignmentTables.length; i++) {
-             await createTable(assignmentTables[i], `
+            await createTable(assignmentTables[i], `
                 CREATE TABLE IF NOT EXISTS ${assignmentTables[i]} (
                     id SERIAL PRIMARY KEY,
                     room_id INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
@@ -247,7 +251,7 @@ const initializeDatabase = async () => {
             )
         `);
 
-        // 12. Product Access Requests (Peer JIT)
+        // 12-13. Other Access Requests
         await createTable('product_access_requests', `
             CREATE TABLE IF NOT EXISTS product_access_requests (
                 id SERIAL PRIMARY KEY,
@@ -263,7 +267,6 @@ const initializeDatabase = async () => {
             )
         `);
 
-        // 13. Client Access Requests (Peer JIT)
         await createTable('client_access_requests', `
             CREATE TABLE IF NOT EXISTS client_access_requests (
                 id SERIAL PRIMARY KEY,
@@ -301,8 +304,8 @@ const initializeDatabase = async () => {
                 uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
         `);
-        
-        // 16. Document Chunks (pgvector)
+
+        // 16. Document Chunks (FLOAT8[] instead of VECTOR)
         await createTable('document_chunks', `
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
@@ -311,12 +314,12 @@ const initializeDatabase = async () => {
                 chunk_id TEXT NOT NULL, 
                 content TEXT NOT NULL,
                 page_number INTEGER,
-                embedding VECTOR(${process.env.EMBEDDING_DIMENSION || 384}), 
+                embedding FLOAT8[], 
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(document_id, chunk_id)
             )
         `);
-        
+
         // 17. Conversations
         await createTable('conversations', `
             CREATE TABLE IF NOT EXISTS conversations (
@@ -339,12 +342,12 @@ const initializeDatabase = async () => {
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
         `);
-        
+
         // 19. Indexes
         await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_chat_message ON chat_history USING GIN (message gin_trgm_ops)`);
 
-        await backfillRoomCodes(); 
-        logger.info('DB_INIT_FINAL', 'All PostgreSQL schemas and extensions verified.');
+        await backfillRoomCodes();
+        logger.info('DB_INIT_FINAL', 'All PostgreSQL schemas verified (Standard Arrays).');
 
     } catch (err) {
         logger.error('DB_INIT_FATAL', 'Schema Initialization Failed:', err.message);
@@ -354,23 +357,20 @@ const initializeDatabase = async () => {
     }
 };
 
-// --- ATOMIC SAVE FUNCTION (ENTERPRISE SANITIZATION) ---
+// --- ATOMIC SAVE FUNCTION (PG ARRAY ADAPTER) ---
 async function saveDocumentChunks(userId, originalName, filePath, chunksWithVectors, roomId) {
     logger.info('saveDocumentChunks', `[PG_TX_START] Atomic save for: ${originalName}`);
-    
-    // [SANITIZATION] Filter out chunks that are null, undefined, empty strings, or just whitespace.
-    // This prevents the "null value in column content" error from PostgreSQL.
+
+    // [SANITIZATION]
     const chunksToInsert = chunksWithVectors.filter(c => {
         const hasVector = c.vector && c.vector.length > 0;
         const hasContent = c.content && typeof c.content === 'string' && c.content.trim().length > 0;
-        
         if (!hasContent && hasVector) {
             logger.warn('saveDocumentChunks', `[SANITIZATION] Dropping chunk ${c.id} (Valid Vector, NULL/Empty Content).`);
         }
-        
         return hasVector && hasContent;
     });
-    
+
     logger.info('saveDocumentChunks', `[SANITIZATION] ${chunksWithVectors.length} chunks in -> ${chunksToInsert.length} valid chunks out.`);
 
     return executeTransaction(async (client) => {
@@ -379,17 +379,17 @@ async function saveDocumentChunks(userId, originalName, filePath, chunksWithVect
             [userId, roomId, originalName, filePath]
         );
         const documentId = docRes.rows[0].id;
-        
+
         if (chunksToInsert.length > 0) {
             const chunkValues = [];
             const chunkPlaceholders = [];
             let idx = 1;
-            
+
             chunksToInsert.forEach((chunk, i) => {
                 const chunkId = `${documentId}-${i}-${crypto.randomBytes(4).toString('hex')}`;
-                const vecStr = `[${chunk.vector.join(',')}]`;
-                chunkValues.push(chunkId, documentId, roomId, chunk.content, chunk.page_number, vecStr);
-                chunkPlaceholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4}, $${idx+5})`);
+                // Standard PG arrays don't need string formatting like vector('[...]'), just pass the array
+                chunkValues.push(chunkId, documentId, roomId, chunk.content, chunk.page_number, chunk.vector);
+                chunkPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5})`);
                 idx += 6;
             });
 
@@ -399,9 +399,9 @@ async function saveDocumentChunks(userId, originalName, filePath, chunksWithVect
             `;
             await client.query(insertSql, chunkValues);
         } else {
-            logger.warn('saveDocumentChunks', '[WARNING] Document saved but NO valid chunks were extracted (likely empty or image-only PDF).');
+            logger.warn('saveDocumentChunks', '[WARNING] Document saved but NO valid chunks were extracted.');
         }
-        
+
         return { documentId };
     });
 }
@@ -416,12 +416,12 @@ const updateConversationTitle = async (conversationId, title) => {
 }
 
 module.exports = {
-    getPool, 
-    query, 
+    getPool,
+    query,
     initializeDatabase,
-    executeTransaction, 
+    executeTransaction,
     saveDocumentChunks,
     deleteDocumentById,
     updateConversationTitle,
-    CORE_ROLES, 
+    CORE_ROLES,
 };
