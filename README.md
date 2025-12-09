@@ -566,6 +566,3 @@ ON document_chunks(document_id);
 -----
 
 **License:** MIT
-
-```
-```
