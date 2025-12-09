@@ -43,7 +43,7 @@ VAULT is built as a layered system:
 * **Message bus** – Redis for pub/sub and job queues
 * **Orchestrator & workers** – Node.js services coordinating RAG, jobs, and notifications
 * **Python microservices** – Parsing + embedding
-* **Data layer** – PostgreSQL (pgvector) + file storage
+* **Data layer** – PostgreSQL (Standard `FLOAT8[]`) + file storage
 * **External LLM APIs** – Groq (Llama 3.1), Google Gemini 1.5, Anthropic Claude
 
 > **Note:** Other components are currently evolving as the platform continues to develop.
@@ -85,12 +85,12 @@ VAULT is a **distributed microservices** platform built on modern web tech with 
 * High-performance API gateway
 * **JWT auth** with role validation
 * **Redis Pub/Sub** for service decoupling
-* **PostgreSQL** with pgvector for embeddings
+* **PostgreSQL** with Native Arrays for embeddings
 * Async controllers that return `202 Accepted` quickly and push work to queues
 
 **Databases & Storage**
 
-* **PostgreSQL (primary)** – relational data + pgvector for embeddings
+* **PostgreSQL (primary)** – relational data + `FLOAT8[]` for embeddings (No plugins required)
 * **Redis** – message broker for queues and real-time events
 * **File system storage** – document storage with cleanup of failed uploads
 
@@ -122,53 +122,59 @@ VAULT’s RAG stack is built as a multi-stage pipeline with routing + quality ch
 
 ```text
 User Upload → Immediate 202 Response → Redis Queue → Worker Process
-```
+````
 
-* Files are processed **asynchronously** with real-time progress events
-* **Intelligent parsing**:
+  * Files are processed **asynchronously** with real-time progress events
 
-  * Local OCR first
-  * Azure cloud fallback if quality score is below threshold
-* **Transactional saves** in PostgreSQL (rollback if embedding/vector insert fails)
-* Automatic cleanup of failed uploads and partial state
+  * **Intelligent parsing**:
+
+      * Local OCR first
+      * Azure cloud fallback if quality score is below threshold
+
+  * **Transactional saves** in PostgreSQL (rollback if embedding/vector insert fails)
+
+  * Automatic cleanup of failed uploads and partial state
 
 ### 3.2 Hybrid Retrieval Engine
 
-* **Query classification** (intent detection) – e.g. `VECTOR`, `SQL_METADATA`, `LLM`, `ACTION`
-* **Intent-aware routing**:
+  * **Query classification** (intent detection) – e.g. `VECTOR`, `SQL_METADATA`, `LLM`, `ACTION`
 
-  * Sequential reading for summaries
-  * Hybrid search for Q&A
-* **Multi-stage search**:
+  * **Intent-aware routing**:
 
-  * Vector similarity (`pgvector`)
-  * Keyword search (`pg_trgm` similarity)
-  * Sequential reading for document-level summarization
-* **Reciprocal Rank Fusion (RRF)** to merge vector + keyword rankings
+      * Sequential reading for summaries
+      * Hybrid search for Q\&A
+
+  * **Multi-stage search**:
+
+      * Vector similarity (Euclidean Distance on `FLOAT8[]` arrays)
+      * Keyword search (`pg_trgm` similarity)
+      * Sequential reading for document-level summarization
+
+  * **Reciprocal Rank Fusion (RRF)** to merge vector + keyword rankings
 
 ### 3.3 Multi-Mode Generation
 
-* **STANDARD** – fast responses for straightforward questions
-* **DEEP_THINK** – heavier reasoning / chain-of-thought style
-* **DEEP_RESEARCH** – long-document analysis and synthesis
-* Automatic mode switching based on retrieval context and query type
+  * **STANDARD** – fast responses for straightforward questions
+  * **DEEP\_THINK** – heavier reasoning / chain-of-thought style
+  * **DEEP\_RESEARCH** – long-document analysis and synthesis
+  * Automatic mode switching based on retrieval context and query type
 
 ### 3.4 Real-time Streaming & Citations
 
-* Token streaming over WebSockets
-* Citation badges with hover previews
-* Math expression detection and evaluation
-* Conversation history with fuzzy search
+  * Token streaming over WebSockets
+  * Citation badges with hover previews
+  * Math expression detection and evaluation
+  * Conversation history with fuzzy search
 
----
+-----
 
-## 4. Security & Access Control (RBAC)
+## 4\. Security & Access Control (RBAC)
 
 VAULT implements a **hybrid RBAC model** that combines:
 
-* Static roles
-* Resource-level assignments
-* Just-In-Time (JIT) temporary access
+  * Static roles
+  * Resource-level assignments
+  * Just-In-Time (JIT) temporary access
 
 All of this is designed to follow **least privilege** by default.
 
@@ -176,29 +182,32 @@ All of this is designed to follow **least privilege** by default.
 
 Enforced via middleware (e.g. `authorize('Admin')`):
 
-* **CTO (Super Admin)**
+  * **CTO (Super Admin)**
 
-  * Full system access: logs, global settings, user management, everything.
-* **Administrator**
+      * Full system access: logs, global settings, user management, everything.
 
-  * Manages users, client assignments, and room configuration **within their client scope**.
-* **ProductOwner (PO)**
+  * **Administrator**
 
-  * Manages specific products and their rooms.
-  * Can upload documents.
-  * No access to global/system-wide admin features.
-* **User (Standard)**
+      * Manages users, client assignments, and room configuration **within their client scope**.
 
-  * Read-only by default.
-  * Only sees rooms they are explicitly assigned to.
+  * **ProductOwner (PO)**
+
+      * Manages specific products and their rooms.
+      * Can upload documents.
+      * No access to global/system-wide admin features.
+
+  * **User (Standard)**
+
+      * Read-only by default.
+      * Only sees rooms they are explicitly assigned to.
 
 ### 4.2 Contextual Resource Assignments
 
 Access is narrowed by database-level relationships:
 
-* **Room assignments** – `room_user_assignments` links users → rooms
-* **Product assignments** – `room_po_assignments` links POs → products/rooms
-* **Client isolation** – `admin_client_assignments` maps admins → clients
+  * **Room assignments** – `room_user_assignments` links users → rooms
+  * **Product assignments** – `room_po_assignments` links POs → products/rooms
+  * **Client isolation** – `admin_client_assignments` maps admins → clients
 
 Every query is filtered by these relationships so users only see the data they’re supposed to.
 
@@ -206,38 +215,40 @@ Every query is filtered by these relationships so users only see the data they�
 
 For cases where someone needs **temporary** elevated access:
 
-1. **Request**
+1.  **Request**
 
-   * User submits a JIT request via `jitRequestController.js`.
-2. **Approval**
+      * User submits a JIT request via `jitRequestController.js`.
 
-   * Admin or CTO reviews and approves/denies.
-3. **Expiry**
+2.  **Approval**
 
-   * Access is granted for a fixed time window (e.g. 4 hours).
-   * A scheduled job automatically revokes it when time is up.
+      * Admin or CTO reviews and approves/denies.
+
+3.  **Expiry**
+
+      * Access is granted for a fixed time window (e.g. 4 hours).
+      * A scheduled job automatically revokes it when time is up.
 
 ### 4.4 Security Layers (Summary)
 
 | Layer              | Mechanism        | Description                                                         |
 | ------------------ | ---------------- | ------------------------------------------------------------------- |
 | **Authentication** | JWT + middleware | `protect` middleware checks identity on every request.              |
-| **Authorization**  | Role guards      | Endpoint-level constraints (e.g. only POs can upload documents).    |
-| **Data scope**     | SQL filters      | `WHERE room_id IN (...)` etc., based on assignments and JIT grants. |
-| **Audit**          | Access logs      | Track JIT requests, approvals, and room access events.              |
+| **Authorization** | Role guards      | Endpoint-level constraints (e.g. only POs can upload documents).    |
+| **Data scope** | SQL filters      | `WHERE room_id IN (...)` etc., based on assignments and JIT grants. |
+| **Audit** | Access logs      | Track JIT requests, approvals, and room access events.              |
 
----
+-----
 
-## 5. Technical Innovation & Architecture
+## 5\. Technical Innovation & Architecture
 
 ### 5.1 Database Architecture
 
 ```sql
--- PostgreSQL with pgvector extension
+-- PostgreSQL with Standard Arrays (Maximum Portability)
 document_chunks (
     chunk_id     SERIAL PRIMARY KEY,
     content      TEXT,
-    embedding    VECTOR(384),  -- pgvector extension
+    embedding    FLOAT8[],     -- Standard Array (No pgvector plugin needed)
     document_id  INTEGER,
     room_id      INTEGER,
     page_number  INTEGER
@@ -275,21 +286,21 @@ redisPublisher.publish(NOTIFICATION_CHANNEL, JSON.stringify({
 }));
 ```
 
----
+-----
 
-## 6. Local Development Setup
+## 6\. Local Development Setup
 
 ### Prerequisites
 
-* **Node.js** 18+
-* **Python** 3.9–3.11
-* **PostgreSQL** 14+ with `pgvector` + `pg_trgm`
-* **Redis** 6+
+  * **Node.js** 18+
+  * **Python** 3.9–3.11
+  * **PostgreSQL** 14+ (No special vector plugins required)
+  * **Redis** 6+
 
 ### 6.1 Clone & Install
 
 ```bash
-git clone https://github.com/vrishank-03/VAULT-Semantic-Search
+git clone [https://github.com/vrishank-03/VAULT-Semantic-Search](https://github.com/vrishank-03/VAULT-Semantic-Search)
 cd VAULT-Semantic-Search
 ```
 
@@ -307,7 +318,7 @@ cp .env.example .env
 #### Database Extensions
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Only text similarity extension needed
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 ```
 
@@ -370,14 +381,14 @@ npm start
 
 ### 6.3 Quick Smoke Test
 
-1. Open `http://localhost:3000`
-2. Create an account
-3. Upload a PDF
-4. Ask a question and verify streaming + citations
+1.  Open `http://localhost:3000`
+2.  Create an account
+3.  Upload a PDF
+4.  Ask a question and verify streaming + citations
 
----
+-----
 
-## 7. API Reference
+## 7\. API Reference
 
 ### 7.1 Chat Operations
 
@@ -419,31 +430,31 @@ socket.on('document_status', (data) => {
 });
 ```
 
----
+-----
 
-## 8. Performance Characteristics
+## 8\. Performance Characteristics
 
 **Document processing**
 
-* Parsing: **2–10 seconds** per document (size/complexity dependent)
-* Embedding: **~100 ms** per chunk
-* Upload progress: live WebSocket updates
+  * Parsing: **2–10 seconds** per document (size/complexity dependent)
+  * Embedding: **\~100 ms** per chunk
+  * Upload progress: live WebSocket updates
 
 **Query performance**
 
-* Vector search: **< 100 ms** for typical queries
-* Hybrid search: **200–500 ms** with re-ranking
-* First streamed token: usually **< 2 seconds**
+  * Vector search: **\< 100 ms** for typical queries (optimized via Room isolation)
+  * Hybrid search: **200–500 ms** with re-ranking
+  * First streamed token: usually **\< 2 seconds**
 
 **Scalability**
 
-* PostgreSQL handles **10M+ document chunks**
-* Redis can support **10K+ concurrent WebSocket connections**
-* Python microservices are horizontally scalable
+  * PostgreSQL handles **10M+ document chunks**
+  * Redis can support **10K+ concurrent WebSocket connections**
+  * Python microservices are horizontally scalable
 
----
+-----
 
-## 9. File Structure
+## 9\. File Structure
 
 ```text
 backend/
@@ -455,7 +466,7 @@ backend/
 ├── controllers/
 │   ├── chatController.js        # Async streaming endpoints
 │   └── documentController.js    # File upload & management
-├── database.js                  # PostgreSQL + pgvector interface
+├── database.js                  # PostgreSQL + FLOAT8[] interface
 ├── parser.py                    # Enterprise document parsing
 ├── embedder.py                  # High-speed embedding service
 └── worker.js                    # Background job processor
@@ -476,15 +487,14 @@ frontend/src/
 └── services/api.js              # API client with error handling
 ```
 
----
+-----
 
-## 10. Troubleshooting
+## 10\. Troubleshooting
 
 ### Database
 
 ```bash
-# Confirm extensions
-psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# Confirm extension (only pg_trgm is needed now)
 psql -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 ```
 
@@ -503,54 +513,59 @@ redis-cli ping   # Expect: PONG
 
 ### File Upload Issues
 
-* Check permissions on `backend/storage/`
-* Validate Multer file size limits
-* Watch `worker.js` logs for parsing/embedding errors
+  * Check permissions on `backend/storage/`
+  * Validate Multer file size limits
+  * Watch `worker.js` logs for parsing/embedding errors
 
 ### Performance Tuning
 
 **Indexes:**
 
 ```sql
-CREATE INDEX CONCURRENTLY idx_document_chunks_embedding 
-ON document_chunks USING ivfflat (embedding vector_cosine_ops);
-
+-- Standard index for Room filtering
 CREATE INDEX CONCURRENTLY idx_document_chunks_room 
 ON document_chunks(room_id);
+
+-- Standard index for Document filtering
+CREATE INDEX CONCURRENTLY idx_document_chunks_doc
+ON document_chunks(document_id);
 ```
 
 **Caching ideas:**
 
-* Redis connection pooling
-* Caching hot vector query results
-* Session storage optimization
+  * Redis connection pooling
+  * Caching hot vector query results
+  * Session storage optimization
 
----
+-----
 
-## 11. Deployment Notes
+## 11\. Deployment Notes
 
 ### Production Considerations
 
-* PostgreSQL + **PgBouncer** for connection pooling
-* Redis in **cluster / HA** mode
-* Python services behind **Gunicorn** with multiple workers
-* Node.js under **PM2** or similar process manager
-* File storage pointed at cloud object storage (S3, etc.)
+  * PostgreSQL + **PgBouncer** for connection pooling
+  * Redis in **cluster / HA** mode
+  * Python services behind **Gunicorn** with multiple workers
+  * Node.js under **PM2** or similar process manager
+  * File storage pointed at cloud object storage (S3, etc.)
 
 ### Monitoring & Observability
 
-* DB query metrics
-* Redis memory + connection usage
-* Health checks for Parser/Embedder APIs
-* WebSocket connection metrics
+  * DB query metrics
+  * Redis memory + connection usage
+  * Health checks for Parser/Embedder APIs
+  * WebSocket connection metrics
 
 ### Security Hardening
 
-* JWT rotation
-* API rate limiting
-* File upload sanitization
-* Parameterized SQL everywhere to avoid injection
+  * JWT rotation
+  * API rate limiting
+  * File upload sanitization
+  * Parameterized SQL everywhere to avoid injection
 
----
+-----
 
 **License:** MIT
+
+```
+```
