@@ -1,10 +1,10 @@
 // frontend/src/pages/ChatRoomPage/hooks/useChatStream.js
 // --------------------------------------------------------
-// [CRITICAL FIX] Added "Double Tap" refresh to catch slow Title Generation
-// [UX] Ensures "New Chat" updates to real name automatically
+// [FIX] Sanitization: Clears "stuck" loading states on mount/refresh
+// [NEW] Structured Thinking: Captures step-by-step logic for UI
 // --------------------------------------------------------
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSocket } from '../../../context/SocketContext';
 import { postChatQuery } from '../../../services/api';
 
@@ -39,6 +39,23 @@ export const useChatStream = (
     const streamActiveRef = useRef(false);
     const pendingMetadata = useRef(null);
 
+    // --- 0. SANITIZATION (Fixes "Stuck Thinking" on Refresh) ---
+    useEffect(() => {
+        // When the hook mounts (page load/refresh), check for any messages
+        // that are stuck in 'isLoading: true' and kill them.
+        setMessages(prev => prev.map(msg => {
+            if (msg.isLoading) {
+                console.warn('[useChatStream] Found stuck message. Forcing completion.');
+                return { ...msg, isLoading: false, status: 'Interrupted' };
+            }
+            return msg;
+        }));
+
+        // Reset refs
+        isSearchingRef.current = false;
+        streamActiveRef.current = false;
+    }, []); // Run once on mount
+
     // --- 1. Lossless Queue Processor ---
     useEffect(() => {
         let typingInterval;
@@ -47,11 +64,13 @@ export const useChatStream = (
             let chunkToAppend = "";
             let shouldMarkDone = false;
 
+            // Extract chars if available
             if (incomingQueue.current.length > 0) {
-                const charsToType = 2;
+                const charsToType = 3; // Slightly faster typing for responsiveness
                 chunkToAppend = incomingQueue.current.substring(0, charsToType);
                 incomingQueue.current = incomingQueue.current.substring(charsToType);
             }
+            // If queue is empty AND stream is dead AND we are still "searching"
             else if (!streamActiveRef.current && isSearchingRef.current) {
                 shouldMarkDone = true;
             }
@@ -74,24 +93,20 @@ export const useChatStream = (
                     };
                 }
 
-                // CASE B: Mark Complete & Trigger Title Sync
+                // CASE B: Mark Complete
                 if (shouldMarkDone && lastMsg.isLoading) {
+                    console.log('[useChatStream] Finalizing message.');
                     isSearchingRef.current = false;
 
-                    // 1. Immediate Refresh (Clear status, show history)
+                    // Sync Conversations
                     setTimeout(() => fetchConversations(false), 0);
-
-                    // 2. [CRITICAL FIX] Delayed Refresh (Catch the slow Title Generator)
-                    // Title generation usually takes 2-3 seconds after the answer.
-                    setTimeout(() => {
-                        console.log('[useChatStream] 🔄 Checking for Title Update...');
-                        fetchConversations(false);
-                    }, 4000);
+                    // Double-check for title update later
+                    setTimeout(() => fetchConversations(false), 4000);
 
                     newMessages[lastIndex] = {
                         ...newMessages[lastIndex],
                         isLoading: false,
-                        status: null,
+                        status: null, // Clear status text
                         results: pendingMetadata.current || lastMsg.results
                     };
                 }
@@ -112,35 +127,53 @@ export const useChatStream = (
         const channelId = activeConversationId || 'null';
         const eventName = `${CHAT_RESPONSE_EVENT}_${channelId}`;
 
-        console.log(`[useChatStream] 👂 Tuning into: ${eventName}`);
+        // console.log(`[useChatStream] 👂 Tuning into: ${eventName}`);
 
         const handleSocketEvent = (event) => {
             switch (event.type) {
+                // --- STATUS & STEPS ---
                 case STREAM_EVENTS.STATUS:
                 case STREAM_EVENTS.CLASSIFICATION:
-                    setMessages(prev => prev.map((msg, index) => {
-                        if (index === prev.length - 1 && msg.isLoading) {
-                            return { ...msg, status: event.data.message || event.data.queryType };
-                        }
-                        return msg;
-                    }));
+                    setMessages(prev => {
+                        const lastIdx = prev.length - 1;
+                        if (lastIdx < 0 || !prev[lastIdx].isLoading) return prev;
+
+                        const msg = prev[lastIdx];
+                        const stepText = event.data.message || event.data.queryType;
+
+                        // Prevent duplicate steps
+                        const lastStep = msg.thinkingSteps ? msg.thinkingSteps[msg.thinkingSteps.length - 1] : null;
+                        if (lastStep && lastStep.text === stepText) return prev;
+
+                        return [
+                            ...prev.slice(0, lastIdx),
+                            {
+                                ...msg,
+                                // Build a history of steps
+                                thinkingSteps: [
+                                    ...(msg.thinkingSteps || []),
+                                    { text: stepText, timestamp: Date.now() }
+                                ]
+                            }
+                        ];
+                    });
                     break;
 
+                // --- CONTENT ---
                 case STREAM_EVENTS.CHUNK:
                     streamActiveRef.current = true;
                     incomingQueue.current += event.data;
                     break;
 
+                // --- COMPLETION ---
                 case STREAM_EVENTS.TITLE:
-                    // If the backend is fast enough to send the event, catch it here
-                    console.log('[useChatStream] 🏷️ Title Event Received');
                     fetchConversations(false);
                     break;
 
                 case 'final':
                 case 'complete':
                 case STREAM_EVENTS.FINAL:
-                    console.log('[useChatStream] ✅ Backend Stream Complete.');
+                    // console.log('[useChatStream] ✅ Backend Stream Complete.');
                     streamActiveRef.current = false;
                     pendingMetadata.current = event.data;
                     break;
@@ -178,14 +211,19 @@ export const useChatStream = (
         pendingMetadata.current = null;
 
         const userMsg = { sender: 'user', text: input };
-        const aiMsg = { sender: 'ai', text: '', isLoading: true, status: 'Thinking...', results: { sources: [] } };
+        // Initialize with empty steps array
+        const aiMsg = {
+            sender: 'ai',
+            text: '',
+            isLoading: true,
+            thinkingSteps: [{ text: 'Initializing...', timestamp: Date.now() }],
+            results: { sources: [] }
+        };
 
         setMessages(prev => [...prev, userMsg, aiMsg]);
 
-        let convoId = activeConversationId;
-
         try {
-            await postChatQuery(input, convoId, roomId, socketId, chatMode);
+            await postChatQuery(input, activeConversationId, roomId, socketId, chatMode);
         } catch (error) {
             console.error(error);
             isSearchingRef.current = false;
@@ -205,7 +243,7 @@ export const useChatStream = (
         setMessages(prev => {
             const lastMsg = prev[prev.length - 1];
             if (!lastMsg || !lastMsg.isLoading) return prev;
-            return [...prev.slice(0, -1), { ...lastMsg, isLoading: false, status: 'Stopped' }];
+            return [...prev.slice(0, -1), { ...lastMsg, isLoading: false, thinkingSteps: [...(lastMsg.thinkingSteps || []), { text: 'Stopped by user', timestamp: Date.now() }] }];
         });
     };
 

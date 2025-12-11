@@ -1,23 +1,37 @@
+# backend/parser.py
+# --------------------------------------------------------
+# [ROLE] Enterprise Document Processing Service (Microservice)
+# [OPTIMIZATION] Implements "Small-to-Big" Hierarchical Chunking
+# [COST_SAVING] Hybrid Local/Cloud pipeline with quality gating
+# --------------------------------------------------------
+
 import os
 import logging
 import uvicorn
 import shutil
+import uuid
 import re
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 
-# [LOCAL ENGINE] Unstructured + Tesseract
+# --- LOCAL ENGINE (Unstructured + Tesseract) ---
 from unstructured.partition.auto import partition
-from unstructured.partition.docx import partition_docx
 from unstructured.partition.pdf import partition_pdf
+from unstructured.partition.docx import partition_docx
+from unstructured.documents.elements import Title, NarrativeText, ListItem
 
-# [CLOUD ENGINE] Azure Document Intelligence
+# --- CLOUD ENGINE (Azure Document Intelligence) ---
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
 
-# --- Config & Models ---
+# --- CONFIGURATION ---
+AZURE_ENDPOINT = os.environ.get("AZURE_FORM_ENDPOINT")
+AZURE_KEY = os.environ.get("AZURE_FORM_KEY")
+
+# --- DATA MODELS ---
 class Chunk(BaseModel):
+    id: str                 # Unique UUID
     text: str
     page_number: int
     metadata: dict = {}
@@ -26,22 +40,21 @@ class ParseResponse(BaseModel):
     chunks: List[Chunk]
     filename: str
 
+# --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] [ParserAPI] %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="VAULT Enterprise Parser", version="5.1.0")
+app = FastAPI(title="VAULT Enterprise Parser", version="6.0.0-Hierarchical")
 
-# --- AZURE SETUP ---
-AZURE_ENDPOINT = os.environ.get("AZURE_FORM_ENDPOINT")
-AZURE_KEY = os.environ.get("AZURE_FORM_KEY")
+# --- GLOBAL STATE ---
 azure_client = None
 
-# --- STARTUP CHECKS ---
+# --- STARTUP SEQUENCE ---
 @app.on_event("startup")
 async def startup_checks():
-    logger.info("--- [Enterprise Parser v5.1 Startup] ---")
+    logger.info("--- [VAULT Parser v6.0 Startup] ---")
     
-    # 1. Initialize Azure
+    # 1. Initialize Azure Client
     global azure_client
     if AZURE_ENDPOINT and AZURE_KEY:
         try:
@@ -55,78 +68,106 @@ async def startup_checks():
     else:
         logger.warning("⚠️ Azure Document Intelligence: NOT CONFIGURED (Local Only)")
 
-    # 2. Check Poppler
-    poppler_path = shutil.which("pdfinfo")
-    if poppler_path:
-        logger.info(f"✅ Poppler found: {poppler_path}")
+    # 2. Verify External Tools
+    if shutil.which("tesseract"):
+        logger.info("✅ Tesseract OCR: FOUND")
     else:
-        logger.critical("❌ Poppler NOT found. PDF processing will fail.")
-
-    # 3. Check Tesseract
-    tess_env = os.environ.get("TESSERACT_PATH_OVERRIDE", r"C:\Program Files\Tesseract-OCR")
-    tess_exe = os.path.join(tess_env, "tesseract.exe")
-    if shutil.which("tesseract") or os.path.exists(tess_exe):
-        logger.info(f"✅ Tesseract OCR found.")
-    else:
-        logger.warning("⚠️ Tesseract NOT found. Scanned PDFs will be empty.")
+        logger.warning("⚠️ Tesseract OCR: NOT FOUND (Image-based PDFs will fail)")
+        
+    if shutil.which("pdfinfo"): # Poppler
+        logger.info("✅ Poppler Utils: FOUND")
     
     logger.info("--- [Startup Complete] ---")
 
-# --- SCORING ENGINE ---
+# --- CORE LOGIC: HIERARCHICAL CHUNKING ---
+def hierarchical_chunking(elements, filename: str) -> List[Chunk]:
+    """
+    Transforms a flat list of Unstructured elements into a Hierarchical Tree.
+    - Headers become 'Parent Chunks' (is_header=True)
+    - Content becomes 'Child Chunks' (linked via parent_id)
+    """
+    chunks = []
+    current_parent_id = None
+    current_section_name = "Introduction" # Default section
+
+    for el in elements:
+        text = str(el).strip()
+        
+        # 1. Noise Filter (Ignore tiny artifacts)
+        if len(text) < 5: 
+            continue
+            
+        chunk_id = str(uuid.uuid4())
+        page_num = getattr(el.metadata, "page_number", 1)
+
+        # 2. Detect Hierarchy
+        if isinstance(el, Title):
+            # We found a Header -> Start a new 'Section'
+            current_section_name = text
+            current_parent_id = chunk_id
+            
+            chunks.append(Chunk(
+                id=chunk_id,
+                text=f"SECTION HEADER: {text}",
+                page_number=page_num,
+                metadata={
+                    "source": filename,
+                    "is_header": True,
+                    "parent_id": None, # Headers have no parent
+                    "section": current_section_name,
+                    "type": "Title"
+                }
+            ))
+            logger.debug(f"[HIERARCHY] New Section: '{text}' (ID: {chunk_id})")
+        
+        else:
+            # We found Content -> Link to current Parent
+            chunks.append(Chunk(
+                id=chunk_id,
+                text=text,
+                page_number=page_num,
+                metadata={
+                    "source": filename,
+                    "is_header": False,
+                    "parent_id": current_parent_id, # <--- THE LINK
+                    "section": current_section_name,
+                    "type": "Content"
+                }
+            ))
+
+    return chunks
+
+# --- CORE LOGIC: QUALITY SCORING ---
 def calculate_quality_score(local_chunks: List[Chunk], file_path: str) -> int:
     """
-    Returns a quality score (0-100).
+    Heuristic analysis to determine if local OCR succeeded or failed.
+    Returns 0-100. <50 usually triggers Cloud Fallback.
     """
-    if not local_chunks:
-        return 0
+    if not local_chunks: return 0
 
-    score = 100
-    all_text = " ".join(chunk.text for chunk in local_chunks)
+    all_text = " ".join(c.text for c in local_chunks)
     total_chars = len(all_text)
     file_size = os.path.getsize(file_path)
 
-    # 1. Penalty: Garbage/Empty
-    if total_chars < 100:
-        logger.warning(f"[SCORE] Penalizing: Almost empty ({total_chars} chars).")
-        score -= 60
+    score = 100
 
-    # 2. Penalty: OCR Noise Patterns
-    garbage_indicators = ["#####", "|||||", ".....", "____", "====="]
-    if any(indicator in all_text for indicator in garbage_indicators):
-        logger.warning("[SCORE] Penalizing: OCR noise artifacts detected.")
-        score -= 30
+    # Penalty 1: Empty Output
+    if total_chars < 100: score -= 60
+    
+    # Penalty 2: Garbage Characters (OCR Noise)
+    garbage_indicators = ["||||", "____", "....", ""]
+    if any(g in all_text for g in garbage_indicators): score -= 30
 
-    # 3. Penalty: Size vs Text Mismatch
-    if file_size > 100 * 1024 and total_chars < 500:
-        logger.warning(f"[SCORE] Penalizing: High file size ({file_size}b) but low text ({total_chars}).")
-        score -= 40
-
-    # 4. Penalty: Low Alphanumeric Density
+    # Penalty 3: Low Alphanumeric Density (gibberish)
     if total_chars > 0:
         alnum_ratio = sum(c.isalnum() for c in all_text) / total_chars
-        if alnum_ratio < 0.4:
-            logger.warning(f"[SCORE] Penalizing: Mostly symbols/noise (Density: {alnum_ratio:.2f}).")
-            score -= 40
-
+        if alnum_ratio < 0.4: score -= 40
+    
     return max(0, score)
 
-# --- THRESHOLD INTELLIGENCE ---
-def get_quality_threshold(filename: str) -> int:
-    """
-    Returns the score required to accept the local result.
-    Images are treated more leniently than PDFs.
-    """
-    ext = filename.lower()
-    if ext.endswith(('.jpg', '.jpeg', '.png', '.tiff', '.bmp')):
-        return 30  # Be lenient with raw images (business cards, receipts)
-    elif ext.endswith('.pdf'):
-        return 50  # Strict standard for Documents
-    else:
-        return 50  # Default strict
-
-# --- HELPER: Azure Parser ---
+# --- CORE LOGIC: AZURE FALLBACK ---
 def parse_with_azure(file_path: str, filename: str) -> List[Chunk]:
-    logger.info(f"[HYBRID] ☁️ Sending to Azure Document Intelligence...")
+    logger.info(f"[CLOUD] ☁️ Uploading to Azure Document Intelligence...")
     try:
         with open(file_path, "rb") as f:
             poller = azure_client.begin_analyze_document(
@@ -135,85 +176,91 @@ def parse_with_azure(file_path: str, filename: str) -> List[Chunk]:
                 content_type="application/octet-stream"
             )
         result = poller.result()
+        
+        # Azure returns structure differently, we map it to our format
         chunks = []
         for page in result.pages:
             lines = [line.content for line in page.lines]
-            page_text = " ".join(lines)
-            if len(page_text) > 5:
+            # Simple paragraph grouping for Azure results
+            page_text = "\n".join(lines)
+            
+            if len(page_text) > 10:
                 chunks.append(Chunk(
+                    id=str(uuid.uuid4()),
                     text=page_text,
                     page_number=page.page_number,
-                    metadata={"source": filename, "engine": "azure_cloud"}
+                    metadata={
+                        "source": filename, 
+                        "engine": "azure_cloud",
+                        "section": "Azure Extracted",
+                        "is_header": False,
+                        "parent_id": None
+                    }
                 ))
-        logger.info(f"[HYBRID] ☁️ Azure success: {len(chunks)} chunks.")
         return chunks
     except Exception as e:
-        logger.error(f"[HYBRID] Azure failed: {str(e)}")
+        logger.error(f"[CLOUD] Azure Failed: {e}")
         raise e
 
-# --- MAIN ROUTE ---
+# --- MAIN ENDPOINT ---
 @app.post("/parse", response_model=ParseResponse)
 async def parse_document(file: UploadFile = File(...)):
-    temp_filename = f"temp_{file.filename}"
+    temp_filename = f"temp_{uuid.uuid4()}_{file.filename}"
     file_path = os.path.join(os.getcwd(), temp_filename)
-
+    
     try:
-        # 1. Save File
+        # 1. Save Upload
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        logger.info(f"Processing file: {file.filename}")
-        final_chunks = []
-        used_engine = "local_tesseract"
+        logger.info(f"Processing: {file.filename} ({os.path.getsize(file_path)} bytes)")
 
-        # 2. Try Local Parsing
-        local_chunks = []
+        # 2. Attempt Local Parsing (Unstructured 'hi_res')
+        # 'hi_res' is required for accurate Title detection
         try:
             if file.filename.lower().endswith(".pdf"):
-                logger.info("[HYBRID] 🖥️ Attempting Local HI_RES strategy...")
-                elements = partition_pdf(filename=file_path, strategy="hi_res", infer_table_structure=True)
+                elements = partition_pdf(
+                    filename=file_path, 
+                    strategy="hi_res", 
+                    infer_table_structure=True
+                )
             elif file.filename.lower().endswith(".docx"):
                 elements = partition_docx(filename=file_path)
             else:
                 elements = partition(filename=file_path)
+            
+            # Apply Hierarchy Logic
+            local_chunks = hierarchical_chunking(elements, file.filename)
+            
+        except Exception as e:
+            logger.error(f"[LOCAL] Parsing failed: {e}")
+            local_chunks = []
 
-            for el in elements:
-                txt = str(el).strip()
-                if len(txt) > 5:
-                    local_chunks.append(Chunk(
-                        text=txt,
-                        page_number=getattr(el.metadata, "page_number", 1),
-                        metadata={"source": file.filename, "engine": "local"}
-                    ))
-        except Exception as local_err:
-            logger.error(f"[HYBRID] Local parsing crashed: {local_err}")
-
-        # 3. The Quality Gate (Scoring + Threshold Logic)
-        quality_score = calculate_quality_score(local_chunks, file_path)
-        threshold = get_quality_threshold(file.filename)
+        # 3. Quality Gate
+        score = calculate_quality_score(local_chunks, file_path)
+        threshold = 50 # Strict threshold for Enterprise docs
         
-        logger.info(f"[QUALITY] Score: {quality_score}/100 (Threshold: {threshold})")
+        logger.info(f"[QUALITY] Score: {score}/100 (Threshold: {threshold})")
 
-        should_fallback = quality_score < threshold
-
-        if should_fallback and azure_client:
-            logger.warning(f"[HYBRID] ⚠️ Low Quality ({quality_score} < {threshold}). Triggering Cloud Fallback.")
+        final_chunks = local_chunks
+        
+        # 4. Fallback Logic
+        if score < threshold and azure_client:
+            logger.warning(f"[FALLBACK] Low quality detected. Engaging Azure...")
             try:
                 final_chunks = parse_with_azure(file_path, file.filename)
-                used_engine = "azure_cloud"
-            except Exception as azure_err:
-                logger.error(f"[HYBRID] Azure fallback failed: {azure_err}")
-                final_chunks = local_chunks # Fallback to local
-        elif should_fallback and not azure_client:
-            logger.warning("[HYBRID] ⚠️ Low Quality but Azure not configured. Returning poor results.")
-            final_chunks = local_chunks
-        else:
-            final_chunks = local_chunks # Local was good!
-
-        logger.info(f"✅ Success. Extracted {len(final_chunks)} chunks using {used_engine}.")
+                logger.info(f"[FALLBACK] Azure success: {len(final_chunks)} chunks.")
+            except:
+                logger.error("[FALLBACK] Azure failed. Reverting to local.")
+        
         return ParseResponse(chunks=final_chunks, filename=file.filename)
 
+    except Exception as e:
+        logger.error(f"[FATAL] Request failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
     finally:
+        # Cleanup temp file
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)

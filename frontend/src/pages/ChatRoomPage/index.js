@@ -1,7 +1,6 @@
 // frontend/src/pages/ChatRoomPage/index.js
 // --------------------------------------------------------
-// [FIXED] Race Condition: Data fetching now waits for isAccessGranted state update
-// [FIXED] "Room 1" persisting: UI waits for non-null roomName
+// [FIXED] Layout: Removed excessive bottom padding for tighter UI
 // --------------------------------------------------------
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -96,27 +95,21 @@ const ChatRoomPage = () => {
         toast, setInputMessage, setMessages, isSearchingRef
     );
 
-    // --- INITIALIZATION STEP 1: CHECK ACCESS ---
+    // --- INITIALIZATION ---
     useEffect(() => {
         checkRoomAccess();
     }, [roomId, checkRoomAccess]);
 
-    // --- INITIALIZATION STEP 2: LOAD DATA (Only when access is confirmed) ---
     useEffect(() => {
         if (isAccessGranted) {
-            console.log('[ChatRoomPage] Access Granted. Fetching initial data...');
             fetchDocuments();
             fetchConversations();
         }
     }, [isAccessGranted, fetchDocuments, fetchConversations]);
 
-    // --- WELCOME MESSAGE LOGIC ---
+    // --- WELCOME MESSAGE ---
     useEffect(() => {
-        // Only set welcome message if we have access AND the real room name is loaded
         if (isAccessGranted && roomName && messages.length === 0) {
-            // Avoid setting if we are waiting for history load (handled by useConversations)
-            // But if history is truly empty, useConversations will leave it empty, so we fill it here.
-            // We'll use a small timeout to let useConversations run first.
             const timer = setTimeout(() => {
                 setMessages(prev => {
                     if (prev.length === 0) {
@@ -175,7 +168,6 @@ const ChatRoomPage = () => {
                     </div>
                 ) : (
                     <>
-                        {/* Ensure roomName is passed to Header */}
                         <ChatHeader
                             title={roomName}
                             subtitle={chatMode === 'DEEP_RESEARCH' ? 'Deep Research Mode' : 'Standard Analysis'}
@@ -185,7 +177,8 @@ const ChatRoomPage = () => {
                             isUploading={isUploading}
                         />
 
-                        <div className="flex-1 overflow-y-auto custom-scrollbar px-4">
+                        {/* [LAYOUT FIX] Main Content Area */}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar px-2 sm:px-4">
                             <MessageList
                                 messages={messages}
                                 handleSourceClick={handleSourceClick}
@@ -196,7 +189,8 @@ const ChatRoomPage = () => {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        <div className="w-full bg-transparent pb-4">
+                        {/* [LAYOUT FIX] Removed pb-4, allowing Input to sit naturally */}
+                        <div className="w-full bg-transparent">
                             <ChatInput
                                 inputMessage={inputMessage}
                                 setInputMessage={setInputMessage}
@@ -243,7 +237,11 @@ const ChatRoomPage = () => {
                             <span className="mt-4 text-sm font-medium">Decrypting Document...</span>
                         </div>
                     ) : (
-                        <PdfViewer fileUrl={pdfUrl} onClose={closePdfViewer} highlight={currentHighlight} />
+                        <PdfViewer
+                            fileUrl={pdfUrl}
+                            onClose={closePdfViewer}
+                            highlight={currentHighlight}
+                        />
                     )}
                 </div>
             )}

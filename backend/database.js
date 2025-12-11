@@ -1,7 +1,8 @@
-// backend/database.js - ENTERPRISE POSTGRES (NO-PLUGIN VERSION)
+// backend/database.js - ENTERPRISE POSTGRES (FULL VERSION)
 // --------------------------------------------------------
-// [SCALABILITY] Uses PostgreSQL but replaces 'vector' extension 
-// with standard FLOAT8[] arrays to avoid Windows installation errors.
+// [SCALABILITY] Uses PostgreSQL + FLOAT8[] (No Plugins)
+// [OPTIMIZATION] Hierarchical Schema (Parent/Child Linking)
+// [FIXED] Auto-migration for missing hierarchy columns
 // --------------------------------------------------------
 
 const { Pool } = require('pg');
@@ -305,7 +306,8 @@ const initializeDatabase = async () => {
             )
         `);
 
-        // 16. Document Chunks (FLOAT8[] instead of VECTOR)
+        // 16. Document Chunks (FLOAT8[] + HIERARCHY)
+        // [OPTIMIZATION] Added parent_id and is_header for Reddit Strategy
         await createTable('document_chunks', `
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
@@ -315,10 +317,32 @@ const initializeDatabase = async () => {
                 content TEXT NOT NULL,
                 page_number INTEGER,
                 embedding FLOAT8[], 
+                
+                -- [NEW] Hierarchy Fields
+                parent_id TEXT,
+                is_header BOOLEAN DEFAULT FALSE,
+                
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(document_id, chunk_id)
             )
         `);
+
+        // [MIGRATION FIX] Check if 'parent_id' exists, if not ADD IT (Handles legacy tables)
+        const hierarchyCheck = await client.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='document_chunks' AND column_name='parent_id'
+        `);
+
+        if (hierarchyCheck.rowCount === 0) {
+            logger.info('DB_MIGRATE', '⚠️ detected legacy document_chunks table. Adding hierarchy columns...');
+            await client.query(`ALTER TABLE document_chunks ADD COLUMN parent_id TEXT`);
+            await client.query(`ALTER TABLE document_chunks ADD COLUMN is_header BOOLEAN DEFAULT FALSE`);
+            logger.info('DB_MIGRATE', '✅ Hierarchy columns added successfully.');
+        }
+
+        // [INDEXING] Now safe to create index
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_chunks_parent ON document_chunks(parent_id)`);
 
         // 17. Conversations
         await createTable('conversations', `
@@ -347,7 +371,7 @@ const initializeDatabase = async () => {
         await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_chat_message ON chat_history USING GIN (message gin_trgm_ops)`);
 
         await backfillRoomCodes();
-        logger.info('DB_INIT_FINAL', 'All PostgreSQL schemas verified (Standard Arrays).');
+        logger.info('DB_INIT_FINAL', 'All PostgreSQL schemas verified (Standard Arrays + Hierarchy).');
 
     } catch (err) {
         logger.error('DB_INIT_FATAL', 'Schema Initialization Failed:', err.message);
@@ -357,7 +381,7 @@ const initializeDatabase = async () => {
     }
 };
 
-// --- ATOMIC SAVE FUNCTION (PG ARRAY ADAPTER) ---
+// --- ATOMIC SAVE FUNCTION (PG ARRAY ADAPTER + HIERARCHY) ---
 async function saveDocumentChunks(userId, originalName, filePath, chunksWithVectors, roomId) {
     logger.info('saveDocumentChunks', `[PG_TX_START] Atomic save for: ${originalName}`);
 
@@ -386,15 +410,29 @@ async function saveDocumentChunks(userId, originalName, filePath, chunksWithVect
             let idx = 1;
 
             chunksToInsert.forEach((chunk, i) => {
-                const chunkId = `${documentId}-${i}-${crypto.randomBytes(4).toString('hex')}`;
-                // Standard PG arrays don't need string formatting like vector('[...]'), just pass the array
-                chunkValues.push(chunkId, documentId, roomId, chunk.content, chunk.page_number, chunk.vector);
-                chunkPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5})`);
-                idx += 6;
+                const chunkId = chunk.id || `${documentId}-${i}-${crypto.randomBytes(4).toString('hex')}`;
+
+                // [NEW] Added parent_id and is_header to the values array
+                // The order matches the INSERT columns below
+                chunkValues.push(
+                    chunkId,
+                    documentId,
+                    roomId,
+                    chunk.content,
+                    chunk.page_number,
+                    chunk.vector,
+                    chunk.parent_id || null, // Ensure NULL if undefined
+                    chunk.is_header || false // Ensure FALSE if undefined
+                );
+
+                // Now generating placeholders for 8 items: ($1, $2, ..., $8)
+                chunkPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5}, $${idx + 6}, $${idx + 7})`);
+                idx += 8;
             });
 
             const insertSql = `
-                INSERT INTO document_chunks (chunk_id, document_id, room_id, content, page_number, embedding) 
+                INSERT INTO document_chunks 
+                (chunk_id, document_id, room_id, content, page_number, embedding, parent_id, is_header) 
                 VALUES ${chunkPlaceholders.join(', ')}
             `;
             await client.query(insertSql, chunkValues);
