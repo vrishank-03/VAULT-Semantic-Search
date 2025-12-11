@@ -1,8 +1,8 @@
-// backend/documentProcessor.js - ENTERPRISE OCR ADAPTER
+// backend/documentProcessor.js
 // --------------------------------------------------------
-// [COMPONENT] Text Extraction Layer
-// [ROLE] Bridges the external Python OCR service (Port 8002) with Node.js.
-// [COMPATIBILITY] Outputs standardized text chunks ready for embedding.
+// [ROLE] Node.js Adapter for Python Parser
+// [OPTIMIZATION] Captures Hierarchical Data (Parent/Child)
+// [RESILIENCE] Tesseract Path Injection & Error Mapping
 // --------------------------------------------------------
 
 const fs = require('fs');
@@ -14,82 +14,74 @@ const SERVICE_NAME = 'DocumentProcessor';
 const PARSER_API_URL = process.env.PARSER_API_URL || 'http://127.0.0.1:8002/parse';
 
 // --- [WIN_FIX] ENVIRONMENT OVERRIDE FOR TESSERACT ---
-// This forces the Node process (and any Python child processes) to see Tesseract
 if (process.env.TESSERACT_PATH_OVERRIDE) {
     const tessPath = process.env.TESSERACT_PATH_OVERRIDE;
-    // Append to PATH if not already present
     if (!process.env.PATH.includes(tessPath)) {
-        logger.info(SERVICE_NAME, `[CONFIG] Force-injecting Tesseract into PATH: ${tessPath}`);
+        logger.info(SERVICE_NAME, `[CONFIG] Injecting Tesseract PATH: ${tessPath}`);
         process.env.PATH = `${tessPath};${process.env.PATH}`;
     }
 }
 
 if (process.env.TESSDATA_PREFIX_OVERRIDE) {
     process.env.TESSDATA_PREFIX = process.env.TESSDATA_PREFIX_OVERRIDE;
-    logger.info(SERVICE_NAME, `[CONFIG] Applied TESSDATA_PREFIX: ${process.env.TESSDATA_PREFIX}`);
 }
-// ----------------------------------------------------
 
 /**
- * [ENTERPRISE] Normalizes raw API chunks into the system's standard format.
- * This acts as an 'Adapter' between external Python parsers and our internal DB.
+ * [HIERARCHICAL ADAPTER] 
+ * Maps Python's rich output to our Postgres Schema format.
  */
 const normalizeChunks = (rawChunks, filename) => {
     if (!Array.isArray(rawChunks) || rawChunks.length === 0) {
-        logger.warn(SERVICE_NAME, `[NORMALIZER] Received empty or invalid chunks array for ${filename}.`);
+        logger.warn(SERVICE_NAME, `[NORMALIZER] No chunks returned for ${filename}.`);
         return [];
     }
 
-    // [DEBUG] Log the keys of the first chunk to verify Python output
-    const firstKeys = Object.keys(rawChunks[0]);
-    logger.info(SERVICE_NAME, `[NORMALIZER] Incoming Chunk Structure (Keys): [${firstKeys.join(', ')}]`);
-
     return rawChunks.map((chunk, index) => {
-        // 1. Map 'text' (Unstructured default) -> 'content' (DB requirement)
-        let content = chunk.text || chunk.content || chunk.page_content || "";
+        // 1. Text Cleaning
+        let content = chunk.text || chunk.content || "";
+        content = content.replace(/\0/g, '').trim(); // Remove PostgreSQL null-bytes
 
-        // 2. Sanitize string (remove null bytes that break Postgres)
-        content = content.replace(/\0/g, '').trim();
-
-        // 3. Metadata Enforcement
+        // 2. Metadata Extraction
         const safeMetadata = {
             ...(chunk.metadata || {}),
-            filename: filename,         // [CRITICAL FIX] Force filename injection
-            source: filename,           // redundant but safe for different UI consumers
-            page_number: chunk.metadata?.page_number || chunk.page_number || 1
+            filename: filename,
+            page_number: chunk.page_number || 1,
+
+            // [NEW] Hierarchical Fields
+            parent_id: chunk.metadata?.parent_id || null,
+            is_header: chunk.metadata?.is_header || false,
+            section: chunk.metadata?.section || "General"
         };
 
         return {
             id: chunk.id || `raw-${index}-${Date.now()}`,
             content: content,
             page_number: safeMetadata.page_number,
+
+            // [NEW] Top-Level Fields for SQL Insertion
+            parent_id: safeMetadata.parent_id,
+            is_header: safeMetadata.is_header,
+
             metadata: safeMetadata
         };
-    }).filter(c => c.content.length > 0); // Final filter for empty strings
+    }).filter(c => c.content.length > 0);
 };
 
 /**
- * Processes a document by calling the external enterprise parsing API.
- * @param {string} filePath - The absolute path to the file.
- * @param {string} originalName - The original filename.
- * @returns {Promise<Array<object>>} - A promise that resolves to an array of STANDARDIZED chunk objects
+ * Sends file to Python Microservice -> Receives Hierarchical JSON -> Returns Normalized Data
  */
 async function processDocument(filePath, originalName) {
-    logger.info(SERVICE_NAME, `Calling Enterprise Parsing API for: ${originalName}`);
+    logger.info(SERVICE_NAME, `[START] Processing: ${originalName}`);
 
-    // 1. Validate File Existence
     if (!fs.existsSync(filePath)) {
-        logger.error(SERVICE_NAME, `[FATAL] File not found at path: ${filePath}`);
-        throw new Error(`File upload failed. Local file missing.`);
+        throw new Error(`File upload failed. Local file missing at ${filePath}`);
     }
 
     const form = new FormData();
-    form.append('file', fs.createReadStream(filePath), {
-        filename: originalName,
-    });
+    form.append('file', fs.createReadStream(filePath), { filename: originalName });
 
     try {
-        // 2. Call External Service
+        // 1. Call Python Service
         const response = await axios.post(PARSER_API_URL, form, {
             headers: form.getHeaders(),
             maxContentLength: Infinity,
@@ -97,39 +89,29 @@ async function processDocument(filePath, originalName) {
         });
 
         const rawChunks = response.data.chunks || [];
-        logger.info(SERVICE_NAME, `Parser API Raw Response: Received ${rawChunks.length} elements.`);
 
-        // 3. Normalize & Validate Data
+        // 2. Normalize
         const validChunks = normalizeChunks(rawChunks, originalName);
 
-        if (validChunks.length === 0 && rawChunks.length > 0) {
-            logger.error(SERVICE_NAME, `[DATA_LOSS] MAPPING FAILED. Python sent ${rawChunks.length} chunks, but Normalizer output 0.`);
-        } else {
-            logger.info(SERVICE_NAME, `[SUCCESS] Normalized ${validChunks.length} chunks for downstream processing.`);
-        }
+        // 3. Hierarchy Statistics (For Debugging)
+        const headerCount = validChunks.filter(c => c.is_header).length;
+        const childCount = validChunks.filter(c => c.parent_id).length;
+
+        logger.info(SERVICE_NAME, `[SUCCESS] Extracted ${validChunks.length} chunks. (Headers: ${headerCount}, Children: ${childCount})`);
 
         return validChunks;
 
     } catch (error) {
-        logger.error(SERVICE_NAME, `Failed to process document via Parser API: ${originalName}`, error);
+        logger.error(SERVICE_NAME, `[FAIL] Parsing failed for ${originalName}`, error);
 
-        if (error.code === 'ECONNREFUSED') {
-            logger.error(SERVICE_NAME, `FATAL: Cannot connect to Parser API (Port 8002). Is python parser.py running?`);
-            throw new Error('Parsing service is offline.');
-        }
-
+        // Error Translation
         const detail = error.response?.data?.detail || error.message;
-
-        // [WIN_FIX] Specific hint for Tesseract errors
-        if (detail && (detail.includes("tesseract is not installed") || detail.includes("not in your PATH"))) {
-            logger.error(SERVICE_NAME, "[WIN_FIX] Tesseract not found. Ensure TESSERACT_PATH_OVERRIDE is set in .env");
-            throw new Error("OCR Configuration Error: Server cannot find Tesseract.");
+        if (error.code === 'ECONNREFUSED') {
+            throw new Error('Parsing Service (Port 8002) is offline.');
         }
-
-        if (detail && detail.toLowerCase().includes('password')) {
-            throw new Error("PasswordProtectedError");
+        if (detail && detail.includes("tesseract")) {
+            throw new Error("OCR Error: Server cannot find Tesseract. Check configuration.");
         }
-
         throw new Error(detail);
     }
 }

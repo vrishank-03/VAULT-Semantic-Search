@@ -6,28 +6,37 @@ import Toast from '../Toast';
 import LoadingSpinner from '../components/LoadingSpinner';
 import GenericSuccessAnimation from '../components/GenericSuccessAnimation';
 
-// Re-using the same validation logic from Signup
-const validatePassword = (password) => {
-    const errors = [];
-    if (password.length < 8) errors.push("at least 8 characters");
-    if (!/[a-z]/.test(password)) errors.push("a lowercase letter");
-    if (!/[A-Z]/.test(password)) errors.push("an uppercase letter");
-    if (!/\d/.test(password)) errors.push("a number");
-    if (!/[!@#$%^&*]/.test(password)) errors.push("a special character (!@#$%^&*)");
-    return errors;
-};
+// --- ICONS ---
+const CheckIcon = () => (
+    <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+    </svg>
+);
+
+const CircleIcon = () => (
+    <div className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+);
 
 const ResetPasswordPage = () => {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
-    const [passwordErrors, setPasswordErrors] = useState([]);
     const [toast, setToast] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [isSuccess, setIsSuccess] = useState(false);
-    
+
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const token = searchParams.get('token');
+
+    // Validation State
+    const [checks, setChecks] = useState({
+        length: false,
+        lower: false,
+        upper: false,
+        number: false,
+        special: false,
+        match: false
+    });
 
     useEffect(() => {
         if (!token) {
@@ -36,84 +45,125 @@ const ResetPasswordPage = () => {
     }, [token, navigate]);
 
     useEffect(() => {
-        setPasswordErrors(password ? validatePassword(password) : []);
-    }, [password]);
+        setChecks({
+            length: password.length >= 8,
+            lower: /[a-z]/.test(password),
+            upper: /[A-Z]/.test(password),
+            number: /\d/.test(password),
+            special: /[!@#$%^&*]/.test(password),
+            match: password.length > 0 && password === confirmPassword
+        });
+    }, [password, confirmPassword]);
+
+    const isFormValid = Object.values(checks).every(Boolean);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setToast(null);
 
-        if (password !== confirmPassword) {
-            setToast({ message: 'Passwords do not match.', type: 'error' });
+        if (!isFormValid) {
+            setToast({ message: 'Please ensure all password requirements are met.', type: 'error' });
             return;
         }
 
-        const validationErrors = validatePassword(password);
-        if (validationErrors.length > 0) {
-            setToast({ message: `Password is not strong enough.`, type: 'error' });
-            return;
-        }
-        
         setIsLoading(true);
         try {
             await resetPassword(token, password);
             setIsSuccess(true);
             setTimeout(() => {
-                navigate('/login', { state: { message: 'Password updated successfully! Please log in.' } });
-            }, 2500); // Wait for animation
+                navigate('/login', { state: { message: 'Password updated successfully.' } });
+            }, 2000);
         } catch (err) {
-            const errorMessage = err.response?.data?.message || 'Failed to reset password. The link may be expired.';
+            const errorMessage = err.response?.data?.message || 'Link expired or invalid.';
             setToast({ message: errorMessage, type: 'error' });
         } finally {
             setIsLoading(false);
         }
     };
 
+    const RequirementItem = ({ fulfilled, label }) => (
+        <div className="flex items-center space-x-3">
+            <div className={`flex items-center justify-center w-4 h-4 ${fulfilled ? '' : 'opacity-50'}`}>
+                {fulfilled ? <CheckIcon /> : <CircleIcon />}
+            </div>
+            <span className={`text-xs transition-colors duration-200 ${fulfilled ? 'text-gray-300 font-medium' : 'text-gray-500'}`}>
+                {label}
+            </span>
+        </div>
+    );
+
     const renderContent = () => {
         if (isSuccess) {
             return (
-                <div className="text-center">
-                    <GenericSuccessAnimation message="Password Updated!" />
+                <div className="flex flex-col items-center justify-center py-10">
+                    <GenericSuccessAnimation message="Password Set!" />
                 </div>
             );
         }
 
         if (isLoading) {
             return (
-                <div className="text-center">
-                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Updating Password...</h2>
-                    <div className="my-6">
-                        <LoadingSpinner />
-                    </div>
+                <div className="flex flex-col items-center justify-center py-12">
+                    <LoadingSpinner />
+                    <p className="mt-4 text-sm text-gray-400">Updating credentials...</p>
                 </div>
             );
         }
 
         return (
             <>
-                <div className="text-center">
-                    <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Create a New Password</h2>
-                    <p className="mt-2 text-gray-600 dark:text-gray-400">Your new password must be different from previous passwords.</p>
+                <div className="mb-8">
+                    <h2 className="text-2xl font-semibold text-white tracking-tight">Set new password</h2>
+                    <p className="mt-2 text-sm text-gray-400">
+                        Choose a strong password to secure your account.
+                    </p>
                 </div>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">New Password</label>
-                        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required placeholder="Enter new password" className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" />
-                    </div>
-                     {password.length > 0 && passwordErrors.length > 0 && (
-                        <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1 pt-1">
-                            <ul className="list-disc list-inside">
-                                {validatePassword("").map(rule => (
-                                    <li key={rule} className={!passwordErrors.includes(rule) ? 'text-green-500 line-through' : ''}>{rule}</li>
-                                ))}
-                            </ul>
+
+                <form onSubmit={handleSubmit} className="space-y-6">
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">New Password</label>
+                            <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="block w-full px-4 py-3 bg-[#0a0a0a] border border-gray-800 rounded-lg text-white placeholder-gray-700 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all sm:text-sm"
+                                placeholder="Enter password"
+                            />
                         </div>
-                    )}
-                    <div>
-                        <label className="block mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Confirm New Password</label>
-                        <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required placeholder="Confirm new password" className="relative block w-full px-3 py-3 text-gray-900 placeholder-gray-500 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white" />
+
+                        <div>
+                            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Confirm Password</label>
+                            <input
+                                type="password"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                className={`block w-full px-4 py-3 bg-[#0a0a0a] border rounded-lg text-white placeholder-gray-700 focus:outline-none focus:ring-1 transition-all sm:text-sm ${password && confirmPassword && password !== confirmPassword
+                                    ? 'border-red-900 focus:border-red-600 focus:ring-red-600'
+                                    : 'border-gray-800 focus:border-blue-600 focus:ring-blue-600'
+                                    }`}
+                                placeholder="Confirm password"
+                            />
+                        </div>
                     </div>
-                    <button type="submit" disabled={isLoading || (password.length > 0 && passwordErrors.length > 0) || password !== confirmPassword} className="w-full py-3 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
+
+                    {/* Minimalist Checklist */}
+                    <div className="pt-2">
+                        <div className="grid grid-cols-2 gap-y-2 gap-x-4">
+                            <RequirementItem fulfilled={checks.length} label="8+ characters" />
+                            <RequirementItem fulfilled={checks.upper} label="Uppercase letter" />
+                            <RequirementItem fulfilled={checks.lower} label="Lowercase letter" />
+                            <RequirementItem fulfilled={checks.number} label="Number" />
+                            <RequirementItem fulfilled={checks.special} label="Special character" />
+                            <RequirementItem fulfilled={checks.match} label="Passwords match" />
+                        </div>
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isLoading || !isFormValid}
+                        className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-900/10 mt-6"
+                    >
                         Reset Password
                     </button>
                 </form>
@@ -124,8 +174,12 @@ const ResetPasswordPage = () => {
     return (
         <AuthLayout>
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-            <div className="w-full max-w-md p-8 space-y-6 bg-white/80 backdrop-blur-sm rounded-lg shadow-2xl dark:bg-gray-800/80 transition-all duration-300">
-                {renderContent()}
+
+            <div className="w-full max-w-[420px] mx-auto">
+                {/* Single, clean card. No double layers. No footer text. */}
+                <div className="bg-[#161616] border border-gray-800 rounded-xl shadow-2xl p-8">
+                    {renderContent()}
+                </div>
             </div>
         </AuthLayout>
     );

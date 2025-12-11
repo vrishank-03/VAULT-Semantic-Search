@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # 1. The Database (Postgres)
+  db:
+    image: postgres:15-alpine
+    container_name: vault-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432" # Maps localhost:5432 to container:5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. The Message Broker (Redis)
+  redis:
+    image: redis:alpine
+    container_name: vault-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
